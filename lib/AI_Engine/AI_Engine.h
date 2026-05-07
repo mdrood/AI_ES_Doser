@@ -16,21 +16,43 @@ struct HistoryEntry {
 
 class AIEngine {
 public:
-    void calculateNextPlan(int mode, float consAlk, float consCa, float consMg, float currentPh);
+    void calculateNextPlan(int mode, float consAlk, float consCa, float consMg, float currentPh,bool lightsActive);
     void update(); // Wrapper for main.cpp
     DosingPlan currentPlan;
+    void setTankVolumeGallons(float gallons) { 
+        _tankVolumeLiters = gallons * 3.78541f; 
+    }
+    void setBaselineDemand(float kalkMlDay, float cacl2MlDay, float naohMlDay, float mgMlDay) {
+        baselineKalkMlDay = kalkMlDay;
+        baselineCacl2MlDay = cacl2MlDay;
+        baselineNaohMlDay = naohMlDay;
+        baselineMgMlDay = mgMlDay;
+    }
 
 private:
+    float _tankVolumeLiters = 1135.6f;
+
+    // User-provided daily baseline demand. The AI adjusts up/down from these
+    // known tank consumption values instead of guessing total demand from zero.
+    float baselineKalkMlDay = 0.0f;
+    float baselineCacl2MlDay = 0.0f;
+    float baselineNaohMlDay = 0.0f;
+    float baselineMgMlDay = 0.0f;
+
     struct {
-        float dkhPerMlKalk = 0.04, dkhPerMlAfr = 0.1, dkhPerMlAlk = 0.15, dkhPerMlNaoh = 0.25, mgPerMlMg = 5.0, caPerMlCacl2 = 2.0;
+        //TODO this is where you change chemitry strength
+        float dkhPerMlKalk = 0.0000085f, dkhPerMlAfr = 0.1f, dkhPerMlAlk = 0.15f, dkhPerMlNaoh = 0.00255f, mgPerMlMg = 5.0f, caPerMlCacl2 = 0.42f;
     } chem;
     
     struct {
-        float maxKalkDay = 2000.0, maxNaohDay = 50.0, maxAlkRisePerDay = 0.5;
+        //float maxKalkDay = 2000.0, maxNaohDay = 50.0, maxAlkRisePerDay = 0.5; // mark
+        float maxKalkDay = 35000.0f, maxNaohDay = 800.0f, maxAlkRisePerDay = 1.5f;  // large reef tuned
     } limits;
 
     HistoryEntry* aiHistory = nullptr; 
     void applySafetyEnforcement(DosingPlan &p);
+    void addBaselineDemand(DosingPlan &p, int mode);
+    void applyAbsoluteCaps(DosingPlan &p);
     void logPlanToPSRAM(DosingPlan p, int mode); // <--- This was missing!
 };
 

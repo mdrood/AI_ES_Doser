@@ -9,6 +9,9 @@ Doser::Doser() {
     _pumps[3] = {27, 60.0, 0, false}; // Pump 4
 }
 
+// Add this near the top of Doser.cpp
+float dailyDoseTotals[4] = {0, 0, 0, 0};
+
 #include <Preferences.h>
 
 void Doser::begin() {
@@ -20,11 +23,12 @@ void Doser::begin() {
     _pumps[2].pin = 26;
     _pumps[3].pin = 27;
 
-    // Try to load from memory; if it's the first time, use 60.0 as a backup
-    _pumps[0].mlPerMin = prefs.getFloat("p0", 60.0);
-    _pumps[1].mlPerMin = prefs.getFloat("p1", 60.0);
-    _pumps[2].mlPerMin = prefs.getFloat("p2", 60.0);
-    _pumps[3].mlPerMin = prefs.getFloat("p3", 60.0);
+    // Load the same NVS keys used by main.cpp/saveFlowRate().
+    // The old p0/p1/p2/p3 keys are kept as fallback for backward compatibility.
+    _pumps[0].mlPerMin = prefs.getFloat("flow_p1", prefs.getFloat("p0", 60.0));
+    _pumps[1].mlPerMin = prefs.getFloat("flow_p2", prefs.getFloat("p1", 60.0));
+    _pumps[2].mlPerMin = prefs.getFloat("flow_p3", prefs.getFloat("p2", 60.0));
+    _pumps[3].mlPerMin = prefs.getFloat("flow_p4", prefs.getFloat("p3", 60.0));
 
     prefs.end();
 
@@ -36,6 +40,11 @@ void Doser::begin() {
 
 void Doser::doseMl(int i, float ml) {
     if (i < 0 || i > 3 || ml <= 0) return;
+
+    // TRACK THE DOSE
+    dailyDoseTotals[i] += ml;
+    // Track the total across all pumps for the dashboard history
+    _dailyTotalMl += ml;
     
     float secondsToRun = (ml / _pumps[i].mlPerMin) * 60.0;
     // SAFETY CAP: Never let a pump run for more than 60 seconds in a single slice
@@ -79,4 +88,17 @@ bool Doser::isPumpRunning(int i) {
         return _pumps[i].isActive;
     }
     return false;
+}
+
+//TODO stop pumps
+void Doser::stopAllPumps(){
+
+}
+
+float Doser::getTotalDosedToday() {
+    return _dailyTotalMl;
+}
+
+void Doser::resetDailyTotal() {
+    _dailyTotalMl = 0.0f;
 }

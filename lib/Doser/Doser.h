@@ -22,9 +22,13 @@ public:
     void setCalibration(int pumpIdx, float newMlPerMin);
     void startManualRun(int pumpIdx);
     void stopManualRun(int pumpIdx);
+    void stopAllPumps();
+    float getTotalDosedToday();
+    void resetDailyTotal();
 
 private:
     PumpChannel _pumps[4]; 
+    float _dailyTotalMl = 0.0f;
 };
 
 #endif

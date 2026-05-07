@@ -1,0 +1,222 @@
+constexpr char kIndexHtml[] PROGMEM = R"HTML(
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIDoser Standalone</title>
+  <style>
+    /* CSS Variables from your index.html */
+    :root {
+      --bg: #020817;
+      --bg-card: rgba(15, 23, 42, 0.94);
+      --accent: #22d3ee;
+      --accent-soft: rgba(56, 189, 248, 0.18);
+      --accent-strong: #38bdf8;
+      --text: #e2e8f0;
+      --text-soft: #94a3b8;
+      --border: rgba(148, 163, 184, 0.35);
+      --danger: #f97373;
+      --success: #4ade80;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; font-family: system-ui, -apple-system, sans-serif;
+      background: radial-gradient(circle at top, #0ea5e9 0, #020617 40%, #020617 100%) fixed;
+      color: var(--text); display: flex; justify-content: center; padding: 20px;
+    }
+    .wrap { width: 100%; max-width: 1000px; }
+    h1 { margin: 0 0 4px; font-size: 1.6rem; letter-spacing: -0.02em; }
+    .sub { margin: 0 0 20px; color: var(--text-soft); font-size: 0.85rem; }
+    
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+    .card { background: var(--bg-card); backdrop-filter: blur(12px); border: 1px solid var(--border); border-radius: 16px; padding: 20px; }
+    
+    /* Functional Elements */
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    
+    label { display: block; font-size: 0.75rem; color: var(--text-soft); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+    input, select {
+      width: 100%; background: rgba(0,0,0,0.3); border: 1px solid var(--border);
+      color: white; padding: 10px; border-radius: 8px; margin-bottom: 12px; font-size: 0.9rem;
+    }
+
+    button {
+      background: var(--accent); color: #000; border: none; padding: 12px;
+      border-radius: 8px; font-weight: 700; cursor: pointer; width: 100%; margin-bottom: 8px;
+    }
+    button:hover { background: var(--accent-strong); }
+    .btn-sec { background: transparent; border: 1px solid var(--accent); color: var(--accent); }
+    .btn-danger { background: var(--danger); color: white; }
+    .btn-active { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent); }
+
+    .stat-val { font-size: 1.2rem; font-weight: bold; color: var(--accent); }
+    #statusBox { margin-top: 20px; font-size: 0.75rem; color: var(--text-soft); text-align: center; font-family: monospace; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <h1>AIDoser <span style="color:var(--accent)">STANDALONE</span></h1>
+    <p class="sub">Hardware Local Control • Source of Truth</p>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <label>Dosing Mode Selection</label>
+      <div class="row3" style="margin-bottom:12px;">
+        <button onclick="setMode(0)" id="m0">OFF</button>
+        <button onclick="setMode(1)" id="m1">AUTO</button>
+        <button onclick="setMode(2)" id="m2">MANUAL</button>
+      </div>
+      <button id="eStopBtn" onclick="toggleEmergency()" class="btn-danger">EMERGENCY STOP</button>
+    </div>
+
+    <div class="card">
+      <label>Current Environment</label>
+      <div class="row">
+        <div><label>pH</label><div id="curPh" class="stat-val">--</div></div>
+        <div><label>Temp</label><div id="curTemp" class="stat-val">--</div></div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <div><label>Alkalinity</label><div id="curAlk" class="stat-val">--</div></div>
+        <div><label>Calcium</label><div id="curCa" class="stat-val">--</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Apex Sync & AI Window</label>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+        <input type="checkbox" id="apexEnabled" style="width:20px; margin:0;">
+        <span>Enable Apex Polling</span>
+      </div>
+      <input type="text" id="apexIp" placeholder="Apex IP (192.168.1.X)">
+      <div class="row">
+        <div><label>Start Hour</label><select id="startHour"></select></div>
+        <div><label>End Hour</label><select id="endHour"></select></div>
+      </div>
+      <button onclick="saveApex()" class="btn-sec">Save Controller Config</button>
+    </div>
+
+    <div class="card">
+      <label>Manual Test Entry</label>
+      <div class="row">
+        <input type="number" step="0.1" id="m_alk" placeholder="Alk">
+        <input type="number" id="m_ca" placeholder="Ca">
+      </div>
+      <div class="row">
+        <input type="number" id="m_mg" placeholder="Mg">
+        <input type="number" step="0.01" id="m_ph" placeholder="pH">
+      </div>
+      <button onclick="saveTest()">Submit & Recalculate AI</button>
+    </div>
+
+    <div class="card">
+      <label>Pump Maintenance</label>
+      <select id="actionPump">
+        <option value="0">Pump 1 (Alk)</option>
+        <option value="1">Pump 2 (Ca)</option>
+        <option value="2">Pump 3 (Mg)</option>
+        <option value="3">Pump 4 (Kalk)</option>
+      </select>
+      <div class="row">
+        <input type="number" id="actionMl" placeholder="mL">
+        <button onclick="liveDose()">Dose</button>
+      </div>
+      <div class="row">
+        <input type="number" id="actionSec" placeholder="Sec">
+        <button onclick="calibratePump()" class="btn-sec">Calibrate</button>
+      </div>
+      <button onclick="resetBuckets()" class="btn-sec" style="color:var(--danger); border-color:var(--danger); margin-top:5px;">Reset All Volumes</button>
+    </div>
+
+    <div class="card">
+      <label>Provisioning</label>
+      <button onclick="resetWiFi()" class="btn-danger" style="background:#f97316;">Reset Device Wi-Fi</button>
+    </div>
+  </div>
+
+  <div id="statusBox">Connecting to ReefDoser...</div>
+</div>
+
+<script>
+  const gv = (id) => document.getElementById(id).value;
+  const api = async (u,m='GET',d=null) => {
+    const o={method:m,headers:d?{'Content-Type':'application/json'}:{}};
+    if(d)o.body=JSON.stringify(d);
+    const r=await fetch(u,o); return r.json();
+  };
+
+  function populateHourDropdown(id) {
+    let s = document.getElementById(id);
+    for(let i=0; i<24; i++) s.innerHTML += `<option value="${i}">${i}:00</option>`;
+  }
+
+  async function loadAll() {
+    try {
+      const s = await api('/api/status');
+      document.getElementById('curPh').textContent = s.currentPh || '--';
+      document.getElementById('curTemp').textContent = (s.currentTempF || '--') + '°';
+      document.getElementById('curAlk').textContent = s.currentAlk || '--';
+      document.getElementById('curCa').textContent = s.currentCa || '--';
+      
+      document.querySelectorAll('.row3 button').forEach(b => b.className = '');
+      document.getElementById('m' + s.dosingMode).className = 'btn-active';
+      
+      const eBtn = document.getElementById('eStopBtn');
+      eBtn.textContent = s.emergencyStop ? "RESUME SYSTEM" : "EMERGENCY STOP";
+      eBtn.style.background = s.emergencyStop ? "var(--success)" : "var(--danger)";
+      
+      document.getElementById('statusBox').textContent = 'Last Hardware Sync: ' + new Date().toLocaleTimeString();
+    } catch (e) { document.getElementById('statusBox').textContent = 'OFFLINE'; }
+  }
+
+  async function setMode(m) { await api('/api/mode', 'POST', {mode: m}); loadAll(); }
+  
+  function saveApex() {
+    api('/api/config/apex', 'POST', {
+      enabled: document.getElementById('apexEnabled').checked,
+      ip: gv('apexIp'),
+      startHour: parseInt(gv('startHour')),
+      endHour: parseInt(gv('endHour'))
+    }).then(() => alert("Config Saved"));
+  }
+
+  async function saveTest() {
+    await api('/api/manual-test', 'POST', {
+      alk: parseFloat(gv('m_alk')), ca: parseFloat(gv('m_ca')),
+      mg: parseFloat(gv('m_mg')), ph: parseFloat(gv('m_ph'))
+    });
+    alert("AI Plan Updated");
+  }
+
+  async function liveDose() { 
+    await api('/api/live-dose','POST',{pump:Number(gv('actionPump')), ml:Number(gv('actionMl'))}); 
+  }
+
+  async function calibratePump() { 
+    await api('/api/calibrate','POST',{pump:Number(gv('actionPump')), durationSec:Number(gv('actionSec'))}); 
+  }
+
+  async function resetBuckets() { 
+    if(confirm("Reset volumes?")) await api('/api/reset-buckets','POST'); 
+  }
+
+  async function toggleEmergency() {
+    const s = await api('/api/status');
+    await api('/api/emergency-stop','POST',{enabled: !s.emergencyStop});
+    loadAll();
+  }
+
+  async function resetWiFi() { if(confirm("Reset WiFi?")) api('/api/reset-wifi','POST'); }
+
+  populateHourDropdown('startHour');
+  populateHourDropdown('endHour');
+  setInterval(loadAll, 5000);
+  loadAll();
+</script>
+</body>
+</html>
+)HTML";
