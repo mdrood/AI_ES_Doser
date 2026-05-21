@@ -19,7 +19,17 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
     float adjCa  = consCa * metabolicScalar * volumeScale;
     float adjMg  = consMg * metabolicScalar * volumeScale;
 
-
+    // Mg is a slow correction parameter. A normal low reading such as
+    // 1320 ppm against a 1440 ppm target must never become tens of
+    // thousands of mL/day. Ignore tiny/noisy Mg gaps and cap the daily
+    // correction before baseline demand is added.
+    float mgCorrectionMl = 0.0f;
+    if (consMg > limits.mgDeadbandPpm && chem.mgPerMlMg > 0.0f) {
+        mgCorrectionMl = adjMg / chem.mgPerMlMg;
+        if (mgCorrectionMl > limits.maxMgCorrectionDay) {
+            mgCorrectionMl = limits.maxMgCorrectionDay;
+        }
+    }
 
     switch(mode) {
         case 1: // Mode 1: Kalkwasser Only
@@ -35,14 +45,14 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
                 float kalkRatio = (currentPh < 8.2) ? 0.75 : 0.4;
                 next.kalk = (adjAlk * kalkRatio) / chem.dkhPerMlKalk;
                 next.afr  = (adjAlk * (1.0 - kalkRatio)) / chem.dkhPerMlAfr;
-                next.mg   = consMg / chem.mgPerMlMg;
+                next.mg   = mgCorrectionMl;
             }
             break;
 
         case 4: // Mode 4: 3-Part (Alk, Ca, Mg)
             next.alk  = adjAlk / chem.dkhPerMlAlk;
             next.cacl2 =  adjCa/ chem.caPerMlCacl2;
-            next.mg    = consMg / chem.mgPerMlMg;
+            next.mg    = mgCorrectionMl;
             break;
 
         case 5: // Mode 5: Kalk + Alk + Ca + Mg
@@ -52,7 +62,7 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
                 next.kalk = (adjAlk * baseLoad) / chem.dkhPerMlKalk;
                 next.alk  = (adjAlk * (1.0 - baseLoad)) / chem.dkhPerMlAlk;
                 next.cacl2 = adjCa / chem.caPerMlCacl2;
-                next.mg    = consMg / chem.mgPerMlMg;
+                next.mg    = mgCorrectionMl;
             }
             break;
 
@@ -67,7 +77,7 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
                 next.naoh = (adjAlk * 0.2) / chem.dkhPerMlNaoh;
             }
             next.cacl2 = adjCa / chem.caPerMlCacl2;
-            next.mg    = consMg / chem.mgPerMlMg;
+            next.mg    = mgCorrectionMl;
             break;
     }
 
@@ -144,6 +154,7 @@ void AIEngine::applyAbsoluteCaps(DosingPlan &p) {
     // baseline + correction have been combined.
     if (p.kalk > limits.maxKalkDay) p.kalk = limits.maxKalkDay;
     if (p.naoh > limits.maxNaohDay) p.naoh = limits.maxNaohDay;
+    if (p.mg > limits.maxMgDay) p.mg = limits.maxMgDay;
 }
 
 void AIEngine::logPlanToPSRAM(DosingPlan p, int mode) {

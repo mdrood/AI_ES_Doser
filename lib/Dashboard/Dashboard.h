@@ -145,6 +145,18 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
       padding:8px 10px;border-radius:12px;background:rgba(34,211,238,.10);
       border:1px solid rgba(34,211,238,.22);font-size:.82rem;font-weight:800;color:var(--accent)
     }
+
+    .plan-list{display:flex;flex-direction:column;gap:10px}
+    .plan-row{
+      display:flex;align-items:center;justify-content:space-between;gap:12px;
+      padding:12px 14px;border-radius:16px;border:1px solid rgba(148,163,184,.18);
+      background:rgba(2,6,23,.30)
+    }
+    .plan-left{display:flex;align-items:center;gap:10px;min-width:0}
+    .plan-name{font-weight:900;color:#f8fafc}
+    .plan-sub{font-size:.75rem;color:var(--muted);margin-top:2px}
+    .plan-amt{font-weight:900;color:var(--accent);font-size:1.05rem;white-space:nowrap}
+    .chart-stack{display:grid;grid-template-columns:1fr;gap:26px}
     .footer-note{margin-top:14px;font-size:.75rem;color:var(--muted)}
     @media (max-width: 820px){
       .hero{flex-direction:column;align-items:flex-start}
@@ -261,6 +273,15 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
 
       <div class="card">
         <div class="card-title">
+          <h3>Active Dosing Plan</h3>
+          <span class="meta" id="planRealtimeMeta">Realtime from ESP32</span>
+        </div>
+        <div id="activePlanList" class="plan-list"></div>
+        <div class="footer-note">This shows the current AI plan from <code>/api/status</code>. History graphs still use midnight daily records to keep Firebase/write cost down.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
           <h3>Quick Dose</h3>
           <span class="meta">Runs the selected physical pump now</span>
         </div>
@@ -370,19 +391,27 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
 
 <div class="card" style="grid-column: 1 / -1">
   <div class="card-title">
-    <h3>Monthly Analytics</h3>
-    <input type="month" id="repMonth" onchange="loadLocalReport()">
+    <h3>Realtime Analytics</h3>
+    <span class="meta" id="realtimeChartMeta">Live browser graph • no Firebase writes</span>
   </div>
   
-  <div style="margin-bottom: 30px;">
-    <h4 style="color:var(--accent); font-size: 0.75rem; text-transform: uppercase; margin-bottom:10px;">Water Parameters (Daily Avg)</h4>
-    <div style="height:280px;"><canvas id="paramsChart"></canvas></div>
-  </div>
+  <div class="chart-stack">
+    <div>
+      <h4 style="color:var(--accent); font-size: 0.75rem; text-transform: uppercase; margin-bottom:10px;">1) Realtime Water Parameters</h4>
+      <div style="height:280px;"><canvas id="paramsChart"></canvas></div>
+    </div>
 
-  <div>
-    <h4 style="color:var(--accent); font-size: 0.75rem; text-transform: uppercase; margin-bottom:10px;">Daily Dosing Totals (mL)</h4>
-    <div style="height:250px;"><canvas id="dosingChart"></canvas></div>
+    <div>
+      <h4 style="color:var(--accent); font-size: 0.75rem; text-transform: uppercase; margin-bottom:10px;">2) Realtime Buckets / Pending mL</h4>
+      <div style="height:250px;"><canvas id="dosingChart"></canvas></div>
+    </div>
+
+    <div>
+      <h4 style="color:var(--accent); font-size: 0.75rem; text-transform: uppercase; margin-bottom:10px;">3) Realtime AI Plan - Active Chemicals Only (mL/day)</h4>
+      <div style="height:250px;"><canvas id="planChart"></canvas></div>
+    </div>
   </div>
+  <div class="footer-note">These graphs are built from the dashboard's 5-second <code>/api/status</code> refresh and are kept only in browser memory. Samples older than about 30 days are purged automatically. Firebase still only gets throttled state/plan writes and the midnight daily summary.</div>
 </div>
 
 <script>
@@ -575,10 +604,56 @@ async function saveVol() {
     }).join('');
   }
 
+
+  function planFromStatus(s){
+    return (s && (s.dosingMlPerDay || s.aiPlan || s.plan || s.currentPlan)) || {};
+  }
+
+  function activePlanKeys(mode){
+    return getModeCfg(mode).pumps.map(p => p.key);
+  }
+
+  function planValue(plan, key){
+    const aliases = {
+      ca: ['ca','cacl2'],
+      cacl2: ['cacl2','ca'],
+      alk: ['alk'],
+      naoh: ['naoh'],
+      kalk: ['kalk'],
+      afr: ['afr'],
+      mg: ['mg'],
+      tbd: ['tbd','aux'],
+      aux: ['aux','tbd']
+    };
+    for (const k of (aliases[key] || [key])) {
+      const n = numOrNull(plan[k]);
+      if (n !== null) return n;
+    }
+    return 0;
+  }
+
+  function renderActivePlan(s){
+    const list = document.getElementById('activePlanList');
+    if (!list) return;
+    const mode = Number(s.dosingMode ?? currentDosingMode ?? 1);
+    const cfg = getModeCfg(mode);
+    const plan = planFromStatus(s);
+    list.innerHTML = cfg.pumps.map(p => {
+      const ml = planValue(plan, p.key);
+      return `<div class="plan-row">
+        <div class="plan-left"><span class="dot"></span><div><div class="plan-name">${p.name.replace(/ \(Pump \d\)/,'')}</div><div class="plan-sub">ml per day</div></div></div>
+        <div class="plan-amt">${ml.toFixed(2)}</div>
+      </div>`;
+    }).join('');
+    const meta = document.getElementById('planRealtimeMeta');
+    if (meta) meta.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  }
+
   function renderStatus(s){
     currentStatus = s || {};
     currentMode = Number(s.mode ?? 1);
     currentDosingMode = Number(s.dosingMode ?? 1);
+    renderActivePlan(s);
 
     document.getElementById('sensorPh').innerHTML = `${safeNum(s.ph, 2)}`;
     document.getElementById('sensorTemp').innerHTML = `${safeNum((s.temp ?? s.tempF), 1)} <span class="unit">°F</span>`;    document.getElementById('sensorAlk').innerHTML = `${safeNum(s.alk, 2)} <span class="unit">dKH</span>`;
@@ -688,6 +763,7 @@ function populateHours() {
     try{
       const s = await api('/api/status');
       renderStatus(s);
+      addRealtimePoint(s);
     }catch(err){
       document.getElementById('syncBox').textContent = 'OFFLINE';
       console.error(err);
@@ -923,121 +999,215 @@ function uiToggleLights() {
     await api('/api/reset-wifi','POST',{});
   }
 
-let paramsChart, dosingChart;
+let paramsChart = null;
+let dosingChart = null;
+let planChart = null;
+const REALTIME_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // keep about 30 days in browser memory
+const REALTIME_MAX_POINTS = 525000; // safety cap: about 30 days at 5-second refresh
+const realtimeTimestamps = [];
+const realtimeLabels = [];
+const realtimeParams = { ph: [], alk: [], ca: [], mg: [], temp: [], ppt: [] };
+const realtimeBuckets = { p1: [], p2: [], p3: [], p4: [] };
+const realtimePlan = { kalk: [], afr: [], alk: [], ca: [], cacl2: [], naoh: [], mg: [] };
+let activePlanChartKeys = [];
+
+function cleanPumpLabel(name){
+  return String(name || '').replace(/ \(Pump \d\)/, '');
+}
+
+function rebuildPlanChartForMode(mode){
+  if (!planChart) return;
+  const cfg = getModeCfg(Number(mode || currentDosingMode || 1));
+  const nextKeys = cfg.pumps.map(p => p.key);
+  if (activePlanChartKeys.join('|') === nextKeys.join('|')) return;
+
+  activePlanChartKeys = nextKeys;
+  planChart.data.datasets = cfg.pumps.map(p => ({
+    label: cleanPumpLabel(p.name),
+    data: realtimePlan[p.key] || [],
+    tension: 0.25
+  }));
+  const meta = document.getElementById('realtimeChartMeta');
+  if (meta) meta.textContent = 'AI plan graph showing active chemicals for ' + cfg.title;
+}
 
 function numOrNull(v){
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
 
-function destroyCharts(){
-  if (paramsChart) { paramsChart.destroy(); paramsChart = null; }
-  if (dosingChart) { dosingChart.destroy(); dosingChart = null; }
+function shiftRealtimeRow(){
+  realtimeTimestamps.shift();
+  realtimeLabels.shift();
+  Object.values(realtimeParams).forEach(arr => arr.shift());
+  Object.values(realtimeBuckets).forEach(arr => arr.shift());
+  Object.values(realtimePlan).forEach(arr => arr.shift());
+}
+
+function purgeOldRealtimePoints(nowMs){
+  const cutoff = nowMs - REALTIME_RETENTION_MS;
+  while (realtimeTimestamps.length && realtimeTimestamps[0] < cutoff) {
+    shiftRealtimeRow();
+  }
+  while (realtimeTimestamps.length > REALTIME_MAX_POINTS) {
+    shiftRealtimeRow();
+  }
+}
+
+function pushRealtimeValue(arr, value){
+  arr.push(value);
 }
 
 function chartStatus(msg){
   const box = document.getElementById('syncBox');
   if (box) box.textContent = msg;
+  const meta = document.getElementById('realtimeChartMeta');
+  if (meta) meta.textContent = msg;
 }
 
-async function loadLocalReport() {
-  try {
-    if (typeof Chart === 'undefined') {
-      chartStatus('Charts need Chart.js / internet access');
-      console.error('Chart.js did not load. The ESP32 page uses the Chart.js CDN, so the browser needs internet access unless Chart.js is bundled locally.');
-      return;
-    }
-
-    // Standalone fix: read graph data from the ESP32 local endpoint, not Firebase.
-    const res = await fetch('/api/history', { cache: 'no-store' });
-    if (!res.ok) throw new Error('/api/history HTTP ' + res.status);
-    const data = await res.json();
-
-    const rawLabels = Array.isArray(data.labels) && data.labels.length
-      ? data.labels
-      : Object.keys(data.params || {}).sort();
-
-    const labels = rawLabels.length ? rawLabels : ['Today'];
-    const params = data.params || {};
-    const dosing = data.dosing || {};
-
-    function row(label){
-      return params[label] || params[String(label)] || {};
-    }
-
-    const totalDoseSeries = labels.map(d => {
-      const r = row(d);
-      const fromParams = numOrNull(r.totalDose);
-      if (fromParams !== null) return fromParams;
-      const dk = dosing[d] || dosing[String(d)] || dosing;
-      return ['kalk','afr','alk','ca','cacl2','naoh','mg','tbd','p1','p2','p3','p4']
-        .reduce((sum, key) => sum + (numOrNull(dk[key]) || 0), 0);
-    });
-
-    const ctxParams = document.getElementById('paramsChart').getContext('2d');
-    const ctxDose = document.getElementById('dosingChart').getContext('2d');
-    destroyCharts();
-
-    paramsChart = new Chart(ctxParams, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Alk',  data: labels.map(d => numOrNull(row(d).alk)),  tension: 0.3, yAxisID: 'y' },
-          { label: 'pH',   data: labels.map(d => numOrNull(row(d).ph)),   tension: 0.3, yAxisID: 'y1' },
-          { label: 'Temp', data: labels.map(d => numOrNull(row(d).temp ?? row(d).tempF)), tension: 0.3, yAxisID: 'y' },
-          { label: 'Ca',   data: labels.map(d => numOrNull(row(d).ca)),   tension: 0.3, yAxisID: 'y' },
-          { label: 'Mg',   data: labels.map(d => numOrNull(row(d).mg)),   tension: 0.3, yAxisID: 'y' },
-          { label: 'PPT',  data: labels.map(d => numOrNull(row(d).ppt ?? row(d).sal)), tension: 0.3, yAxisID: 'y' }
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#e2e8f0' } } },
-        scales: {
-          x: { grid: { display: false }, ticks: { color: '#94a3b8' } },
-          y: { position: 'left', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } },
-          y1: { position: 'right', grid: { display: false }, ticks: { color: '#94a3b8' }, min: 7.7, max: 8.6, title: { display: true, text: 'pH Scale', color: '#94a3b8' } }
-        }
-      }
-    });
-
-    dosingChart = new Chart(ctxDose, {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [{
-          label: 'Total Daily mL',
-          data: totalDoseSeries,
-          borderWidth: 1
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { grid: { display: false }, ticks: { color: '#94a3b8' } },
-          y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' }, beginAtZero: true }
-        }
-      }
-    });
-
-    chartStatus('Charts updated: ' + new Date().toLocaleTimeString());
-  } catch (e) {
-    destroyCharts();
-    chartStatus('Chart load failed');
-    console.error('Chart Load Error:', e);
+function ensureRealtimeCharts(){
+  if (typeof Chart === 'undefined') {
+    chartStatus('Charts need Chart.js / internet access');
+    return false;
   }
+  if (paramsChart && dosingChart && planChart) return true;
+
+  const ctxParams = document.getElementById('paramsChart')?.getContext('2d');
+  const ctxDose = document.getElementById('dosingChart')?.getContext('2d');
+  const ctxPlan = document.getElementById('planChart')?.getContext('2d');
+  if (!ctxParams || !ctxDose || !ctxPlan) return false;
+
+  paramsChart = new Chart(ctxParams, {
+    type: 'line',
+    data: {
+      labels: realtimeLabels,
+      datasets: [
+        { label: 'Alk',  data: realtimeParams.alk,  tension: 0.25, yAxisID: 'y' },
+        { label: 'pH',   data: realtimeParams.ph,   tension: 0.25, yAxisID: 'y1' },
+        { label: 'Temp', data: realtimeParams.temp, tension: 0.25, yAxisID: 'y' },
+        { label: 'Ca',   data: realtimeParams.ca,   tension: 0.25, yAxisID: 'y' },
+        { label: 'Mg',   data: realtimeParams.mg,   tension: 0.25, yAxisID: 'y' },
+        { label: 'PPT',  data: realtimeParams.ppt,  tension: 0.25, yAxisID: 'y' }
+      ]
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#e2e8f0' } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#94a3b8', maxTicksLimit: 8 } },
+        y: { position: 'left', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } },
+        y1: { position: 'right', grid: { display: false }, ticks: { color: '#94a3b8' }, min: 7.7, max: 8.7, title: { display: true, text: 'pH', color: '#94a3b8' } }
+      }
+    }
+  });
+
+  dosingChart = new Chart(ctxDose, {
+    type: 'line',
+    data: {
+      labels: realtimeLabels,
+      datasets: [
+        { label: 'P1 Bucket', data: realtimeBuckets.p1, tension: 0.25 },
+        { label: 'P2 Bucket', data: realtimeBuckets.p2, tension: 0.25 },
+        { label: 'P3 Bucket', data: realtimeBuckets.p3, tension: 0.25 },
+        { label: 'P4 Bucket', data: realtimeBuckets.p4, tension: 0.25 }
+      ]
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#e2e8f0' } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#94a3b8', maxTicksLimit: 8 } },
+        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' }, beginAtZero: true }
+      }
+    }
+  });
+
+  planChart = new Chart(ctxPlan, {
+    type: 'line',
+    data: {
+      labels: realtimeLabels,
+      datasets: []
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#e2e8f0' } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#94a3b8', maxTicksLimit: 8 } },
+        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' }, beginAtZero: true }
+      }
+    }
+  });
+  rebuildPlanChartForMode(currentDosingMode);
+  return true;
+}
+
+function bucketValue(s, pumpIndex, chemicalKey){
+  const b = s?.buckets || s?.pendingMl || s?.pending || {};
+  const aliases = {
+    p1: ['p1','P1','pump1','0'],
+    p2: ['p2','P2','pump2','1'],
+    p3: ['p3','P3','pump3','2'],
+    p4: ['p4','P4','pump4','3']
+  };
+  const physical = 'p' + (pumpIndex + 1);
+  for (const k of aliases[physical]) {
+    const n = numOrNull(b[k]);
+    if (n !== null) return n;
+  }
+  const byChemical = numOrNull(b[chemicalKey]);
+  return byChemical !== null ? byChemical : 0;
+}
+
+function addRealtimePoint(s){
+  if (!ensureRealtimeCharts()) return;
+
+  const now = new Date();
+  const nowMs = now.getTime();
+  const label = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+
+  realtimeTimestamps.push(nowMs);
+  realtimeLabels.push(label);
+  pushRealtimeValue(realtimeParams.ph, numOrNull(s.ph));
+  pushRealtimeValue(realtimeParams.alk, numOrNull(s.alk));
+  pushRealtimeValue(realtimeParams.ca, numOrNull(s.ca));
+  pushRealtimeValue(realtimeParams.mg, numOrNull(s.mg));
+  pushRealtimeValue(realtimeParams.temp, numOrNull(s.temp ?? s.tempF));
+  pushRealtimeValue(realtimeParams.ppt, numOrNull(s.ppt));
+
+  const cfg = getModeCfg(Number(s.dosingMode ?? currentDosingMode ?? 1));
+  for (let i = 0; i < 4; i++) {
+    const pump = cfg.pumps.find(p => p.index === i);
+    pushRealtimeValue(realtimeBuckets['p' + (i + 1)], pump ? bucketValue(s, i, pump.key) : 0);
+  }
+
+  const plan = planFromStatus(s);
+  for (const k of Object.keys(realtimePlan)) {
+    pushRealtimeValue(realtimePlan[k], planValue(plan, k));
+  }
+
+  purgeOldRealtimePoints(nowMs);
+  rebuildPlanChartForMode(Number(s.dosingMode ?? currentDosingMode ?? 1));
+
+  paramsChart.update('none');
+  dosingChart.update('none');
+  planChart.update('none');
+  chartStatus('Realtime charts: ' + label + ' • kept: ' + realtimeLabels.length + ' points / ~30 days max');
+}
+
+function loadLocalReport(){
+  // Kept for compatibility with older buttons/handlers. Realtime graphs do not call /api/history.
+  chartStatus('Realtime charts use /api/status only');
 }
 
     window.addEventListener('load', () => {
       populateHours();
-      const d = new Date();
-      const monthStr = d.toISOString().slice(0, 7);
-      document.getElementById('repMonth').value = monthStr;
-      setTimeout(loadLocalReport, 1000);
+      setTimeout(() => ensureRealtimeCharts(), 500);
     });
 
   setInterval(loadAll, 5000);
