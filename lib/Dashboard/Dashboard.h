@@ -6,6 +6,10 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AIDoser | Local Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Firebase SDKs are only used when this dashboard is served from HTTPS Firebase Hosting. -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js"></script>
   <style>
     :root{
       --bg:#020817;
@@ -238,6 +242,23 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
 
       <div class="card">
         <div class="card-title">
+          <h3>Firebase Notifications</h3>
+          <span class="status-pill" id="notificationLevelPill">Warning+</span>
+        </div>
+        <select id="notificationLevelSelect" onchange="markNotificationDirty()">
+          <option value="muted">Muted</option>
+          <option value="severe">Severe only</option>
+          <option value="warning">Severe + Warning</option>
+          <option value="info">All: Severe + Warning + Info</option>
+        </select>
+        <button class="sec" onclick="saveNotificationLevel()">Save Notification Level</button>
+        <button class="sec" onclick="enableFirebasePushNotifications()" style="margin-top:10px">Enable iPhone / Browser Push</button>
+        <div class="help" id="pushNotificationStatus" style="margin-top:8px">Push setup status: not enabled from this browser.</div>
+        <div class="help">This saves locally and lets firmware mirror <code>/devices/&lt;deviceId&gt;/settings/notificationLevel</code> to Firebase. Push notifications require opening the Firebase-hosted HTTPS dashboard and deploying <code>firebase-messaging-sw.js</code>.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
           <h3>Apex Controller</h3>
           <span class="status-pill" id="apexStatePill">Disabled</span>
         </div>
@@ -465,6 +486,30 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
   let currentDosingMode = 1;
   let lightDirty = false;
 
+  // ===== Firebase Web Push setup =====
+  // Fill these from Firebase Console > Project settings > General / Cloud Messaging.
+  // This only works from Firebase Hosting / HTTPS. It will not work from http://ESP32-IP.
+  const FIREBASE_WEB_CONFIG = {
+    apiKey: "AIzaSyB4XtC5Pvxw6To58EKTLMADQLqR_hTZK0M",
+    authDomain: "aiesdoser.firebaseapp.com",
+    databaseURL: "https://aiesdoser-default-rtdb.firebaseio.com",
+    projectId: "aiesdoser",
+    storageBucket: "aiesdoser.appspot.com",
+    messagingSenderId: "449222824743",
+    appId: "1:449222824743:web:06e34fc591d5af0f1a8f02"
+  };
+const FIREBASE_WEB_PUSH_VAPID_KEY = "BNEHGv71r2Ac8cvVOtthjvCJfPPGeYC-IUEOesBK_EFU4yCASj-LTlx7yeei-8HgsPxo1HUanXStPrdUQZF20aw";
+  let firebasePushInitialized = false;
+
+
+  let notificationDirty = false;
+  function markNotificationDirty(){ notificationDirty = true; }
+  function clearNotificationDirty(){ notificationDirty = false; }
+  function isNotificationEditing(){
+    const activeId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
+    return notificationDirty || activeId === 'notificationLevelSelect';
+  }
+
   function markLightDirty(){ lightDirty = true; }
   function clearLightDirty(){ lightDirty = false; }
   function isLightEditing(){
@@ -528,6 +573,21 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
 
   function getModeCfg(mode){
     return DOSING_MODES[Number(mode)] || DOSING_MODES[1];
+  }
+
+  function normalizeNotificationLevel(level){
+    const v = String(level || 'warning').toLowerCase();
+    return ['muted','severe','warning','info'].includes(v) ? v : 'warning';
+  }
+
+  function notificationLevelLabel(level){
+    switch (normalizeNotificationLevel(level)) {
+      case 'muted': return 'Muted';
+      case 'severe': return 'Severe only';
+      case 'warning': return 'Severe + Warning';
+      case 'info': return 'All alerts';
+      default: return 'Severe + Warning';
+    }
   }
 
 async function saveVol() {
@@ -673,6 +733,12 @@ async function saveVol() {
     document.getElementById('doseModePill').textContent = modeCfg.title;
     document.getElementById('doseModeHelp').textContent = `${modeCfg.pumps.length} active pump(s): ${modeCfg.pumps.map(p => p.name).join(', ')}`;
 
+    const notificationLevel = normalizeNotificationLevel(s.notificationLevel ?? s.alertMode ?? s.settings?.notificationLevel);
+    const notificationSelect = document.getElementById('notificationLevelSelect');
+    const notificationPill = document.getElementById('notificationLevelPill');
+    if (!isNotificationEditing() && notificationSelect) notificationSelect.value = notificationLevel;
+    if (notificationPill) notificationPill.textContent = notificationLevelLabel(notificationLevel);
+
     renderPumpSelect(currentDosingMode);
     // Do not rebuild calibration inputs while the user is typing measured output.
     if (!anyCalibrationInputActiveOrDirty()) {
@@ -780,6 +846,113 @@ function populateHours() {
     await api('/api/dosing-mode', 'POST', { dosingMode });
     await loadAll();
     alert('Dosing implementation saved.');
+  }
+
+  function setPushStatus(msg){
+    const el = document.getElementById('pushNotificationStatus');
+    if (el) el.textContent = 'Push setup status: ' + msg;
+  }
+
+  function firebaseConfigReady(){
+    return FIREBASE_WEB_CONFIG.messagingSenderId &&
+      !FIREBASE_WEB_CONFIG.messagingSenderId.includes('PASTE_') &&
+      FIREBASE_WEB_CONFIG.appId &&
+      !FIREBASE_WEB_CONFIG.appId.includes('PASTE_') &&
+      FIREBASE_WEB_PUSH_VAPID_KEY &&
+      !FIREBASE_WEB_PUSH_VAPID_KEY.includes('PASTE_');
+  }
+
+  function initFirebasePush(){
+    if (firebasePushInitialized) return true;
+
+    if (!window.isSecureContext || location.protocol !== 'https:') {
+      setPushStatus('open the Firebase-hosted HTTPS dashboard on iPhone Safari.');
+      return false;
+    }
+
+    if (typeof firebase === 'undefined') {
+      setPushStatus('Firebase SDK did not load.');
+      return false;
+    }
+
+    if (!firebaseConfigReady()) {
+      setPushStatus('Firebase Sender ID, App ID, or VAPID key is still a placeholder.');
+      return false;
+    }
+
+    if (!firebase.apps || !firebase.apps.length) {
+      firebase.initializeApp(FIREBASE_WEB_CONFIG);
+    }
+
+    firebasePushInitialized = true;
+    return true;
+  }
+
+  async function enableFirebasePushNotifications(){
+    try {
+      if (!('Notification' in window)) {
+        setPushStatus('this browser does not support notifications.');
+        return;
+      }
+      if (!('serviceWorker' in navigator)) {
+        setPushStatus('service worker not supported by this browser.');
+        return;
+      }
+      if (!initFirebasePush()) return;
+
+      const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+      const permission = await Notification.requestPermission();
+
+      if (permission !== 'granted') {
+        setPushStatus('permission was denied.');
+        return;
+      }
+
+      const messaging = firebase.messaging();
+      const token = await messaging.getToken({
+        vapidKey: FIREBASE_WEB_PUSH_VAPID_KEY,
+        serviceWorkerRegistration: registration
+      });
+
+      if (!token) {
+        setPushStatus('no token returned by Firebase Messaging.');
+        return;
+      }
+
+      const deviceId = currentStatus.deviceId || 'reefDoser3';
+      await firebase.database()
+        .ref('/devices/' + deviceId + '/fcmTokens')
+        .push({
+          token: token,
+          platform: navigator.platform || 'web',
+          userAgent: navigator.userAgent || '',
+          enabled: true,
+          createdAt: Date.now(),
+          lastSeen: Date.now()
+        });
+
+      setPushStatus('enabled for ' + deviceId + '.');
+      alert('Push notifications enabled for ' + deviceId + '.');
+    } catch (err) {
+      console.error(err);
+      setPushStatus('failed: ' + (err && err.message ? err.message : err));
+      alert('Push setup failed: ' + (err && err.message ? err.message : err));
+    }
+  }
+
+  async function saveNotificationLevel(){
+    const level = normalizeNotificationLevel(document.getElementById('notificationLevelSelect').value);
+    const res = await api('/api/config/notifications', 'POST', { notificationLevel: level, alertMode: level });
+    if(res && res.ok === false){
+      alert('Notification level save failed: ' + (res.error || res.raw || 'unknown error'));
+      return;
+    }
+    currentStatus.notificationLevel = level;
+    clearNotificationDirty();
+    const pill = document.getElementById('notificationLevelPill');
+    if (pill) pill.textContent = notificationLevelLabel(level);
+    await loadAll();
+    alert('Notification level saved: ' + notificationLevelLabel(level));
   }
 
   async function saveCalibration(pumpIndex, pumpKey){

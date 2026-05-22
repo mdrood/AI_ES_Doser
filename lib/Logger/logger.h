@@ -9,8 +9,10 @@
 #include <WebSerial.h>
 
 #ifndef LOGGER_UPLOAD_EVERY_MS
-//#define LOGGER_UPLOAD_EVERY_MS (1UL * 60UL * 1000UL)
-#define LOGGER_UPLOAD_EVERY_MS (4UL * 60UL * 60UL * 1000UL)
+//#define LOGGER_UPLOAD_EVERY_MS (1UL * 60UL * 1000UL) 1 minute
+#define LOGGER_UPLOAD_EVERY_MS (2UL * 60UL * 60UL * 1000UL) //2 hours
+// After reefDoser2 logging is confirmed stable, you can switch this back to:
+// #define LOGGER_UPLOAD_EVERY_MS (4UL * 60UL * 60UL * 1000UL) //4 hours
 #endif
 
 #ifndef LOGGER_ROTATE_BYTES
@@ -25,7 +27,7 @@ public:
   bool begin(const String& deviceId,
              const String& appsScriptUrl,
              const String& apiKey,
-             uint32_t uploadEveryMs = 4UL * 60UL * 60UL * 1000UL,
+             uint32_t uploadEveryMs = LOGGER_UPLOAD_EVERY_MS,
              size_t rotateBytes = 64UL * 1024UL);
 
   void loop();
@@ -58,6 +60,7 @@ private:
 
   String _currentPath() const;
   String _queuePath(uint32_t stamp) const;
+  String _nextQueuePath() const;
   String _timestampPrefix() const;
   void _writeRaw(const String& s, bool addNewline);
   void _rotateIfNeeded();

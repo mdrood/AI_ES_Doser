@@ -34,7 +34,7 @@
 #define FIREBASE_API_KEY "AIzaSyB4XtC5Pvxw6To58EKTLMADQLqR_hTZK0M"
 #define FIREBASE_DB_URL "https://aiesdoser-default-rtdb.firebaseio.com"
 //TODO for firware update
-#define FW_VERSION "10.2.0"
+#define FW_VERSION "10.4.2"
 
 #include "Dashboard.h"
 
@@ -80,6 +80,29 @@ float currentAlk = 0.0f;
 float currentCa = 0.0f;
 float currentMg = 0.0f;
 
+
+// ---------------- LOW-COST FIREBASE ALERTS (reefDoser3 test) ----------------
+// Dashboard setting:
+//   muted   = no pushes
+//   severe  = severe only
+//   warning = severe + warning
+//   info    = severe + warning + info
+String notificationLevel = "warning";
+
+// One compact node: /devices/<deviceId>/alertState
+// Firmware only writes when alert state changes or a cooldown expires.
+String currentAlertLevel = "normal";
+String currentAlertCode = "OK";
+String currentAlertMessage = "All monitored values normal";
+bool currentAlertActive = false;
+unsigned long lastAlertWriteMs = 0;
+unsigned long lastAlertEvalMs = 0;
+
+const unsigned long ALERT_EVAL_EVERY_MS = 60000UL;                  // local check every 60s
+const unsigned long ALERT_SEVERE_REPEAT_MS = 30UL * 60UL * 1000UL;  // max repeat every 30m
+const unsigned long ALERT_WARNING_REPEAT_MS = 4UL * 60UL * 60UL * 1000UL; // max repeat every 4h
+const unsigned long ALERT_INFO_REPEAT_MS = 24UL * 60UL * 60UL * 1000UL;   // max repeat every 24h
+
 float DOSING_THRESHOLD = 1.0f; // Mutable now, default to 1ml
 float pumpBuckets[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 float maxDoseLimit = 15.0f;    // Safety rail
@@ -123,10 +146,15 @@ const float PLAN_PUBLISH_CHANGE_FRACTION = 0.10f;
 const unsigned long AI_BUCKET_INTERVAL_MS = 600000UL; // 10 minutes = 144 slots/day
 unsigned long lastAiBucketAddMs = 0;
 
+// Production safety: after OTA/reboot, do not auto-service restored dosing buckets
+// immediately. This prevents a reboot in the middle of a slot from dumping the
+// same restored bucket twice. Manual live-dose and calibration still work.
+const unsigned long BOOT_DOSING_GRACE_MS = 120000UL; // 2 minutes
+
 
 Provisioner provisioner;
 //TODO new customer
-String deviceID = "reefDoser2";
+String deviceID = "reefDoser3";
 
 WebServer server(80);
 AsyncWebServer serialServer(81);
@@ -205,6 +233,11 @@ void saveDosingState();
 void addCurrentAiPlanToBuckets(const char* source, bool force = false);
 void publishAiPlanIfNeeded(const char* source, bool force = false);
 void publishFirmwareVersionIfReady(bool force = false);
+void evaluateAlertState(const char* source = "loop", bool force = false);
+bool publishAlertState(const String& level, const String& code, const String& message, bool active, const char* source, bool force = false);
+void handleGetNotificationSettings();
+void handlePostNotificationSettings();
+bool isValidNotificationLevel(const String& level);
 
 const char* flowPrefKeyForIndex(int idx) {
     switch (idx) {
@@ -293,6 +326,10 @@ bool isValidSystemMode(int mode) {
 
 bool isValidDosingMode(int mode) {
     return mode >= 1 && mode <= 6;
+}
+
+bool isValidNotificationLevel(const String& level) {
+    return level == "muted" || level == "severe" || level == "warning" || level == "info";
 }
 
 const char* resetReasonToString(esp_reset_reason_t reason) {
@@ -544,6 +581,50 @@ bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
         return false;
     }
 
+    // Persistent OTA guard:
+    // If Firebase failed to clear /commands/ota before the reboot, the next boot
+    // receives the same command in the root stream snapshot and can OTA again.
+    // Store the OTA URL before starting the update so the next firmware can ignore
+    // that stale command until it is successfully cleared.
+    prefs.begin("ota-guard", false);
+    bool otaPending = prefs.getBool("pending", false);
+    String pendingUrl = prefs.getString("url", "");
+    String pendingFromFw = prefs.getString("from_fw", "");
+    prefs.end();
+
+    if (otaPending && pendingUrl == firmwareUrl) {
+        Serial.println("OTA ignored: stale duplicate command from previous boot.");
+        Serial.print("Previous OTA started from FW: ");
+        Serial.println(pendingFromFw);
+        Serial.print("Current FW: ");
+        Serial.println(FW_VERSION);
+
+        logger.println("OTA ignored: stale duplicate command from previous boot.");
+        logger.print("Previous OTA started from FW: ");
+        logger.println(pendingFromFw);
+        logger.print("Current FW: ");
+        logger.println(FW_VERSION);
+
+        String otaCommandPath = "/devices/" + deviceID + "/commands/ota";
+        if (Firebase.deleteNode(writeFbdo, otaCommandPath.c_str())) {
+            Serial.println("Stale OTA command cleared from Firebase.");
+            logger.println("Stale OTA command cleared from Firebase.");
+
+            prefs.begin("ota-guard", false);
+            prefs.putBool("pending", false);
+            prefs.remove("url");
+            prefs.remove("from_fw");
+            prefs.end();
+        } else {
+            Serial.print("Stale OTA command clear failed; keeping OTA guard active: ");
+            Serial.println(writeFbdo.errorReason());
+            logger.print("Stale OTA command clear failed; keeping OTA guard active: ");
+            logger.println(writeFbdo.errorReason());
+        }
+
+        return false;
+    }
+
     Serial.print("OTA Triggered for ");
     Serial.println(deviceID);
     Serial.print("Starting OTA Update from: ");
@@ -553,6 +634,13 @@ bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
     logger.println(deviceID);
     logger.print("Starting OTA Update from: ");
     logger.println(firmwareUrl);
+
+    // Save guard before any network call or reboot-risky work.
+    prefs.begin("ota-guard", false);
+    prefs.putBool("pending", true);
+    prefs.putString("url", firmwareUrl);
+    prefs.putString("from_fw", FW_VERSION);
+    prefs.end();
 
     // Make OTA one-shot: clear the Firebase command before starting OTA so
     // stream reconnects do not replay the same /commands/ota node forever.
@@ -572,7 +660,6 @@ bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
     ota.updateFirmware(firmwareUrl);
     return true;
 }
-
 void streamCallback(StreamData data) {
     Serial.printf("Stream update: %s\n", data.dataPath().c_str());
     logger.printf("Stream update: %s\n", data.dataPath().c_str());
@@ -592,6 +679,13 @@ void streamCallback(StreamData data) {
         } else {
             Serial.println("Root stream snapshot received; no ota/url found.");
             logger.println("Root stream snapshot received; no ota/url found.");
+
+            // The previous OTA command is gone, so clear any local duplicate guard.
+            prefs.begin("ota-guard", false);
+            prefs.putBool("pending", false);
+            prefs.remove("url");
+            prefs.remove("from_fw");
+            prefs.end();
         }
         return;
     }
@@ -736,6 +830,8 @@ void loadLocalSettings() {
     baselineNaohMlDay  = prefs.getFloat("base_naoh", baselineNaohMlDay);
     baselineMgMlDay    = prefs.getFloat("base_mg", baselineMgMlDay);
     baselineCoralLoad  = prefs.getString("base_load", baselineCoralLoad);
+    notificationLevel  = prefs.getString("notif_level", notificationLevel);
+    if (!isValidNotificationLevel(notificationLevel)) notificationLevel = "warning";
     prefs.end();
 
     ai.setTankVolumeGallons(TANK_VOLUME_L / 3.78541f);
@@ -795,6 +891,8 @@ void mirrorStatusToFirebase() {
 
     FirebaseJson stateJson;
     stateJson.set("online", true);
+    stateJson.set("lastSeenUnix", (uint32_t)time(nullptr));
+    stateJson.set("lastSeenDeviceSec", (uint32_t)(millis() / 1000UL));
     stateJson.set("fwVersion", FW_VERSION);
     stateJson.set("tempF", currentTempF);
     stateJson.set("cond", currentCond);
@@ -805,6 +903,11 @@ void mirrorStatusToFirebase() {
     stateJson.set("ca", currentCa);
     stateJson.set("mg", currentMg);
     stateJson.set("emergencyStop", emergencyStop);
+    stateJson.set("notificationLevel", notificationLevel);
+    stateJson.set("alertState/active", currentAlertActive);
+    stateJson.set("alertState/level", currentAlertLevel);
+    stateJson.set("alertState/code", currentAlertCode);
+    stateJson.set("alertState/message", currentAlertMessage);
     stateJson.set("systemMode", systemMode);
     stateJson.set("dosingMode", dosingMode);
     // Preserve legacy flow keys and add mode-6 aliases so Firebase reflects local status better.
@@ -835,6 +938,11 @@ void handleGetStatus() {
     JsonDocument doc;
     doc["ok"] = true;
     doc["deviceId"] = deviceID;
+    doc["notificationLevel"] = notificationLevel;
+    doc["alertState"]["active"] = currentAlertActive;
+    doc["alertState"]["level"] = currentAlertLevel;
+    doc["alertState"]["code"] = currentAlertCode;
+    doc["alertState"]["message"] = currentAlertMessage;
     doc["wifiConnected"] = WiFi.status() == WL_CONNECTED;
     doc["mode"] = systemMode;
     doc["dosingMode"] = dosingMode;
@@ -1221,6 +1329,167 @@ void handlePostEmergencyStop() {
     server.send(200, "application/json", "{\"ok\":true}");
 }
 
+
+unsigned long alertRepeatMsForLevel(const String& level) {
+    if (level == "severe") return ALERT_SEVERE_REPEAT_MS;
+    if (level == "warning") return ALERT_WARNING_REPEAT_MS;
+    if (level == "info") return ALERT_INFO_REPEAT_MS;
+    return ALERT_WARNING_REPEAT_MS;
+}
+
+bool publishAlertState(const String& level, const String& code, const String& message, bool active, const char* source, bool force) {
+    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !Firebase.ready()) return false;
+
+    unsigned long nowMs = millis();
+    bool changed = force ||
+                   (active != currentAlertActive) ||
+                   (level != currentAlertLevel) ||
+                   (code != currentAlertCode) ||
+                   (message != currentAlertMessage);
+    bool cooldownDue = active && lastAlertWriteMs > 0 &&
+                       (nowMs - lastAlertWriteMs >= alertRepeatMsForLevel(level));
+
+    if (!changed && !cooldownDue) return false;
+
+    FirebaseJson json;
+    json.set("active", active);
+    json.set("level", level);
+    json.set("code", code);
+    json.set("message", message);
+    json.set("source", source ? source : "firmware");
+    json.set("deviceId", deviceID);
+    json.set("updatedAtDeviceSec", (uint32_t)(millis() / 1000UL));
+    json.set("updatedAtUnix", (uint32_t)time(nullptr));
+
+    String path = "/devices/" + deviceID + "/alertState";
+    if (Firebase.updateNode(writeFbdo, path.c_str(), json)) {
+        currentAlertActive = active;
+        currentAlertLevel = level;
+        currentAlertCode = code;
+        currentAlertMessage = message;
+        lastAlertWriteMs = nowMs;
+
+        Serial.printf("ALERT STATE [%s]: active=%s level=%s code=%s msg=%s\n",
+                      source ? source : "firmware", active ? "true" : "false",
+                      level.c_str(), code.c_str(), message.c_str());
+        logger.printf("ALERT STATE [%s]: active=%s level=%s code=%s msg=%s\n",
+                      source ? source : "firmware", active ? "true" : "false",
+                      level.c_str(), code.c_str(), message.c_str());
+        return true;
+    }
+
+    Serial.printf("ALERT STATE publish failed: %s\n", writeFbdo.errorReason().c_str());
+    logger.printf("ALERT STATE publish failed: %s\n", writeFbdo.errorReason().c_str());
+    return false;
+}
+
+void evaluateAlertState(const char* source, bool force) {
+    unsigned long nowMs = millis();
+    if (!force && lastAlertEvalMs != 0 && (nowMs - lastAlertEvalMs) < ALERT_EVAL_EVERY_MS) return;
+    lastAlertEvalMs = nowMs;
+
+    String level = "normal";
+    String code = "OK";
+    String message = "All monitored values normal";
+    bool active = false;
+
+    // Highest-priority first. Keep this short to avoid notification noise.
+    if (emergencyStop) {
+        active = true; level = "severe"; code = "EMERGENCY_STOP";
+        message = "Emergency stop is active.";
+    } else if (currentAlk > 0.0f && currentAlk < 6.50f) {
+        active = true; level = "severe"; code = "ALK_CRITICAL_LOW";
+        message = "Alk is critically low: " + String(currentAlk, 2) + " dKH";
+    } else if (currentAlk > 10.00f) {
+        active = true; level = "severe"; code = "ALK_CRITICAL_HIGH";
+        message = "Alk is critically high: " + String(currentAlk, 2) + " dKH";
+    } else if (currentPh > 0.0f && currentPh < 7.75f) {
+        active = true; level = "severe"; code = "PH_CRITICAL_LOW";
+        message = "pH is critically low: " + String(currentPh, 2);
+    } else if (currentPh > 8.65f) {
+        active = true; level = "severe"; code = "PH_CRITICAL_HIGH";
+        message = "pH is critically high: " + String(currentPh, 2);
+    } else if (currentTempF > 0.0f && currentTempF < 75.0f) {
+        active = true; level = "severe"; code = "TEMP_CRITICAL_LOW";
+        message = "Temperature is critically low: " + String(currentTempF, 1) + " F";
+    } else if (currentTempF > 82.5f) {
+        active = true; level = "severe"; code = "TEMP_CRITICAL_HIGH";
+        message = "Temperature is critically high: " + String(currentTempF, 1) + " F";
+    } else if (currentAlk > 0.0f && currentAlk < 7.00f) {
+        active = true; level = "warning"; code = "ALK_LOW";
+        message = "Alk is low: " + String(currentAlk, 2) + " dKH";
+    } else if (currentAlk > 9.30f) {
+        active = true; level = "warning"; code = "ALK_HIGH";
+        message = "Alk is high: " + String(currentAlk, 2) + " dKH";
+    } else if (currentPh > 0.0f && currentPh < 7.90f) {
+        active = true; level = "warning"; code = "PH_LOW";
+        message = "pH is low: " + String(currentPh, 2);
+    } else if (currentPh > 8.50f) {
+        active = true; level = "warning"; code = "PH_HIGH";
+        message = "pH is high: " + String(currentPh, 2);
+    } else if (currentTempF > 0.0f && currentTempF < 76.0f) {
+        active = true; level = "warning"; code = "TEMP_LOW";
+        message = "Temperature is low: " + String(currentTempF, 1) + " F";
+    } else if (currentTempF > 81.5f) {
+        active = true; level = "warning"; code = "TEMP_HIGH";
+        message = "Temperature is high: " + String(currentTempF, 1) + " F";
+    }
+
+    publishAlertState(level, code, message, active, source, force);
+}
+
+void handleGetNotificationSettings() {
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["notificationLevel"] = notificationLevel;
+    doc["alertState"]["active"] = currentAlertActive;
+    doc["alertState"]["level"] = currentAlertLevel;
+    doc["alertState"]["code"] = currentAlertCode;
+    doc["alertState"]["message"] = currentAlertMessage;
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response);
+}
+
+void handlePostNotificationSettings() {
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, server.arg("plain"));
+    if (error) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
+        return;
+    }
+
+    String requested = doc["notificationLevel"] | notificationLevel;
+    if (!isValidNotificationLevel(requested)) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid notificationLevel\"}");
+        return;
+    }
+
+    notificationLevel = requested;
+    prefs.begin("doser-settings", false);
+    prefs.putString("notif_level", notificationLevel);
+    prefs.end();
+
+    if (WiFi.status() == WL_CONNECTED && firebaseStarted && Firebase.ready()) {
+        Firebase.setString(writeFbdo, ("/devices/" + deviceID + "/settings/notificationLevel").c_str(), notificationLevel);
+    }
+
+    Serial.println("Notification level changed to: " + notificationLevel);
+    logger.println("Notification level changed to: " + notificationLevel);
+
+    JsonDocument out;
+    out["ok"] = true;
+    out["notificationLevel"] = notificationLevel;
+    String response;
+    serializeJson(out, response);
+    server.send(200, "application/json", response);
+}
+
 void handlePostResetWifi() {
     prefs.begin("doser-settings", false);
     prefs.remove("ssid");
@@ -1361,6 +1630,9 @@ void syncAllTruths() {
         lastFirebaseMirrorMs = millis();
         mirrorStatusToFirebase();
     }
+
+    // Low-cost alerts: evaluate locally, write only on alert state change/cooldown.
+    evaluateAlertState("Apex", false);
     
 }
 
@@ -1411,6 +1683,9 @@ void connectToFirebase() {
         logger.printf("Firebase Auth Success for %s\n", deviceID.c_str());
         Firebase.begin(&config, &auth);
         Firebase.reconnectWiFi(true);
+
+        // Publish current notification setting once after Firebase starts.
+        Firebase.setString(writeFbdo, ("/devices/" + deviceID + "/settings/notificationLevel").c_str(), notificationLevel);
 
         // Try now, then loop() will retry once Firebase.ready() is true.
         publishFirmwareVersionIfReady(true);
@@ -1694,6 +1969,13 @@ logger.println();
     server.on("/api/live-dose", HTTP_POST, handlePostLiveDose);
     server.on("/api/emergency-stop", HTTP_POST, handlePostEmergencyStop);
     server.on("/api/reset-wifi", HTTP_POST, handlePostResetWifi);
+    // Notification level endpoints.
+    // /api/config/notifications is used by the updated dashboard.
+    // /api/notifications is kept as a backward-compatible alias.
+    server.on("/api/config/notifications", HTTP_GET, handleGetNotificationSettings);
+    server.on("/api/config/notifications", HTTP_POST, handlePostNotificationSettings);
+    server.on("/api/notifications", HTTP_GET, handleGetNotificationSettings);
+    server.on("/api/notifications", HTTP_POST, handlePostNotificationSettings);
 
     server.on("/api/logger/force-upload", HTTP_POST, []() {
         logger.println("Manual logger upload requested from local API.");
@@ -1842,6 +2124,9 @@ void loop() {
             tankVolumePublishedThisBoot = publishTankVolumeToFirebase("Boot");
         }
     }
+
+    // Evaluate alerts once per minute. Firebase writes only happen on state changes/cooldown.
+    evaluateAlertState("loop", false);
 
     // Keep the dashboard responsive. Firebase SSL stream reads can block on ESP32,
     // especially right after token refresh. Do not immediately reconnect after a
@@ -2006,7 +2291,28 @@ void loop() {
         }
     }
 
-    if (!anyPumpRunning && !emergencyStop) {
+    bool bootDosingGraceActive = (now < BOOT_DOSING_GRACE_MS);
+
+    if (bootDosingGraceActive && !emergencyStop) {
+        static unsigned long lastBootGraceLogMs = 0;
+        bool bucketReadyDuringBootGrace = false;
+        for (int i = 0; i < 4; i++) {
+            if (pumpBuckets[i] >= DOSING_THRESHOLD) {
+                bucketReadyDuringBootGrace = true;
+                break;
+            }
+        }
+
+        if (bucketReadyDuringBootGrace && (lastBootGraceLogMs == 0 || now - lastBootGraceLogMs >= 30000UL)) {
+            lastBootGraceLogMs = now;
+            Serial.printf("Dosing skipped: boot grace active for %lu more seconds. Buckets held: P1=%.2f P2=%.2f P3=%.2f P4=%.2f\n",
+                          (unsigned long)((BOOT_DOSING_GRACE_MS - now) / 1000UL),
+                          pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3]);
+            logger.printf("Dosing skipped: boot grace active for %lu more seconds. Buckets held: P1=%.2f P2=%.2f P3=%.2f P4=%.2f\n",
+                             (unsigned long)((BOOT_DOSING_GRACE_MS - now) / 1000UL),
+                             pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3]);
+        }
+    } else if (!anyPumpRunning && !emergencyStop) {
         for (int i = 0; i < 4; i++) {
             if (pumpBuckets[i] >= DOSING_THRESHOLD) {
                 float doseAmount = pumpBuckets[i];

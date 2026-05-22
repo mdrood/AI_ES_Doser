@@ -130,3 +130,17 @@ mixing______________________________
 
 Deployment id for logger: AKfycbxJ78_lQXZ6M8o24oji_OpT03Df8LllnofZJ_1Y7UpwhRKBN2mVlKQKpMd_PVJBu2pn8Q
 webapp:  https://script.google.com/macros/s/AKfycbxJ78_lQXZ6M8o24oji_OpT03Df8LllnofZJ_1Y7UpwhRKBN2mVlKQKpMd_PVJBu2pn8Q/exec
+
+
+Notifications we should add:
+Now that foundation is there, adding future alerts becomes easy:
+
+dosing failure
+Apex disconnected
+pH swing rate
+reservoir low
+pump runtime anomaly
+leak detector
+stuck dosing pump
+AI confidence warnings
+

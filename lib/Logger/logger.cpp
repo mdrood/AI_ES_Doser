@@ -41,6 +41,7 @@ bool Logger::begin(const String& deviceId,
   }
 
   println("LOGGER: started local-first Drive logger");
+  printf("LOGGER: upload interval = %lu ms\n", (unsigned long)_uploadEveryMs);
   return true;
 }
 
@@ -52,6 +53,17 @@ uint32_t Logger::getUploadIntervalMs() const { return _uploadEveryMs; }
 
 String Logger::_currentPath() const { return "/logs/current.log"; }
 String Logger::_queuePath(uint32_t stamp) const { return "/logs/queued_" + String(stamp) + ".log"; }
+
+String Logger::_nextQueuePath() const {
+  // Do NOT depend on NTP/time(nullptr) here.
+  // reefDoser2 can boot remotely before time sync, and time(nullptr) may be 0.
+  // That can create repeated queued_0.log names and silently lose/overwrite logs.
+  // millis() is always available, and the extra counter prevents same-millisecond collisions.
+  static uint32_t counter = 0;
+  return "/logs/queued_" + String((uint32_t)(millis() / 1000UL)) +
+         "_" + String((uint32_t)(millis() & 0xFFFFUL)) +
+         "_" + String(counter++) + ".log";
+}
 
 String Logger::_timestampPrefix() const {
   struct tm timeinfo;
@@ -140,8 +152,16 @@ void Logger::_rotateIfNeeded() {
 
   if (sz < _rotateBytes) return;
 
-  String next = _queuePath((uint32_t)time(nullptr));
-  LittleFS.rename(_currentPath(), next);
+  String next = _nextQueuePath();
+  if (!LittleFS.rename(_currentPath(), next)) {
+    Serial.println("LOGGER ERR: Rotate rename failed.");
+    WebSerial.println("LOGGER ERR: Rotate rename failed.");
+  } else {
+    Serial.print("LOGGER: rotated current log to ");
+    Serial.println(next);
+    WebSerial.print("LOGGER: rotated current log to ");
+    WebSerial.println(next);
+  }
 }
 
 String Logger::_fileNameForPath(const String& path) const {
@@ -238,7 +258,16 @@ void Logger::_uploadQueuedFiles() {
     size_t sz = cur.size();
     cur.close();
     if (sz > 0) {
-        LittleFS.rename(_currentPath(), _queuePath((uint32_t)time(nullptr)));
+        String queuedPath = _nextQueuePath();
+        if (!LittleFS.rename(_currentPath(), queuedPath)) {
+          Serial.println("LOGGER ERR: Queue rename failed.");
+          WebSerial.println("LOGGER ERR: Queue rename failed.");
+        } else {
+          Serial.print("LOGGER: queued current log as ");
+          Serial.println(queuedPath);
+          WebSerial.print("LOGGER: queued current log as ");
+          WebSerial.println(queuedPath);
+        }
     }
   }
 
