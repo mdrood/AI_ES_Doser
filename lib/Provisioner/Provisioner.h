@@ -6,8 +6,8 @@
 #include <WebServer.h>
 #include <Preferences.h>
 
-#include <ESPmDNS.h> // Add this include
-#include <DNSServer.h> // Add this for the Captive Portal
+#include <ESPmDNS.h>
+#include <DNSServer.h>
 
 class Provisioner {
 public:
@@ -15,14 +15,21 @@ public:
     void startPortal(const char* apName);
     void handleClient();
     bool isConfigurationDone();
+    bool shouldRestart();
 
 private:
     WebServer _server;
     DNSServer _dnsServer;
     bool _configDone;
+    bool _connectStarted;
+    unsigned long _connectStartMs;
+    unsigned long _restartAtMs;
+    bool _connectedAnnounced;
+
     void _setupRoutes();
     void _handleRoot();
     void _handleSave();
+    void _handleConnectStatus();
 };
 
 #endif

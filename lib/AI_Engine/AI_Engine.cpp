@@ -66,18 +66,61 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
             }
             break;
 
-        case 6: // Mode 6: Precision pH Mode (Kalk + CaCl2 + NaOH + Mg)
-            if (currentPh < 8.15) {
-                // Low pH: Prioritize NaOH (Sodium Hydroxide)
-                next.naoh = (adjAlk * 0.85) / chem.dkhPerMlNaoh;
-                next.kalk = (adjAlk * 0.15) / chem.dkhPerMlKalk;
+        case 6: // Mode 6: Kalk + CaCl2 + NaOH + Mg
+            if (currentPh >= 8.45f) {
+                // pH is already high. Do not create any NaOH correction.
+                // Kalk baseline may remain, but NaOH baseline/correction is zeroed again
+                // after baseline demand is added by applyNaohPhCaution().
+                next.kalk = (adjAlk > 0.0f) ? (adjAlk / chem.dkhPerMlKalk) : 0.0f;
+                next.naoh = 0.0f;
+            } else if (currentPh < 8.15f) {
+                // Low pH: prioritize NaOH for alk correction.
+                next.naoh = (adjAlk * 0.85f) / chem.dkhPerMlNaoh;
+                next.kalk = (adjAlk * 0.15f) / chem.dkhPerMlKalk;
             } else {
-                // High pH: Shift back to Kalkwasser
-                next.kalk = (adjAlk * 0.8) / chem.dkhPerMlKalk;
-                next.naoh = (adjAlk * 0.2) / chem.dkhPerMlNaoh;
+                // Normal pH: split correction between kalk and NaOH, then final pH
+                // caution below tapers/blocks NaOH if pH is climbing.
+                next.kalk = (adjAlk * 0.80f) / chem.dkhPerMlKalk;
+                next.naoh = (adjAlk * 0.20f) / chem.dkhPerMlNaoh;
             }
             next.cacl2 = adjCa / chem.caPerMlCacl2;
             next.mg    = mgCorrectionMl;
+            break;
+
+        case 7: // Mode 7: Kalk + CaCl2 + NaOH + Alk on Pump 4
+            // Eric hybrid mode:
+            //   P1 = Kalk
+            //   P2 = CaCl2
+            //   P3 = NaOH
+            //   P4 = Alk solution using the old Mg pump
+            //
+            // IMPORTANT MODE 7 FIX:
+            // High pH should block/taper NaOH, but it must NOT shut off Kalk.
+            // Eric still uses Kalk as a normal daily baseline/consumption path.
+            // The dedicated Alk pump handles the extra alk correction when pH is high.
+            if (currentPh >= 8.45f) {
+                // High pH: protect pH by blocking NaOH correction.
+                // Keep a small Kalk correction alive; baseline Kalk is added below.
+                // Alk pump carries the majority of alk recovery.
+                next.kalk = (adjAlk > 0.0f) ? ((adjAlk * 0.20f) / chem.dkhPerMlKalk) : 0.0f;
+                next.naoh = 0.0f;
+                next.alk  = (adjAlk > 0.0f) ? ((adjAlk * 0.80f) / chem.dkhPerMlAlk) : 0.0f;
+            } else if (currentPh < 8.15f) {
+                // Low pH: use NaOH/Kalk to help pH, but keep some Alk
+                // correction on P4 so the tank can catch up even if NaOH later
+                // gets tapered by pH safety.
+                next.naoh = (adjAlk * 0.60f) / chem.dkhPerMlNaoh;
+                next.kalk = (adjAlk * 0.20f) / chem.dkhPerMlKalk;
+                next.alk  = (adjAlk * 0.20f) / chem.dkhPerMlAlk;
+            } else {
+                // Normal pH: balanced split. Alk pump carries the majority of
+                // the correction so Mode 7 does not get stuck when pH rises.
+                next.kalk = (adjAlk * 0.30f) / chem.dkhPerMlKalk;
+                next.naoh = (adjAlk * 0.20f) / chem.dkhPerMlNaoh;
+                next.alk  = (adjAlk * 0.50f) / chem.dkhPerMlAlk;
+            }
+            next.cacl2 = adjCa / chem.caPerMlCacl2;
+            next.mg    = 0.0f; // Pump 4 is Alk in Mode 7, not Mg.
             break;
     }
 
@@ -87,6 +130,43 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
     // still limits how aggressively it corrects parameter errors.
     applySafetyEnforcement(next);
     addBaselineDemand(next, mode);
+
+    // Adaptive Mode-6 Alk recovery assist.
+    // Mode 6 has no separate carbonate/bicarbonate Alk pump: low Alk is corrected
+    // by Kalk + NaOH, while CaCl2 follows calcium. If Alk stays low and pH is
+    // safe, slowly add a small NaOH baseline assist so the engine can actually
+    // catch up instead of holding the same weak plan forever. This is intentionally
+    // slow and is still protected by the pH caution layer and maxNaohDay cap below.
+    static float adaptiveNaohBoostMlDay = 0.0f;
+    static uint8_t lowAlkSafePhStreak = 0;
+
+    if (mode == 6 && currentPh > 0.0f) {
+        const bool alkVeryLow = (consAlk >= 1.20f);   // example: target 8.5, Alk <= 7.3
+        const bool alkLow     = (consAlk >= 0.80f);   // example: target 8.5, Alk <= 7.7
+        const bool phSafe     = (currentPh < 8.30f);
+        const bool phCaution  = (currentPh >= 8.35f);
+
+        if (alkVeryLow && phSafe) {
+            if (lowAlkSafePhStreak < 12) lowAlkSafePhStreak++;
+            if (lowAlkSafePhStreak >= 2) {
+                adaptiveNaohBoostMlDay += 25.0f;      // gentle: +25 ml/day per AI cycle
+            }
+        } else if (!alkLow || phCaution) {
+            lowAlkSafePhStreak = 0;
+            adaptiveNaohBoostMlDay -= phCaution ? 75.0f : 25.0f;
+        }
+
+        if (adaptiveNaohBoostMlDay < 0.0f) adaptiveNaohBoostMlDay = 0.0f;
+        if (adaptiveNaohBoostMlDay > 400.0f) adaptiveNaohBoostMlDay = 400.0f;
+
+        next.naoh += adaptiveNaohBoostMlDay;
+    }
+
+    // pH-based NaOH caution layer.
+    // This applies AFTER baseline demand is added so Eric's known daily NaOH
+    // baseline is also reduced when pH is already high. Kalk is left alone.
+    applyNaohPhCaution(next, currentPh);
+
     applyAbsoluteCaps(next);
 
     // Clamp negative dosing to zero. A parameter above target should not create
@@ -144,8 +224,43 @@ void AIEngine::addBaselineDemand(DosingPlan &p, int mode) {
             p.naoh  += baselineNaohMlDay;
             p.mg    += baselineMgMlDay;
             break;
+        case 7:
+            p.kalk  += baselineKalkMlDay;
+            p.cacl2 += baselineCacl2MlDay;
+            p.naoh  += baselineNaohMlDay;
+            // In Mode 7 the physical Mg pump is repurposed as Alk.
+            // Reuse the existing Mg baseline setting as P4 Alk baseline so
+            // no new API/config field is required.
+            p.alk   += baselineMgMlDay;
+            break;
         default:
             break;
+    }
+}
+
+void AIEngine::applyNaohPhCaution(DosingPlan &p, float currentPh) {
+    // NaOH is useful for Alk correction, but it has a strong pH-raising effect.
+    // When pH is already high, taper NaOH down instead of letting baseline +
+    // correction keep pushing pH higher.
+    //
+    // Behavior:
+    //   pH < 8.30  = normal NaOH
+    //   8.30-8.35  = 80% NaOH
+    //   8.35-8.40  = 60% NaOH
+    //   8.40-8.45  = 35% NaOH
+    //   >= 8.45    = 0% NaOH
+    //
+    // If pH is missing/invalid (0 or negative), do not apply a pH gate.
+    if (currentPh <= 0.0f) return;
+
+    if (currentPh >= 8.45f) {
+        p.naoh = 0.0f;
+    } else if (currentPh >= 8.40f) {
+        p.naoh *= 0.35f;
+    } else if (currentPh >= 8.35f) {
+        p.naoh *= 0.60f;
+    } else if (currentPh >= 8.30f) {
+        p.naoh *= 0.80f;
     }
 }
 
@@ -154,6 +269,7 @@ void AIEngine::applyAbsoluteCaps(DosingPlan &p) {
     // baseline + correction have been combined.
     if (p.kalk > limits.maxKalkDay) p.kalk = limits.maxKalkDay;
     if (p.naoh > limits.maxNaohDay) p.naoh = limits.maxNaohDay;
+    if (p.alk  > limits.maxAlkDay)  p.alk  = limits.maxAlkDay;
     if (p.mg > limits.maxMgDay) p.mg = limits.maxMgDay;
 }
 

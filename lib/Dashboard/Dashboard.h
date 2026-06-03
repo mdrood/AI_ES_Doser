@@ -220,7 +220,7 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
           <button class="mode-btn pill-btn" id="m2" onclick="setMode(2)">MAN</button>
         </div>
         <button id="eStopBtn" class="danger" onclick="toggleEmergency()">🛑 Emergency Stop</button>
-        <div class="footer-note">This is your local operating mode. It is separate from the 1–6 dosing implementation below.</div>
+        <div class="footer-note">This is your local operating mode. It is separate from the 1–7 dosing implementation below.</div>
       </div>
 
       <div class="card">
@@ -235,6 +235,7 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
           <option value="4">Mode 4: Alk + Ca + Mg (P1–P3)</option>
           <option value="5">Mode 5: Kalk + Alk + Ca + Mg (P1–P4)</option>
           <option value="6">Mode 6: Kalk + CaCl2 + NaOH + Mg (P1–P4)</option>
+          <option value="7">Mode 7: Kalk + CaCl2 + NaOH + Alk (P1–P4)</option>
         </select>
         <button onclick="saveDosingMode()">Save Dosing Implementation</button>
         <div class="help" id="doseModeHelp">Pump mapping will update immediately below.</div>
@@ -399,7 +400,7 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
       <input type="number" id="baseNaoh" step="1" min="0" placeholder="e.g. 500" onfocus="markAiBaselineDirty()" oninput="markAiBaselineDirty()">
     </div>
     <div>
-      <div class="help" style="margin-bottom:8px;">Mg Baseline (mL/day)</div>
+      <div class="help" style="margin-bottom:8px;">Mg Baseline / Mode 7 Alk Baseline (mL/day)</div>
       <input type="number" id="baseMg" step="1" min="0" placeholder="e.g. 0" onfocus="markAiBaselineDirty()" oninput="markAiBaselineDirty()">
     </div>
   </div>
@@ -477,6 +478,15 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
         {index:1,key:"cacl2",name:"CaCl2 (Pump 2)"},
         {index:2,key:"naoh",name:"NaOH (Pump 3)"},
         {index:3,key:"mg",name:"Mg (Pump 4)"}
+      ]
+    },
+    7: {
+      title: "Mode 7 • Kalk + CaCl2 + NaOH + Alk",
+      pumps: [
+        {index:0,key:"kalk",name:"Kalk (Pump 1)"},
+        {index:1,key:"cacl2",name:"CaCl2 (Pump 2)"},
+        {index:2,key:"naoh",name:"NaOH (Pump 3)"},
+        {index:3,key:"alk",name:"Alk (Pump 4 / old Mg pump)"}
       ]
     }
   };
@@ -665,16 +675,20 @@ async function saveVol() {
   }
 
 
+  // LOCAL DASHBOARD PLAN SOURCE
+  // This page is served by the ESP32, so the Active Dosing Plan must come from
+  // /api/status only.  Firebase is not used for this card.
   function planFromStatus(s){
-    return (s && (s.dosingMlPerDay || s.aiPlan || s.plan || s.currentPlan)) || {};
+    if (!s) return {};
+    return s.dosingMlPerDay || s.aiPlan || s.plan || s.currentPlan || {};
   }
 
   function activePlanKeys(mode){
     return getModeCfg(mode).pumps.map(p => p.key);
   }
 
-  function planValue(plan, key){
-    const aliases = {
+  function aliasKeysForPlan(key){
+    return {
       ca: ['ca','cacl2'],
       cacl2: ['cacl2','ca'],
       alk: ['alk'],
@@ -684,12 +698,65 @@ async function saveVol() {
       mg: ['mg'],
       tbd: ['tbd','aux'],
       aux: ['aux','tbd']
-    };
-    for (const k of (aliases[key] || [key])) {
-      const n = numOrNull(plan[k]);
+    }[key] || [key];
+  }
+
+  function planValue(plan, key){
+    for (const k of aliasKeysForPlan(key)) {
+      const n = numOrNull(plan && plan[k]);
       if (n !== null) return n;
     }
     return 0;
+  }
+
+  function bucketValueForPlanFallback(s, pumpIndex, chemicalKey){
+    const b = s?.buckets || s?.pendingMl || s?.pending || {};
+    const physicalAliases = {
+      0: ['p1','P1','pump1','0'],
+      1: ['p2','P2','pump2','1'],
+      2: ['p3','P3','pump3','2'],
+      3: ['p4','P4','pump4','3']
+    };
+
+    for (const k of (physicalAliases[pumpIndex] || [])) {
+      const n = numOrNull(b[k]);
+      if (n !== null && n > 0) return n;
+    }
+
+    for (const k of aliasKeysForPlan(chemicalKey)) {
+      const n = numOrNull(b[k]);
+      if (n !== null && n > 0) return n;
+    }
+
+    return 0;
+  }
+
+  function baselineValueForPlanFallback(s, key){
+    const base = s?.aiBaseline || {};
+    if (key === 'alk' && Number(s?.dosingMode ?? currentDosingMode ?? 1) === 7) {
+      // In Mode 7 the old Mg baseline field is intentionally reused as the Alk baseline.
+      const mode7Alk = numOrNull(base.alk ?? base.mg);
+      return mode7Alk !== null ? mode7Alk : 0;
+    }
+    for (const k of aliasKeysForPlan(key)) {
+      const n = numOrNull(base[k]);
+      if (n !== null) return n;
+    }
+    return 0;
+  }
+
+  function localPlanValue(s, pump){
+    const plan = planFromStatus(s);
+    const direct = planValue(plan, pump.key);
+    if (direct > 0) return { value: direct, source: 'plan' };
+
+    const bucket = bucketValueForPlanFallback(s, pump.index, pump.key);
+    if (bucket > 0) return { value: bucket * 144.0, source: 'bucket × 144' };
+
+    const baseline = baselineValueForPlanFallback(s, pump.key);
+    if (baseline > 0) return { value: baseline, source: 'baseline' };
+
+    return { value: 0, source: 'local status' };
   }
 
   function renderActivePlan(s){
@@ -697,16 +764,20 @@ async function saveVol() {
     if (!list) return;
     const mode = Number(s.dosingMode ?? currentDosingMode ?? 1);
     const cfg = getModeCfg(mode);
-    const plan = planFromStatus(s);
+    const rowSources = new Set();
+
     list.innerHTML = cfg.pumps.map(p => {
-      const ml = planValue(plan, p.key);
+      const resolved = localPlanValue(s, p);
+      rowSources.add(resolved.source);
+      const cleanName = p.name.replace(/ \(Pump \d\)/,'');
       return `<div class="plan-row">
-        <div class="plan-left"><span class="dot"></span><div><div class="plan-name">${p.name.replace(/ \(Pump \d\)/,'')}</div><div class="plan-sub">ml per day</div></div></div>
-        <div class="plan-amt">${ml.toFixed(2)}</div>
+        <div class="plan-left"><span class="dot"></span><div><div class="plan-name">${cleanName}</div><div class="plan-sub">ml per day • ${resolved.source}</div></div></div>
+        <div class="plan-amt">${resolved.value.toFixed(2)}</div>
       </div>`;
     }).join('');
+
     const meta = document.getElementById('planRealtimeMeta');
-    if (meta) meta.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    if (meta) meta.textContent = 'Local /api/status • ' + Array.from(rowSources).join(', ') + ' • ' + new Date().toLocaleTimeString();
   }
 
   function renderStatus(s){
@@ -1183,9 +1254,27 @@ const realtimeParams = { ph: [], alk: [], ca: [], mg: [], temp: [], ppt: [] };
 const realtimeBuckets = { p1: [], p2: [], p3: [], p4: [] };
 const realtimePlan = { kalk: [], afr: [], alk: [], ca: [], cacl2: [], naoh: [], mg: [] };
 let activePlanChartKeys = [];
+let activeBucketChartMode = null;
 
 function cleanPumpLabel(name){
   return String(name || '').replace(/ \(Pump \d\)/, '');
+}
+
+function rebuildBucketChartForMode(mode){
+  if (!dosingChart) return;
+  const cfg = getModeCfg(Number(mode || currentDosingMode || 1));
+  const modeKey = String(Number(mode || currentDosingMode || 1));
+  if (activeBucketChartMode === modeKey) return;
+
+  activeBucketChartMode = modeKey;
+  for (let i = 0; i < 4; i++) {
+    const pump = cfg.pumps.find(p => p.index === i);
+    if (dosingChart.data.datasets[i]) {
+      dosingChart.data.datasets[i].label = pump
+        ? cleanPumpLabel(pump.name) + ' Bucket'
+        : 'P' + (i + 1) + ' Unused Bucket';
+    }
+  }
 }
 
 function rebuildPlanChartForMode(mode){
@@ -1316,6 +1405,7 @@ function ensureRealtimeCharts(){
       }
     }
   });
+  rebuildBucketChartForMode(currentDosingMode);
   rebuildPlanChartForMode(currentDosingMode);
   return true;
 }
@@ -1365,6 +1455,7 @@ function addRealtimePoint(s){
   }
 
   purgeOldRealtimePoints(nowMs);
+  rebuildBucketChartForMode(Number(s.dosingMode ?? currentDosingMode ?? 1));
   rebuildPlanChartForMode(Number(s.dosingMode ?? currentDosingMode ?? 1));
 
   paramsChart.update('none');

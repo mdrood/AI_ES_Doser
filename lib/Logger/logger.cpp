@@ -4,6 +4,81 @@
 
 Logger logger;
 
+// Force WebSerial/Serial logs to upload as small Google Drive files.
+// This prevents long delayed logs from failing and keeps the exact WebSerial text.
+//static const uint32_t LOGGER_FORCED_UPLOAD_EVERY_MS = 60000UL; // 1 minute
+static const uint32_t LOGGER_FORCED_UPLOAD_EVERY_MS = 1800000UL; // 30 minutes
+static const size_t LOGGER_MAX_SAFE_GET_BYTES = 24576;
+static const uint8_t LOGGER_MAX_FAILED_RETRIES = 5;
+static const char* LOGGER_CLEANUP_MARKER = "/logs/cleanup_done_30min_v1.flag";
+
+static String loggerFailCountPath(const String& logPath) {
+  String p = logPath;
+  p.replace("/", "_");
+  return "/logs/fail" + p + ".cnt";
+}
+
+static uint8_t loggerReadFailCount(const String& logPath) {
+  String countPath = loggerFailCountPath(logPath);
+  File f = LittleFS.open(countPath, FILE_READ);
+  if (!f) return 0;
+  String v = f.readString();
+  f.close();
+  return (uint8_t)constrain(v.toInt(), 0, 255);
+}
+
+static void loggerWriteFailCount(const String& logPath, uint8_t count) {
+  String countPath = loggerFailCountPath(logPath);
+  File f = LittleFS.open(countPath, FILE_WRITE);
+  if (!f) return;
+  f.print(String(count));
+  f.close();
+}
+
+static void loggerClearFailCount(const String& logPath) {
+  String countPath = loggerFailCountPath(logPath);
+  if (LittleFS.exists(countPath)) LittleFS.remove(countPath);
+}
+
+static void loggerOneTimeLittleFSCleanup() {
+  if (LittleFS.exists(LOGGER_CLEANUP_MARKER)) return;
+
+  if (!LittleFS.exists("/logs")) {
+    LittleFS.mkdir("/logs");
+  }
+
+  uint16_t removedLogs = 0;
+  uint16_t removedCounts = 0;
+
+  File root = LittleFS.open("/logs");
+  if (root && root.isDirectory()) {
+    File file = root.openNextFile();
+    while (file) {
+      String path = file.path();
+      if (path.startsWith("/littlefs")) path.replace("/littlefs", "");
+      file.close();
+
+      bool removeQueuedLog = (path.indexOf("queued_") >= 0 && path.endsWith(".log"));
+      bool removeRetryCount = (path.indexOf("fail_logs_queued_") >= 0 && path.endsWith(".cnt"));
+
+      if (removeQueuedLog && LittleFS.remove(path)) removedLogs++;
+      else if (removeRetryCount && LittleFS.remove(path)) removedCounts++;
+
+      file = root.openNextFile();
+      yield();
+    }
+  }
+
+  File marker = LittleFS.open(LOGGER_CLEANUP_MARKER, FILE_WRITE);
+  if (marker) {
+    marker.print("done");
+    marker.close();
+  }
+
+  Serial.printf("LOGGER: LittleFS one-time cleanup removed %u queued logs and %u retry counters.\n", removedLogs, removedCounts);
+  WebSerial.printf("LOGGER: LittleFS one-time cleanup removed %u queued logs and %u retry counters.\n", removedLogs, removedCounts);
+}
+
 Logger::Logger()
   : _uploadEveryMs(LOGGER_UPLOAD_EVERY_MS),
     _rotateBytes(LOGGER_ROTATE_BYTES),
@@ -23,7 +98,12 @@ bool Logger::begin(const String& deviceId,
   _deviceId = deviceId;
   _appsScriptUrl = appsScriptUrl;
   _apiKey = apiKey;
-  _uploadEveryMs = uploadEveryMs;
+
+  // User-proven fix: shorter chunks upload reliably.
+  // 30 minutes has tested working; even if main.cpp passes 2 hours, use this forced interval.
+  _uploadEveryMs = LOGGER_FORCED_UPLOAD_EVERY_MS;
+
+  // Keep caller-supplied rotate size, but upload is now time-based at the forced interval.
   _rotateBytes = rotateBytes;
   _enabled = true;
 
@@ -34,11 +114,14 @@ bool Logger::begin(const String& deviceId,
   }
 
   _fsReady = true;
-  _lastUploadAttemptMs = millis() - _uploadEveryMs + 60000UL;
+  _lastUploadAttemptMs = millis();
   
   if (!LittleFS.exists("/logs")) {
     LittleFS.mkdir("/logs");
   }
+
+  // Remote-device recovery: remove old stuck queued logs once after OTA.
+  loggerOneTimeLittleFSCleanup();
 
   println("LOGGER: started local-first Drive logger");
   printf("LOGGER: upload interval = %lu ms\n", (unsigned long)_uploadEveryMs);
@@ -48,17 +131,18 @@ bool Logger::begin(const String& deviceId,
 void Logger::setEnabled(bool enabled) { _enabled = enabled; }
 bool Logger::isEnabled() const { return _enabled && _fsReady; }
 
-void Logger::setUploadIntervalMs(uint32_t uploadEveryMs) { _uploadEveryMs = uploadEveryMs; }
+void Logger::setUploadIntervalMs(uint32_t uploadEveryMs) {
+  // Keep this logger reliable: force the tested Drive/WebSerial log interval.
+  // Parameter is accepted for compatibility, but intentionally ignored.
+  (void)uploadEveryMs;
+  _uploadEveryMs = LOGGER_FORCED_UPLOAD_EVERY_MS;
+}
 uint32_t Logger::getUploadIntervalMs() const { return _uploadEveryMs; }
 
 String Logger::_currentPath() const { return "/logs/current.log"; }
 String Logger::_queuePath(uint32_t stamp) const { return "/logs/queued_" + String(stamp) + ".log"; }
 
 String Logger::_nextQueuePath() const {
-  // Do NOT depend on NTP/time(nullptr) here.
-  // reefDoser2 can boot remotely before time sync, and time(nullptr) may be 0.
-  // That can create repeated queued_0.log names and silently lose/overwrite logs.
-  // millis() is always available, and the extra counter prevents same-millisecond collisions.
   static uint32_t counter = 0;
   return "/logs/queued_" + String((uint32_t)(millis() / 1000UL)) +
          "_" + String((uint32_t)(millis() & 0xFFFFUL)) +
@@ -106,7 +190,6 @@ void Logger::log(const String& msg) { println(msg); }
 void Logger::log(const char* msg) { println(msg); }
 
 void Logger::_writeRaw(const String& s, bool addNewline) {
-  // 1. IMMEDIATE OUTPUT: Send to WebSerial/Serial before storage attempts
   if (addNewline) {
     Serial.println(s);
     WebSerial.println(s);
@@ -117,14 +200,12 @@ void Logger::_writeRaw(const String& s, bool addNewline) {
 
   if (!_enabled || !_fsReady) return;
 
-  // 2. STORAGE ATTEMPT
   File f = LittleFS.open(_currentPath(), FILE_APPEND);
   if (!f) {
       if (!LittleFS.exists("/logs")) LittleFS.mkdir("/logs");
       f = LittleFS.open(_currentPath(), FILE_WRITE);
       
       if (!f) {
-          // If storage is totally locked, we notify the user via WebSerial
           WebSerial.println("LOGGER ERR: Disk Write Failed!"); 
           return; 
       }
@@ -206,6 +287,18 @@ bool Logger::_uploadOneFile(const String& path) {
 
   File f = LittleFS.open(path, FILE_READ);
   if (!f) return false;
+  
+  // Safety check: do NOT delete logs just because they are too large.
+  // Leave the file queued so the log is not lost.
+  size_t fileSize = f.size();
+  if (fileSize > LOGGER_MAX_SAFE_GET_BYTES) { 
+    f.close();
+    String keepMsg = "LOGGER: Keeping oversized queued log " + path + " (" + String(fileSize) + " bytes); not uploading with GET.";
+    Serial.println(keepMsg);
+    WebSerial.println(keepMsg);
+    return false;
+  }
+
   String content = f.readString();
   f.close();
 
@@ -219,32 +312,51 @@ bool Logger::_uploadOneFile(const String& path) {
   client.setInsecure();
   
   HTTPClient http;
-  http.setTimeout(30000);
+  http.setTimeout(15000); 
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS); 
 
   int code = _doGet(http, client, url);
+  String response = http.getString();
   http.end();
 
   bool ok = (code >= 200 && code < 300);
   
-  // ALWAYS notify WebSerial of the outcome
   String statusMsg = ok ? "LOGGER: Upload Success " : "LOGGER: Upload Failed ";
-  statusMsg += path + " (HTTP " + String(code) + ")";
+  statusMsg += path + " (HTTP " + String(code) + ", bytes " + String(fileSize) + ")";
   
   Serial.println(statusMsg);
   WebSerial.println(statusMsg);
 
+  if (!ok && response.length() > 0) {
+    // Print only a small preview so the error itself does not bloat the next log.
+    String preview = response.substring(0, 240);
+    Serial.print("LOGGER: Upload response: ");
+    Serial.println(preview);
+    WebSerial.print("LOGGER: Upload response: ");
+    WebSerial.println(preview);
+  }
+
   if (ok) {
+    loggerClearFailCount(path);
     LittleFS.remove(path);
-  } else if (code == 400 || code == 413 || code == 414) {
-    // Permanent upload failure: malformed request or URL too large.
-    // Do not retry this same bad queued log forever. Temporary failures
-    // like -2, 408, 429, or 5xx are left in LittleFS for later retry.
-    String discardMsg = "LOGGER: Discarding bad queued log " + path +
-                        " after permanent HTTP " + String(code);
-    Serial.println(discardMsg);
-    WebSerial.println(discardMsg);
-    LittleFS.remove(path);
+  } else {
+    uint8_t fails = loggerReadFailCount(path);
+    fails++;
+    loggerWriteFailCount(path, fails);
+
+    if (fails >= LOGGER_MAX_FAILED_RETRIES) {
+      String discardMsg = "LOGGER: Deleting stuck queued log " + path +
+                          " after " + String(fails) + " failed uploads.";
+      Serial.println(discardMsg);
+      WebSerial.println(discardMsg);
+      loggerClearFailCount(path);
+      LittleFS.remove(path);
+    } else {
+      String retryMsg = "LOGGER: Keeping queued log for retry (fail " +
+                        String(fails) + "/" + String(LOGGER_MAX_FAILED_RETRIES) + ").";
+      Serial.println(retryMsg);
+      WebSerial.println(retryMsg);
+    }
   }
   
   return ok;
@@ -284,13 +396,11 @@ void Logger::_uploadQueuedFiles() {
 
     if (isQueued) {
       _uploadOneFile(path);
-      
-      for(int i = 0; i < 5; i++) {
+      for (int i = 0; i < 2; i++) {
           yield();
-          delay(100); 
+          delay(50); 
       }
     }
-    
     file = root.openNextFile();
     yield();
   }
@@ -302,21 +412,35 @@ void Logger::forceUpload() {
 }
 
 void Logger::loop() {
-  if (!_enabled || !_fsReady) return;
-
   uint32_t now = millis();
+
+  if (!_enabled || !_fsReady) {
+    static uint32_t lastDisabledPrint = 0;
+    if ((uint32_t)(now - lastDisabledPrint) >= 60000UL) {
+      lastDisabledPrint = now;
+      Serial.printf("[LOGGER TIMER] disabled enabled=%d fsReady=%d\n", _enabled ? 1 : 0, _fsReady ? 1 : 0);
+      WebSerial.printf("[LOGGER TIMER] disabled enabled=%d fsReady=%d\n", _enabled ? 1 : 0, _fsReady ? 1 : 0);
+    }
+    return;
+  }
 
   static uint32_t lastTimerPrint = 0;
   if ((uint32_t)(now - lastTimerPrint) >= 60000UL) {
     lastTimerPrint = now;
-    Serial.printf("[LOGGER TIMER] elapsed=%lu target=%lu\n",
+    Serial.printf("[LOGGER TIMER] elapsed=%lu target=%lu wifi=%d\n",
                   (unsigned long)(now - _lastUploadAttemptMs),
-                  (unsigned long)_uploadEveryMs);
+                  (unsigned long)_uploadEveryMs,
+                  WiFi.status());
+    WebSerial.printf("[LOGGER TIMER] elapsed=%lu target=%lu wifi=%d\n",
+                     (unsigned long)(now - _lastUploadAttemptMs),
+                     (unsigned long)_uploadEveryMs,
+                     WiFi.status());
   }
 
   if ((uint32_t)(now - _lastUploadAttemptMs) >= _uploadEveryMs) {
     _lastUploadAttemptMs = now;
     Serial.println("[LOGGER TIMER] Upload interval reached.");
+    WebSerial.println("[LOGGER TIMER] Upload interval reached.");
     _uploadQueuedFiles();
   }
 }

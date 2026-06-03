@@ -44,7 +44,7 @@ private:
         // Mark (300g) Active
         //float dkhPerMlKalk = 0.0000085f, dkhPerMlAfr = 0.00015f, dkhPerMlAlk = 0.00015f, dkhPerMlNaoh = 0.00255f, mgPerMlMg = 0.0050f, caPerMlCacl2 = 0.42f;
         // Eric (1100g) Inactive
-         float dkhPerMlKalk = 0.0000046f, dkhPerMlAfr = 0.000082f, dkhPerMlAlk = 0.000082f, dkhPerMlNaoh = 0.00139f, mgPerMlMg = 0.00273f, caPerMlCacl2 = 0.229f;
+         float dkhPerMlKalk = 0.0000046f, dkhPerMlAfr = 0.000082f, dkhPerMlAlk = 0.00126f, dkhPerMlNaoh = 0.00139f, mgPerMlMg = 0.00273f, caPerMlCacl2 = 0.229f;
     } chem;
 
     // ====== SAFETY LIMITS ======
@@ -62,13 +62,14 @@ private:
         float mgDeadbandPpm = 25.0f;*/
 
         // Eric large reef tuned example (Inactive):
-        float maxKalkDay = 35000.0f, maxNaohDay = 800.0f, maxAlkRisePerDay = 1.5f;
+        float maxKalkDay = 35000.0f, maxNaohDay = 400.0f, maxAlkDay = 1000.0f, maxAlkRisePerDay = 1.5f;
         float maxMgCorrectionDay = 250.0f, maxMgDay = 250.0f, mgDeadbandPpm = 25.0f;
     } limits;
 
     HistoryEntry* aiHistory = nullptr; 
     void applySafetyEnforcement(DosingPlan &p);
     void addBaselineDemand(DosingPlan &p, int mode);
+    void applyNaohPhCaution(DosingPlan &p, float currentPh);
     void applyAbsoluteCaps(DosingPlan &p);
     void logPlanToPSRAM(DosingPlan p, int mode);
 };

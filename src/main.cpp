@@ -34,7 +34,7 @@
 #define FIREBASE_API_KEY "AIzaSyB4XtC5Pvxw6To58EKTLMADQLqR_hTZK0M"
 #define FIREBASE_DB_URL "https://aiesdoser-default-rtdb.firebaseio.com"
 //TODO for firware update
-#define FW_VERSION "10.4.2"
+#define FW_VERSION "10.6.6"
 
 #include "Dashboard.h"
 
@@ -66,7 +66,7 @@ float baselineNaohMlDay  = 0.0f;
 float baselineMgMlDay    = 0.0f;
 String baselineCoralLoad = "custom";
 
-// 1..6 dosing implementation used for pump mapping
+// 1..7 dosing implementation used for pump mapping
 int dosingMode = 1;
 
 bool apexEnabled = false;
@@ -154,7 +154,7 @@ const unsigned long BOOT_DOSING_GRACE_MS = 120000UL; // 2 minutes
 
 Provisioner provisioner;
 //TODO new customer
-String deviceID = "reefDoser3";
+String deviceID = "reefDoser2";
 
 WebServer server(80);
 AsyncWebServer serialServer(81);
@@ -232,6 +232,7 @@ void loadDosingState();
 void saveDosingState();
 void addCurrentAiPlanToBuckets(const char* source, bool force = false);
 void publishAiPlanIfNeeded(const char* source, bool force = false);
+bool isLightsOn();
 void publishFirmwareVersionIfReady(bool force = false);
 void evaluateAlertState(const char* source = "loop", bool force = false);
 bool publishAlertState(const String& level, const String& code, const String& message, bool active, const char* source, bool force = false);
@@ -285,6 +286,14 @@ const char* pumpKeyForPhysicalIndex(int idx) {
                 case 3: return "mg";
                 default: return "unused";
             }
+        case 7: // Mode 7: Kalk + CaCl2 + NaOH + Alk using old Mg pump
+            switch (idx) {
+                case 0: return "kalk";
+                case 1: return "cacl2";
+                case 2: return "naoh";
+                case 3: return "alk";
+                default: return "unused";
+            }
         default:
             return (idx == 0) ? "kalk" : "unused";
     }
@@ -300,6 +309,7 @@ int pumpCountForCurrentDosingMode() {
             return 3;
         case 5:
         case 6:
+        case 7:
             return 4;
         default:
             return 1;
@@ -325,11 +335,62 @@ bool isValidSystemMode(int mode) {
 }
 
 bool isValidDosingMode(int mode) {
-    return mode >= 1 && mode <= 6;
+    return mode >= 1 && mode <= 7;
 }
 
 bool isValidNotificationLevel(const String& level) {
     return level == "muted" || level == "severe" || level == "warning" || level == "info";
+}
+
+bool hasValidLiveChemistry() {
+    return currentAlk > 0.0f && currentCa > 0.0f && currentMg > 0.0f && currentPh > 0.0f;
+}
+
+bool hasValidSavedManualChemistry() {
+    return hasSavedManualTest &&
+           lastLocalTest.alk > 0.0f &&
+           lastLocalTest.ca  > 0.0f &&
+           lastLocalTest.mg  > 0.0f &&
+           lastLocalTest.ph  > 0.0f;
+}
+
+void calculateAiFromBestChemistry(const char* sourceLabel) {
+    float useAlk = 0.0f;
+    float useCa  = 0.0f;
+    float useMg  = 0.0f;
+    float usePh  = 0.0f;
+    const char* chemistrySource = "none";
+
+    // Apex/live chemistry is authoritative when present. This prevents the
+    // hourly AI task from using stale manual pH/Ca and creating bogus NaOH/CaCl2
+    // corrections, then being overwritten by the next Apex pass.
+    if (hasValidLiveChemistry()) {
+        useAlk = currentAlk;
+        useCa  = currentCa;
+        useMg  = currentMg;
+        usePh  = currentPh;
+        chemistrySource = "live";
+    } else if (hasValidSavedManualChemistry()) {
+        useAlk = lastLocalTest.alk;
+        useCa  = lastLocalTest.ca;
+        useMg  = lastLocalTest.mg;
+        usePh  = lastLocalTest.ph;
+        chemistrySource = "manual";
+    } else {
+        Serial.printf("AI skipped [%s]: no valid chemistry yet.\n", sourceLabel ? sourceLabel : "AI");
+        logger.printf("AI skipped [%s]: no valid chemistry yet.\n", sourceLabel ? sourceLabel : "AI");
+        return;
+    }
+
+    ai.setTankVolumeGallons(TANK_VOLUME_L / 3.78541f);
+    applyAiBaselineToEngine();
+    ai.calculateNextPlan(dosingMode, targetAlk - useAlk, targetCa - useCa, targetMg - useMg, usePh, isLightsOn());
+    ai.currentPlan.active = true;
+
+    Serial.printf("AI chemistry [%s]: source=%s Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f\n",
+                  sourceLabel ? sourceLabel : "AI", chemistrySource, useAlk, useCa, useMg, usePh);
+    logger.printf("AI chemistry [%s]: source=%s Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f\n",
+                  sourceLabel ? sourceLabel : "AI", chemistrySource, useAlk, useCa, useMg, usePh);
 }
 
 const char* resetReasonToString(esp_reset_reason_t reason) {
@@ -350,7 +411,18 @@ const char* resetReasonToString(esp_reset_reason_t reason) {
 }
 
 void applyAiBaselineToEngine() {
-    ai.setBaselineDemand(baselineKalkMlDay, baselineCacl2MlDay, baselineNaohMlDay, baselineMgMlDay);
+
+    float fourthPumpBaseline =
+        (dosingMode == 7)
+        ? 325.0f          // Mode 7 → Alk baseline
+        : baselineMgMlDay; // All other modes unchanged
+
+    ai.setBaselineDemand(
+        baselineKalkMlDay,
+        baselineCacl2MlDay,
+        baselineNaohMlDay,
+        fourthPumpBaseline
+    );
 }
 
 void tokenStatusCallback(TokenInfo info) {
@@ -513,6 +585,13 @@ void addCurrentAiPlanToBuckets(const char* source, bool force) {
             pumpBuckets[1] += ai.currentPlan.cacl2 / 144.0f;
             pumpBuckets[2] += ai.currentPlan.naoh  / 144.0f;
             pumpBuckets[3] += ai.currentPlan.mg    / 144.0f;
+            break;
+
+        case 7: // P1 Kalk, P2 CaCl2, P3 NaOH, P4 Alk solution
+            pumpBuckets[0] += ai.currentPlan.kalk  / 144.0f;
+            pumpBuckets[1] += ai.currentPlan.cacl2 / 144.0f;
+            pumpBuckets[2] += ai.currentPlan.naoh  / 144.0f;
+            pumpBuckets[3] += ai.currentPlan.alk   / 144.0f;
             break;
     }
 
@@ -690,11 +769,33 @@ void streamCallback(StreamData data) {
         return;
     }
 
+// ... Inside main.cpp -> void streamCallback(StreamData data) ...
+
+// ... Inside main.cpp -> void streamCallback(StreamData data) ...
+
     if (data.dataPath() == "/ota") {
-        FirebaseJson &json = data.jsonObject();
-        FirebaseJsonData res;
-        json.get(res, "url");
-        handleOtaFirmwareUrl(res.stringValue, "/ota stream");
+        String targetUrl = "";
+        
+        // Robust Extraction: Handle both raw URL strings and nested structural JSON objects
+        if (data.dataType() == "json") {
+            FirebaseJson &json = data.jsonObject();
+            FirebaseJsonData res;
+            if (json.get(res, "url")) {
+                targetUrl = res.stringValue;
+            }
+        } else if (data.dataType() == "string") {
+            targetUrl = data.stringData();
+        }
+
+        if (targetUrl.length() > 0) {
+            // CRITICAL FIX: Explicitly enforce a clear back-check to Firebase on the absolute target 
+            // path node before launching the partition flash sequence.
+            String otaCommandPath = "/devices/" + deviceID + "/commands/ota";
+            Firebase.deleteNode(writeFbdo, otaCommandPath.c_str());
+            
+            // Launch safety checks and flash partitions
+            handleOtaFirmwareUrl(targetUrl, "/ota stream");
+        }
         return;
     }
 
@@ -910,15 +1011,25 @@ void mirrorStatusToFirebase() {
     stateJson.set("alertState/message", currentAlertMessage);
     stateJson.set("systemMode", systemMode);
     stateJson.set("dosingMode", dosingMode);
-    // Preserve legacy flow keys and add mode-6 aliases so Firebase reflects local status better.
+    // Preserve legacy flow keys and add chemical aliases so Firebase reflects local status better.
+    // Physical pump keys are always published; chemical keys below are corrected for Mode 7.
+    stateJson.set("flowMlPerMin/p1", pumpFlowRates[0]);
+    stateJson.set("flowMlPerMin/p2", pumpFlowRates[1]);
+    stateJson.set("flowMlPerMin/p3", pumpFlowRates[2]);
+    stateJson.set("flowMlPerMin/p4", pumpFlowRates[3]);
     stateJson.set("flowMlPerMin/kalk", pumpFlowRates[0]);
     stateJson.set("flowMlPerMin/afr", pumpFlowRates[1]);
-    stateJson.set("flowMlPerMin/mg", pumpFlowRates[2]);
     stateJson.set("flowMlPerMin/tbd", pumpFlowRates[3]);
-    stateJson.set("flowMlPerMin/alk", pumpFlowRates[0]);
     stateJson.set("flowMlPerMin/ca", pumpFlowRates[1]);
     stateJson.set("flowMlPerMin/cacl2", pumpFlowRates[1]);
     stateJson.set("flowMlPerMin/naoh", pumpFlowRates[2]);
+    if (dosingMode == 7) {
+        stateJson.set("flowMlPerMin/alk", pumpFlowRates[3]);
+        stateJson.set("flowMlPerMin/mg", 0.0f);
+    } else {
+        stateJson.set("flowMlPerMin/alk", pumpFlowRates[0]);
+        stateJson.set("flowMlPerMin/mg", pumpFlowRates[2]);
+    }
 
     String path = "/devices/" + deviceID + "/state";
     if (Firebase.updateNode(writeFbdo, path.c_str(), stateJson)) {
@@ -990,10 +1101,21 @@ void handleGetStatus() {
     // Backward-compatible generic aliases for older dashboard code.
     doc["flowMlPerMin"]["tbd"] = pumpFlowRates[3];
 
-    doc["buckets"]["kalk"] = kalkBucket;
-    doc["buckets"]["alk"] = alkBucket;
-    doc["buckets"]["ca"] = caBucket;
-    doc["buckets"]["mg"] = mgBucket;
+    doc["buckets"]["p1"] = pumpBuckets[0];
+    doc["buckets"]["p2"] = pumpBuckets[1];
+    doc["buckets"]["p3"] = pumpBuckets[2];
+    doc["buckets"]["p4"] = pumpBuckets[3];
+    doc["buckets"]["kalk"] = pumpBuckets[0];
+    doc["buckets"]["cacl2"] = pumpBuckets[1];
+    doc["buckets"]["naoh"] = pumpBuckets[2];
+    if (dosingMode == 7) {
+        doc["buckets"]["alk"] = pumpBuckets[3];
+        doc["buckets"]["mg"] = 0.0f;
+    } else {
+        doc["buckets"]["alk"] = alkBucket;
+        doc["buckets"]["mg"] = pumpBuckets[3];
+    }
+    doc["buckets"]["ca"] = pumpBuckets[1];
 
     doc["dosingThreshold"] = DOSING_THRESHOLD;
     doc["maxHourlyLimit"] = maxDoseLimit;
@@ -1581,38 +1703,64 @@ void onNewDataArrived(float rawAlk) {
     alkHistory[alkIdx] = rawAlk;
     alkIdx = (alkIdx + 1) % 5;
 
-    float sum = 0;
-    int count = 0;
-    for(int i=0; i<5; i++) {
-        if(alkHistory[i] > 0) {
-            sum += alkHistory[i];
-            count++;
-        }
+    // Mode 7 bug fix:
+    // Use the exact same AI calculation path that already works for Hourly/live chemistry.
+    // The old Apex-only calculation could publish a stale/wrong split like:
+    // kalk=0, alk=1000, cacl2=640 even while Mode 7 buckets were working locally.
+    if (currentAlk <= 0.0f || currentAlk > 20.0f ||
+        currentCa  < 250.0f || currentCa  > 700.0f ||
+        currentMg  < 800.0f || currentMg  > 1800.0f ||
+        currentPh  < 6.50f  || currentPh  > 9.00f) {
+        Serial.printf("Apex AI skipped: invalid chemistry Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f\n",
+                      currentAlk, currentCa, currentMg, currentPh);
+        logger.printf("Apex AI skipped: invalid chemistry Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f\n",
+                      currentAlk, currentCa, currentMg, currentPh);
+        return;
     }
-    float smoothedAlk = (count > 0) ? (sum / count) : rawAlk;
-    bool lightState = isLightsOn();
 
-    // Fixed: systemMode first, then the 3 dosing floats, then pH, then light bool
-    ai.setTankVolumeGallons(TANK_VOLUME_L / 3.78541f);
-    applyAiBaselineToEngine();
-    ai.calculateNextPlan(dosingMode, targetAlk - smoothedAlk, targetCa - currentCa, targetMg - currentMg, currentPh, isLightsOn());
-    ai.currentPlan.active = true;
+    calculateAiFromBestChemistry("Apex");
     addCurrentAiPlanToBuckets("Apex", false);
-    publishAiPlanIfNeeded("Apex", false);
+    publishAiPlanIfNeeded("Apex", true);
 }
 
 
 void syncAllTruths() {
+    if (!apexEnabled || apexIp.length() < 7) {
+        Serial.println("Apex skipped: disabled or missing IP");
+        logger.println("Apex skipped: disabled or missing IP");
+        return;
+    }
+
     String response = apex.getState();
     if (response.length() > 0) {
-        currentTempF = apex.getTempF();
-        currentPh    = apex.getPh();
-        currentAlk   = apex.getAlk();
-        currentCa    = apex.getCa();
-        currentMg    = apex.getMg();
-        currentCond  = apex.getCond();
+        float nextTempF = apex.getTempF();
+        float nextPh    = apex.getPh();
+        float nextAlk   = apex.getAlk();
+        float nextCa    = apex.getCa();
+        float nextMg    = apex.getMg();
+        float nextCond  = apex.getCond();
 
-        // Recalculate AI after all Apex values are current, then add the plan into buckets.
+        // Reject bad Apex parser/fallback values before they poison saved state or Firebase.
+        // This blocks the earlier 650.00 dKH style failure.
+        if (nextAlk <= 0.0f || nextAlk > 20.0f ||
+            nextCa  < 250.0f || nextCa  > 700.0f ||
+            nextMg  < 800.0f || nextMg  > 1800.0f ||
+            nextPh  < 6.50f  || nextPh  > 9.00f) {
+            Serial.printf("Apex rejected: invalid chemistry Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f\n",
+                          nextAlk, nextCa, nextMg, nextPh);
+            logger.printf("Apex rejected: invalid chemistry Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f\n",
+                          nextAlk, nextCa, nextMg, nextPh);
+            return;
+        }
+
+        currentTempF = nextTempF;
+        currentPh    = nextPh;
+        currentAlk   = nextAlk;
+        currentCa    = nextCa;
+        currentMg    = nextMg;
+        currentCond  = nextCond;
+
+        // Recalculate AI after all Apex values are current, then publish the plan to Firebase.
         onNewDataArrived(currentAlk);
 
         // Apex status.json Cond/Salt value is already salinity in PPT for this probe.
@@ -2238,9 +2386,14 @@ void loop() {
 
     if (state.getCurrentState() == SystemState::PROVISIONING) {
         provisioner.handleClient();
-        if (provisioner.isConfigurationDone()) {
+
+        // Do NOT restart immediately after WiFi credentials are saved.
+        // The final setup page must stay alive long enough to show the real DHCP IP.
+        if (provisioner.shouldRestart()) {
+            Serial.println("Provisioning complete. Restarting after IP display window.");
             ESP.restart();
         }
+
         return;
     }
 
@@ -2355,16 +2508,15 @@ void loop() {
         Serial.println(lightState);
         logger.print("light state is  ");
         logger.println(lightState ? "true" : "false");
-        // Ensure AI has the latest volume before calculating
-        ai.setTankVolumeGallons(TANK_VOLUME_L / 3.78541f); 
-        applyAiBaselineToEngine();
-    
         Serial.printf("[AI] Calculating plan for %.1fL volume...\n", TANK_VOLUME_L);
         logger.printf("[AI] Calculating plan for %.1fL volume...\n", TANK_VOLUME_L);
-        ai.calculateNextPlan(dosingMode, targetAlk - lastLocalTest.alk, targetCa - lastLocalTest.ca, targetMg - lastLocalTest.mg, lastLocalTest.ph, isLightsOn());
-        ai.currentPlan.active = true;
+
+        // Use live Apex chemistry when available. The old code always used
+        // lastLocalTest here; that stale pH/Ca created bogus NaOH/CaCl2 plans
+        // and then Apex immediately overwrote them. This keeps one source of truth.
+        calculateAiFromBestChemistry("Hourly");
         addCurrentAiPlanToBuckets("Hourly", false);
-        publishAiPlanIfNeeded("Hourly", false);
+        publishAiPlanIfNeeded("Hourly", true);
     }
 
     static unsigned long lastApexPull = 0;
