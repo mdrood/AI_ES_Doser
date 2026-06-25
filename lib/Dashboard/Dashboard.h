@@ -162,6 +162,22 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
     .plan-amt{font-weight:900;color:var(--accent);font-size:1.05rem;white-space:nowrap}
     .chart-stack{display:grid;grid-template-columns:1fr;gap:26px}
     .footer-note{margin-top:14px;font-size:.75rem;color:var(--muted)}
+    .chem-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+    .chem-item{border:1px solid rgba(148,163,184,.16);background:rgba(2,6,23,.28);border-radius:16px;padding:14px}
+    .chem-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:10px}
+    .chem-name{font-weight:900}
+    .chem-left{font-size:.85rem;color:var(--muted);margin-top:4px}
+    .chem-badge{padding:7px 9px;border-radius:999px;border:1px solid var(--border);font-size:.75rem;font-weight:900;color:var(--muted)}
+    .chem-badge.warn{color:var(--warning);border-color:rgba(251,191,36,.45);background:rgba(251,191,36,.08)}
+    .chem-badge.severe{color:var(--danger);border-color:rgba(248,113,113,.5);background:rgba(248,113,113,.10)}
+
+    .history-toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+    .history-toolbar button{width:auto;min-width:130px}
+    .history-select{width:auto;min-width:150px}
+    .history-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0 16px}
+    .history-stat{border:1px solid rgba(148,163,184,.16);background:rgba(2,6,23,.28);border-radius:14px;padding:12px}
+    .history-stat .k{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.10em}
+    .history-stat .v{font-size:1.18rem;font-weight:900;color:#f8fafc;margin-top:5px}
     @media (max-width: 820px){
       .hero{flex-direction:column;align-items:flex-start}
       .hero-right{justify-content:flex-start}
@@ -302,6 +318,20 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
         <div class="footer-note">This shows the current AI plan from <code>/api/status</code>. History graphs still use midnight daily records to keep Firebase/write cost down.</div>
       </div>
 
+      <div class="card" style="grid-column:1 / -1">
+        <div class="card-title">
+          <h3>Chemical Reservoirs</h3>
+          <span class="meta">Local ESP32 memory only • no Firebase volume storage</span>
+        </div>
+        <div class="chem-grid" id="chemicalLevelGrid"></div>
+        <div class="three" style="margin-top:12px">
+          <button class="soft" onclick="saveChemicalCapacity()">Save Capacity</button>
+          <button class="sec" onclick="setChemicalCurrentLevel()">Set Current Level</button>
+          <button class="sec" onclick="fillChemicalToFull()">Fill to Full</button>
+        </div>
+        <div class="footer-note">Capacity is the container size. Current Level is what is actually in the container now, useful for partial refills like setting a 5 gal bucket to 3.0 gal. Firmware subtracts only confirmed pump doses. Warning at 1 gallon left, severe at 0.5 gallon left.</div>
+      </div>
+
       <div class="card">
         <div class="card-title">
           <h3>Quick Dose</h3>
@@ -413,6 +443,24 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
 
 <div class="card" style="grid-column: 1 / -1">
   <div class="card-title">
+    <h3>Dosing History</h3>
+    <span class="meta" id="dosingHistoryMeta">Actual dosed mL/day</span>
+  </div>
+  <div class="history-toolbar">
+    <select id="historyRange" class="history-select" onchange="loadDosingHistory(true)">
+      <option value="14">Last 14 days</option>
+      <option value="30" selected>Last 30 days</option>
+      <option value="60">Last 60 days</option>
+    </select>
+    <button class="sec" onclick="loadDosingHistory(true)">Refresh History</button>
+  </div>
+  <div class="history-summary" id="dosingHistorySummary"></div>
+  <div style="height:360px;"><canvas id="dosingHistoryChart"></canvas></div>
+  <div class="footer-note">This graph shows <b>actual dispensed pump totals</b> from daily history records, not the AI plan and not the pending buckets. Today comes from the controller's live <code>/api/history</code>; older days are loaded from Firebase daily records when this page can access RTDB.</div>
+</div>
+
+<div class="card" style="grid-column: 1 / -1">
+  <div class="card-title">
     <h3>Realtime Analytics</h3>
     <span class="meta" id="realtimeChartMeta">Live browser graph • no Firebase writes</span>
   </div>
@@ -492,6 +540,7 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
   };
 
   let currentStatus = {};
+  let chemicalDirty = false;
   let currentMode = 1;
   let currentDosingMode = 1;
   let lightDirty = false;
@@ -745,20 +794,15 @@ async function saveVol() {
     return 0;
   }
 
-  function localPlanValue(s, pump){
-    const plan = planFromStatus(s);
-    const direct = planValue(plan, pump.key);
-    if (direct > 0) return { value: direct, source: 'plan' };
+function localPlanValue(s, pump){
+  const plan = planFromStatus(s);
+  const direct = planValue(plan, pump.key);
 
-    const bucket = bucketValueForPlanFallback(s, pump.index, pump.key);
-    if (bucket > 0) return { value: bucket * 144.0, source: 'bucket × 144' };
-
-    const baseline = baselineValueForPlanFallback(s, pump.key);
-    if (baseline > 0) return { value: baseline, source: 'baseline' };
-
-    return { value: 0, source: 'local status' };
-  }
-
+  return {
+    value: direct,
+    source: direct > 0 ? 'live plan' : 'no active plan'
+  };
+}
   function renderActivePlan(s){
     const list = document.getElementById('activePlanList');
     if (!list) return;
@@ -780,11 +824,145 @@ async function saveVol() {
     if (meta) meta.textContent = 'Local /api/status • ' + Array.from(rowSources).join(', ') + ' • ' + new Date().toLocaleTimeString();
   }
 
+  function pumpChemicalName(index, mode){
+    const cfg = getModeCfg(mode || currentDosingMode || 1);
+    const p = (cfg.pumps || []).find(x => x.index === index);
+    if (p) return p.name.replace(/ \(Pump \d\)/,'');
+    return 'Pump ' + (index + 1);
+  }
+
+  function chemicalStatusBadge(r){
+    if (!r || !r.enabled) return '<span class="chem-badge">Disabled</span>';
+    if (r.severe) return '<span class="chem-badge severe">Severe</span>';
+    if (r.warning) return '<span class="chem-badge warn">Warning</span>';
+    return '<span class="chem-badge">OK</span>';
+  }
+
+  function chemicalLevelOptions(currentGal, capacityGal){
+    const opts = [];
+    opts.push(`<option value="-1">No change</option>`);
+    opts.push(`<option value="0" ${Number(currentGal) <= 0 && Number(capacityGal) > 0 ? 'selected' : ''}>Empty</option>`);
+    for (let g = 0.5; g <= 5.001; g += 0.5) {
+      const selected = Math.abs(Number(currentGal || 0) - g) < 0.05 ? 'selected' : '';
+      opts.push(`<option value="${g.toFixed(1)}" ${selected}>${g.toFixed(1)} gal</option>`);
+    }
+    opts.push(`<option value="full">Full</option>`);
+    return opts.join('');
+  }
+
+  function renderChemicalLevels(s){
+    const grid = document.getElementById('chemicalLevelGrid');
+    if (!grid) return;
+
+    const levels = s.chemicalLevels || {};
+    const activeId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
+    const editing = activeId.startsWith('chemCap_') || activeId.startsWith('chemCurrent_');
+
+    let html = '';
+    for (let i = 0; i < 4; i++) {
+      const key = 'p' + (i + 1);
+      const r = levels[key] || {};
+      const cap = Number(r.capacityGal || 0);
+      const remainingGal = Number(r.remainingGal || 0);
+      const pct = Number(r.remainingPct || 0);
+      const capOptions = [0,1,2,3,4,5].map(g => `<option value="${g}" ${Math.round(cap) === g ? 'selected' : ''}>${g === 0 ? 'Disabled' : g + ' gal'}</option>`).join('');
+      const currentOptions = chemicalLevelOptions(remainingGal, cap);
+
+      html += `<div class="chem-item">
+        <div class="chem-top">
+          <div>
+            <div class="chem-name">P${i + 1} ${pumpChemicalName(i, currentDosingMode)}</div>
+            <div class="chem-left">${cap > 0 ? remainingGal.toFixed(2) + ' gal left • ' + pct.toFixed(0) + '%' : 'not tracked'}</div>
+          </div>
+          ${chemicalStatusBadge(r)}
+        </div>
+
+        <div class="two">
+          <div>
+            <div class="help" style="margin-bottom:6px;">Capacity</div>
+            <select id="chemCap_${i}" onfocus="markChemicalDirty()" onchange="markChemicalDirty()">${capOptions}</select>
+          </div>
+          <div>
+            <div class="help" style="margin-bottom:6px;">Current Level</div>
+            <select id="chemCurrent_${i}" onfocus="markChemicalDirty()" onchange="markChemicalDirty()">${currentOptions}</select>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    if (!editing && !chemicalDirty) {
+      grid.innerHTML = html;
+    } else if (!grid.innerHTML.trim()) {
+      grid.innerHTML = html;
+    }
+  }
+
+  function markChemicalDirty(){ chemicalDirty = true; }
+  function isChemicalEditing(){
+    const id = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
+    return chemicalDirty || id.startsWith('chemCap_') || id.startsWith('chemCurrent_');
+  }
+
+  async function saveChemicalCapacity(){
+    const body = { resetRemaining:false, setCurrent:false };
+    for (let i = 0; i < 4; i++) {
+      const el = document.getElementById('chemCap_' + i);
+      body['p' + (i + 1) + 'Gal'] = el ? Number(el.value || 0) : 0;
+    }
+    const res = await api('/api/chemical-levels', 'POST', body);
+    chemicalDirty = false;
+    await loadAll();
+    alert('Chemical reservoir capacities saved. Current levels were not reset.');
+    return res;
+  }
+
+  async function setChemicalCurrentLevel(){
+    const body = { resetRemaining:false, setCurrent:true };
+    for (let i = 0; i < 4; i++) {
+      const capEl = document.getElementById('chemCap_' + i);
+      const curEl = document.getElementById('chemCurrent_' + i);
+      const capGal = capEl ? Number(capEl.value || 0) : 0;
+      let currentVal = curEl ? curEl.value : '-1';
+
+      body['p' + (i + 1) + 'Gal'] = capGal;
+
+      if (currentVal === 'full') {
+        body['p' + (i + 1) + 'CurrentGal'] = capGal;
+      } else if (currentVal !== '-1') {
+        body['p' + (i + 1) + 'CurrentGal'] = Number(currentVal || 0);
+      }
+    }
+    const res = await api('/api/chemical-levels', 'POST', body);
+    chemicalDirty = false;
+    await loadAll();
+    alert('Chemical current levels saved.');
+    return res;
+  }
+
+  async function fillChemicalToFull(){
+    const body = { resetRemaining:true };
+    for (let i = 0; i < 4; i++) {
+      const el = document.getElementById('chemCap_' + i);
+      body['p' + (i + 1) + 'Gal'] = el ? Number(el.value || 0) : 0;
+    }
+    const res = await api('/api/chemical-levels', 'POST', body);
+    chemicalDirty = false;
+    await loadAll();
+    alert('Chemical reservoirs set to full.');
+    return res;
+  }
+
+  // Backward-compatible wrapper for older dashboard buttons/cache.
+  async function saveChemicalLevels(resetRemaining=true){
+    return resetRemaining ? fillChemicalToFull() : saveChemicalCapacity();
+  }
+
   function renderStatus(s){
     currentStatus = s || {};
     currentMode = Number(s.mode ?? 1);
     currentDosingMode = Number(s.dosingMode ?? 1);
     renderActivePlan(s);
+    renderChemicalLevels(s);
 
     document.getElementById('sensorPh').innerHTML = `${safeNum(s.ph, 2)}`;
     document.getElementById('sensorTemp').innerHTML = `${safeNum((s.temp ?? s.tempF), 1)} <span class="unit">°F</span>`;    document.getElementById('sensorAlk').innerHTML = `${safeNum(s.alk, 2)} <span class="unit">dKH</span>`;
@@ -901,6 +1079,7 @@ function populateHours() {
       const s = await api('/api/status');
       renderStatus(s);
       addRealtimePoint(s);
+      loadDosingHistory(false);
     }catch(err){
       document.getElementById('syncBox').textContent = 'OFFLINE';
       console.error(err);
@@ -933,6 +1112,17 @@ function populateHours() {
       !FIREBASE_WEB_PUSH_VAPID_KEY.includes('PASTE_');
   }
 
+  function initFirebaseAppForDatabase(){
+    if (typeof firebase === 'undefined') return false;
+    try {
+      if (!firebase.apps || !firebase.apps.length) firebase.initializeApp(FIREBASE_WEB_CONFIG);
+      return !!firebase.database;
+    } catch (err) {
+      console.warn('Firebase database init failed', err);
+      return false;
+    }
+  }
+
   function initFirebasePush(){
     if (firebasePushInitialized) return true;
 
@@ -951,8 +1141,9 @@ function populateHours() {
       return false;
     }
 
-    if (!firebase.apps || !firebase.apps.length) {
-      firebase.initializeApp(FIREBASE_WEB_CONFIG);
+    if (!initFirebaseAppForDatabase()) {
+      setPushStatus('Firebase app init failed.');
+      return false;
     }
 
     firebasePushInitialized = true;
@@ -1246,6 +1437,8 @@ function uiToggleLights() {
 let paramsChart = null;
 let dosingChart = null;
 let planChart = null;
+let dosingHistoryChart = null;
+let lastDosingHistoryLoadMs = 0;
 const REALTIME_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // keep about 30 days in browser memory
 const REALTIME_MAX_POINTS = 525000; // safety cap: about 30 days at 5-second refresh
 const realtimeTimestamps = [];
@@ -1464,14 +1657,215 @@ function addRealtimePoint(s){
   chartStatus('Realtime charts: ' + label + ' • kept: ' + realtimeLabels.length + ' points / ~30 days max');
 }
 
+function formatHistoryDate(dateObj){
+  return dateObj.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function ymdParts(dateObj){
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  return { month: `${y}-${m}`, day: d, label: formatHistoryDate(dateObj) };
+}
+
+function historyValue(obj, keys){
+  if (!obj) return 0;
+  for (const k of keys) {
+    const n = numOrNull(obj[k]);
+    if (n !== null) return n;
+  }
+  return 0;
+}
+
+function pumpLabelForHistory(mode, pumpIndex){
+  const cfg = getModeCfg(Number(mode || currentDosingMode || 1));
+  const pump = cfg.pumps.find(p => p.index === pumpIndex);
+  return pump ? cleanPumpLabel(pump.name) : ('P' + (pumpIndex + 1));
+}
+
+function historyRowFromRecord(label, record, mode){
+  const dosing = record?.dosing || record || {};
+  const p1 = historyValue(dosing, ['p1','P1','pump1','0','kalk','afr','alk']);
+  const p2 = historyValue(dosing, ['p2','P2','pump2','1','cacl2','ca','afr','alk']);
+  const p3 = historyValue(dosing, ['p3','P3','pump3','2','naoh','mg','ca']);
+  const p4 = historyValue(dosing, ['p4','P4','pump4','3','mg','alk','naoh']);
+  const total = historyValue(record?.params, ['totalDose']) || (p1 + p2 + p3 + p4);
+  return { label, p1, p2, p3, p4, total, samples: Number(record?.sampleCount || 0), mode };
+}
+
+function ensureDosingHistoryChart(){
+  if (typeof Chart === 'undefined') {
+    const meta = document.getElementById('dosingHistoryMeta');
+    if (meta) meta.textContent = 'History chart needs Chart.js / internet access';
+    return false;
+  }
+  const ctx = document.getElementById('dosingHistoryChart')?.getContext('2d');
+  if (!ctx) return false;
+  if (dosingHistoryChart) return true;
+
+  dosingHistoryChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: [], datasets: [] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { color: '#e2e8f0', usePointStyle: true } },
+        tooltip: {
+          callbacks: {
+            label: function(ctx){
+              const v = Number(ctx.parsed.y || 0);
+              return ctx.dataset.label + ': ' + v.toFixed(1) + ' mL';
+            },
+            footer: function(items){
+              const row = dosingHistoryRows[items[0]?.dataIndex];
+              return row ? ('Total actual: ' + row.total.toFixed(1) + ' mL') : '';
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          stacked: true,
+          grid: { display: false },
+          ticks: { color: '#94a3b8', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 },
+          title: { display: true, text: 'Day', color: '#94a3b8' }
+        },
+        y: {
+          stacked: true,
+          beginAtZero: true,
+          grid: { color: 'rgba(255,255,255,0.06)' },
+          ticks: { color: '#94a3b8' },
+          title: { display: true, text: 'Actual dosed mL/day', color: '#94a3b8' }
+        },
+        yTotal: {
+          position: 'right',
+          beginAtZero: true,
+          grid: { display: false },
+          ticks: { color: '#94a3b8' },
+          title: { display: true, text: 'Total mL/day', color: '#94a3b8' }
+        }
+      }
+    }
+  });
+  return true;
+}
+
+let dosingHistoryRows = [];
+
+function renderDosingHistory(rows, sourceText){
+  if (!ensureDosingHistoryChart()) return;
+  dosingHistoryRows = rows;
+  const mode = Number(currentStatus.dosingMode || currentDosingMode || 1);
+  const labels = rows.map(r => r.label);
+  const total = rows.reduce((sum, r) => sum + r.total, 0);
+  const avg = rows.length ? total / rows.length : 0;
+  const last = rows.length ? rows[rows.length - 1].total : 0;
+  const max = rows.reduce((m, r) => Math.max(m, r.total), 0);
+
+  dosingHistoryChart.data.labels = labels;
+  dosingHistoryChart.data.datasets = [
+    { type: 'bar', label: pumpLabelForHistory(mode, 0), data: rows.map(r => r.p1), stack: 'actual', backgroundColor: 'rgba(34,211,238,0.75)', borderColor: '#22d3ee', borderWidth: 1 },
+    { type: 'bar', label: pumpLabelForHistory(mode, 1), data: rows.map(r => r.p2), stack: 'actual', backgroundColor: 'rgba(74,222,128,0.72)', borderColor: '#4ade80', borderWidth: 1 },
+    { type: 'bar', label: pumpLabelForHistory(mode, 2), data: rows.map(r => r.p3), stack: 'actual', backgroundColor: 'rgba(251,191,36,0.72)', borderColor: '#fbbf24', borderWidth: 1 },
+    { type: 'bar', label: pumpLabelForHistory(mode, 3), data: rows.map(r => r.p4), stack: 'actual', backgroundColor: 'rgba(248,113,113,0.72)', borderColor: '#f87171', borderWidth: 1 },
+    { type: 'line', label: 'Total actual', data: rows.map(r => r.total), yAxisID: 'yTotal', tension: 0.25, borderColor: '#f8fafc', backgroundColor: '#f8fafc', pointRadius: 3, pointHoverRadius: 5, borderWidth: 2 }
+  ];
+  dosingHistoryChart.update();
+
+  const meta = document.getElementById('dosingHistoryMeta');
+  if (meta) meta.textContent = sourceText + ' • ' + rows.length + ' day(s)';
+  const summary = document.getElementById('dosingHistorySummary');
+  if (summary) {
+    summary.innerHTML = `
+      <div class="history-stat"><div class="k">Last day</div><div class="v">${last.toFixed(1)} mL</div></div>
+      <div class="history-stat"><div class="k">Average/day</div><div class="v">${avg.toFixed(1)} mL</div></div>
+      <div class="history-stat"><div class="k">Max day</div><div class="v">${max.toFixed(1)} mL</div></div>
+      <div class="history-stat"><div class="k">Range total</div><div class="v">${total.toFixed(1)} mL</div></div>`;
+  }
+}
+
+async function loadLocalDosingHistoryToday(){
+  const h = await api('/api/history');
+  const label = (h.labels && h.labels[0]) || 'Today';
+  const todayRecord = {
+    dosing: h.dosing?.[label] || h.dosing?.Today || {},
+    params: h.params?.[label] || h.params?.Today || {},
+    sampleCount: h.sampleCount || 0
+  };
+  return [historyRowFromRecord(label, todayRecord, Number(h.dosingMode || currentDosingMode || 1))];
+}
+
+async function loadFirebaseDosingHistory(days){
+  if (!initFirebaseAppForDatabase()) return [];
+  const deviceId = currentStatus.deviceId || 'reefDoser2';
+  const end = new Date();
+  const start = new Date(end.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+  const months = [];
+  const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+  while (cursor <= end) {
+    months.push(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`);
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  const monthData = {};
+  await Promise.all(months.map(async month => {
+    try {
+      const snap = await firebase.database().ref('/devices/' + deviceId + '/history/' + month).once('value');
+      monthData[month] = snap.val() || {};
+    } catch (err) {
+      console.warn('History read failed for ' + month, err);
+      monthData[month] = {};
+    }
+  }));
+
+  const rows = [];
+  for (let i = 0; i < days; i++) {
+    const d = new Date(start.getTime() + i * 24 * 60 * 60 * 1000);
+    const part = ymdParts(d);
+    const rec = monthData[part.month]?.[part.day];
+    if (rec) rows.push(historyRowFromRecord(part.label, rec, Number(rec.dosingMode || currentDosingMode || 1)));
+  }
+  return rows;
+}
+
+async function loadDosingHistory(force=false){
+  const now = Date.now();
+  if (!force && now - lastDosingHistoryLoadMs < 5 * 60 * 1000) return;
+  lastDosingHistoryLoadMs = now;
+
+  const rangeEl = document.getElementById('historyRange');
+  const days = Math.max(1, Number(rangeEl?.value || 30));
+  const meta = document.getElementById('dosingHistoryMeta');
+  if (meta) meta.textContent = 'Loading actual dosing history...';
+
+  let rows = [];
+  try { rows = await loadFirebaseDosingHistory(days); } catch (err) { console.warn(err); }
+
+  try {
+    const todayRows = await loadLocalDosingHistoryToday();
+    if (todayRows.length) {
+      const todayLabel = todayRows[0].label;
+      const existingIdx = rows.findIndex(r => r.label === todayLabel || r.label === formatHistoryDate(new Date()));
+      if (existingIdx >= 0) rows[existingIdx] = todayRows[0];
+      else rows.push(todayRows[0]);
+    }
+  } catch (err) { console.warn('Local history read failed', err); }
+
+  rows = rows.filter(r => r && Number.isFinite(r.total)).slice(-days);
+  if (!rows.length) rows = [{ label: 'No data', p1: 0, p2: 0, p3: 0, p4: 0, total: 0, samples: 0, mode: currentDosingMode }];
+  const source = rows.length > 1 ? 'Firebase daily records + live today' : 'Live controller today only';
+  renderDosingHistory(rows, source);
+}
+
 function loadLocalReport(){
-  // Kept for compatibility with older buttons/handlers. Realtime graphs do not call /api/history.
-  chartStatus('Realtime charts use /api/status only');
+  loadDosingHistory(true);
 }
 
     window.addEventListener('load', () => {
       populateHours();
-      setTimeout(() => ensureRealtimeCharts(), 500);
+      setTimeout(() => { ensureRealtimeCharts(); loadDosingHistory(true); }, 500);
     });
 
   setInterval(loadAll, 5000);

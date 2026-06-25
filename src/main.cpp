@@ -34,7 +34,7 @@
 #define FIREBASE_API_KEY "AIzaSyB4XtC5Pvxw6To58EKTLMADQLqR_hTZK0M"
 #define FIREBASE_DB_URL "https://aiesdoser-default-rtdb.firebaseio.com"
 //TODO for firware update
-#define FW_VERSION "10.6.6"
+#define FW_VERSION "10.10.2"
 
 #include "Dashboard.h"
 
@@ -106,6 +106,13 @@ const unsigned long ALERT_INFO_REPEAT_MS = 24UL * 60UL * 60UL * 1000UL;   // max
 float DOSING_THRESHOLD = 1.0f; // Mutable now, default to 1ml
 float pumpBuckets[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 float maxDoseLimit = 15.0f;    // Safety rail
+
+// ---------------- LOCAL CHEMICAL RESERVOIR TRACKING ----------------
+// Stored only in ESP32 Preferences/NVS. Volumes are NOT mirrored to Firebase.
+// Dashboard can set bucket size in gallons; firmware subtracts actual dispensed mL.
+const float ML_PER_GALLON = 3785.41f;
+float chemicalCapacityGal[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+float chemicalRemainingMl[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 String lastApexDate = "";
 String apexIp = "";
@@ -216,12 +223,17 @@ void handlePostLiveDose();
 void handlePostEmergencyStop();
 void handlePostResetWifi();
 void handlePostAiBaseline();
+void handleGetChemicalLevels();
+void handlePostChemicalLevels();
 void applyAiBaselineToEngine();
 
 void saveManualTestLocally(float alk, float ca, float mg, float ph);
 void loadManualTestLocally();
 void loadLocalSettings();
 void loadFlowRates();
+void loadChemicalReservoirs();
+void saveChemicalReservoirs();
+void recordChemicalDispense(int pumpIndex, float ml, const char* source);
 void saveFlowRate(int idx, float flowMlPerMin);
 void mirrorStatusToFirebase();
 bool publishTankVolumeToFirebase(const char* source);
@@ -315,6 +327,85 @@ int pumpCountForCurrentDosingMode() {
             return 1;
     }
 }
+
+float getPumpDoseThresholdMl(int pumpIndex) {
+    // pumpIndex is physical 0..3; AIEngine expects pump number 1..4.
+    float threshold = ai.getPumpDumpThresholdMl((uint8_t)(pumpIndex + 1));
+
+    // Safety fallback: if the AI threshold is invalid, use the dashboard/global setting.
+    if (!isfinite(threshold) || threshold <= 0.0f) {
+        threshold = DOSING_THRESHOLD;
+    }
+
+    return threshold;
+}
+
+const char* chemicalCapacityKey(int idx) {
+    switch (idx) {
+        case 0: return "cap1";
+        case 1: return "cap2";
+        case 2: return "cap3";
+        case 3: return "cap4";
+        default: return "cap1";
+    }
+}
+
+const char* chemicalRemainingKey(int idx) {
+    switch (idx) {
+        case 0: return "rem1";
+        case 1: return "rem2";
+        case 2: return "rem3";
+        case 3: return "rem4";
+        default: return "rem1";
+    }
+}
+
+void loadChemicalReservoirs() {
+    prefs.begin("chem-levels", true);
+    for (int i = 0; i < 4; ++i) {
+        chemicalCapacityGal[i] = prefs.getFloat(chemicalCapacityKey(i), 0.0f);
+        chemicalRemainingMl[i] = prefs.getFloat(chemicalRemainingKey(i), chemicalCapacityGal[i] * ML_PER_GALLON);
+
+        if (!isfinite(chemicalCapacityGal[i]) || chemicalCapacityGal[i] < 0.0f) chemicalCapacityGal[i] = 0.0f;
+        if (!isfinite(chemicalRemainingMl[i]) || chemicalRemainingMl[i] < 0.0f) chemicalRemainingMl[i] = 0.0f;
+
+        float maxMl = chemicalCapacityGal[i] * ML_PER_GALLON;
+        if (maxMl > 0.0f && chemicalRemainingMl[i] > maxMl) chemicalRemainingMl[i] = maxMl;
+    }
+    prefs.end();
+}
+
+void saveChemicalReservoirs() {
+    prefs.begin("chem-levels", false);
+    for (int i = 0; i < 4; ++i) {
+        prefs.putFloat(chemicalCapacityKey(i), chemicalCapacityGal[i]);
+        prefs.putFloat(chemicalRemainingKey(i), chemicalRemainingMl[i]);
+    }
+    prefs.end();
+}
+
+void recordChemicalDispense(int pumpIndex, float ml, const char* source) {
+    if (pumpIndex < 0 || pumpIndex > 3 || ml <= 0.0f) return;
+    if (chemicalCapacityGal[pumpIndex] <= 0.0f) return; // disabled/unconfigured
+
+    float beforeMl = chemicalRemainingMl[pumpIndex];
+    chemicalRemainingMl[pumpIndex] -= ml;
+    if (chemicalRemainingMl[pumpIndex] < 0.0f) chemicalRemainingMl[pumpIndex] = 0.0f;
+
+    saveChemicalReservoirs();
+
+    Serial.printf("CHEM LEVEL [%s]: P%d dispensed %.2f ml, remaining %.2f gal\n",
+                  source ? source : "dose",
+                  pumpIndex + 1,
+                  ml,
+                  chemicalRemainingMl[pumpIndex] / ML_PER_GALLON);
+    logger.printf("CHEM LEVEL [%s]: P%d dispensed %.2f ml, remaining %.2f gal\n",
+                  source ? source : "dose",
+                  pumpIndex + 1,
+                  ml,
+                  chemicalRemainingMl[pumpIndex] / ML_PER_GALLON);
+}
+
 
 struct dailyStats {
     float tempSum = 0.0f;
@@ -899,10 +990,19 @@ void loadFlowRates() {
         }
     }
     prefs.end();
+
+    // Push saved NVS calibration values into the live Doser object every boot.
+    // Without this, /api/status may show the saved values but dose timing can
+    // still use constructor/default calibration until a new save happens.
+    for (int i = 0; i < 4; ++i) {
+        doser.setCalibration(i, pumpFlowRates[i]);
+    }
 }
 
 void saveFlowRate(int idx, float flowMlPerMin) {
     if (idx < 0 || idx > 3) return;
+    if (!isfinite(flowMlPerMin) || flowMlPerMin <= 0.0f) return;
+
     pumpFlowRates[idx] = flowMlPerMin;
     prefs.begin("doser-settings", false);
     prefs.putFloat(flowPrefKeyForIndex(idx), flowMlPerMin);
@@ -1118,7 +1218,25 @@ void handleGetStatus() {
     doc["buckets"]["ca"] = pumpBuckets[1];
 
     doc["dosingThreshold"] = DOSING_THRESHOLD;
+    doc["dosingThresholds"]["p1"] = getPumpDoseThresholdMl(0);
+    doc["dosingThresholds"]["p2"] = getPumpDoseThresholdMl(1);
+    doc["dosingThresholds"]["p3"] = getPumpDoseThresholdMl(2);
+    doc["dosingThresholds"]["p4"] = getPumpDoseThresholdMl(3);
     doc["maxHourlyLimit"] = maxDoseLimit;
+
+    for (int i = 0; i < 4; ++i) {
+        String pump = "p" + String(i + 1);
+        JsonObject reservoir = doc["chemicalLevels"][pump].to<JsonObject>();
+        reservoir["capacityGal"] = chemicalCapacityGal[i];
+        reservoir["remainingMl"] = chemicalRemainingMl[i];
+        reservoir["remainingGal"] = chemicalRemainingMl[i] / ML_PER_GALLON;
+        reservoir["remainingPct"] = (chemicalCapacityGal[i] > 0.0f)
+            ? (chemicalRemainingMl[i] / (chemicalCapacityGal[i] * ML_PER_GALLON)) * 100.0f
+            : 0.0f;
+        reservoir["enabled"] = chemicalCapacityGal[i] > 0.0f;
+        reservoir["warning"] = chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= ML_PER_GALLON;
+        reservoir["severe"] = chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= (0.5f * ML_PER_GALLON);
+    }
     
     String response;
     serializeJson(doc, response);
@@ -1428,9 +1546,122 @@ void handlePostLiveDose() {
     }
 
     doser.doseMl(pumpIndex, ml);
+    recordChemicalDispense(pumpIndex, ml, "LiveDose");
+    evaluateAlertState("ChemicalLevel", true);
     Serial.printf("Local live dose: physical pump %d, %.2f ml\n", pumpIndex + 1, ml);
     logger.printf("Local live dose: physical pump %d, %.2f ml\n", pumpIndex + 1, ml);
      server.send(200, "application/json", "{\"ok\":true}");
+}
+
+
+void handleGetChemicalLevels() {
+    JsonDocument doc;
+    doc["ok"] = true;
+    for (int i = 0; i < 4; ++i) {
+        String pump = "p" + String(i + 1);
+        JsonObject reservoir = doc["chemicalLevels"][pump].to<JsonObject>();
+        reservoir["capacityGal"] = chemicalCapacityGal[i];
+        reservoir["remainingMl"] = chemicalRemainingMl[i];
+        reservoir["remainingGal"] = chemicalRemainingMl[i] / ML_PER_GALLON;
+        reservoir["remainingPct"] = (chemicalCapacityGal[i] > 0.0f)
+            ? (chemicalRemainingMl[i] / (chemicalCapacityGal[i] * ML_PER_GALLON)) * 100.0f
+            : 0.0f;
+        reservoir["enabled"] = chemicalCapacityGal[i] > 0.0f;
+        reservoir["warning"] = chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= ML_PER_GALLON;
+        reservoir["severe"] = chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= (0.5f * ML_PER_GALLON);
+    }
+
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response);
+}
+
+void handlePostChemicalLevels() {
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, server.arg("plain"));
+    if (error) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
+        return;
+    }
+
+    // resetRemaining=true means "Fill to Full".
+    // setCurrent=true means dashboard is sending actual current gallons for partial refills.
+    bool resetRemaining = doc["resetRemaining"] | false;
+    bool setCurrent = doc["setCurrent"] | false;
+
+    for (int i = 0; i < 4; ++i) {
+        String galKey = "p" + String(i + 1) + "Gal";
+        String currentGalKey = "p" + String(i + 1) + "CurrentGal";
+        String pumpKey = "p" + String(i + 1);
+
+        float oldCapGal = chemicalCapacityGal[i];
+        float gal = oldCapGal;
+
+        if (doc[galKey].is<float>() || doc[galKey].is<int>()) {
+            gal = doc[galKey] | oldCapGal;
+        } else if (doc[pumpKey]["capacityGal"].is<float>() || doc[pumpKey]["capacityGal"].is<int>()) {
+            gal = doc[pumpKey]["capacityGal"] | oldCapGal;
+        }
+
+        if (!isfinite(gal) || gal < 0.0f) gal = 0.0f;
+        if (gal > 20.0f) gal = 20.0f; // sanity limit
+
+        chemicalCapacityGal[i] = gal;
+        float maxMl = gal * ML_PER_GALLON;
+
+        if (gal <= 0.0f) {
+            chemicalRemainingMl[i] = 0.0f;
+            continue;
+        }
+
+        if (resetRemaining) {
+            // Fill to Full
+            chemicalRemainingMl[i] = maxMl;
+        } else if (setCurrent) {
+            // Partial refill / manually set actual current amount.
+            // Supports either top-level p1CurrentGal or nested p1.currentGal.
+            bool hasCurrent = false;
+            float currentGal = chemicalRemainingMl[i] / ML_PER_GALLON;
+
+            if (doc[currentGalKey].is<float>() || doc[currentGalKey].is<int>()) {
+                currentGal = doc[currentGalKey] | currentGal;
+                hasCurrent = true;
+            } else if (doc[pumpKey]["currentGal"].is<float>() || doc[pumpKey]["currentGal"].is<int>()) {
+                currentGal = doc[pumpKey]["currentGal"] | currentGal;
+                hasCurrent = true;
+            } else if (doc[pumpKey]["remainingGal"].is<float>() || doc[pumpKey]["remainingGal"].is<int>()) {
+                currentGal = doc[pumpKey]["remainingGal"] | currentGal;
+                hasCurrent = true;
+            }
+
+            if (hasCurrent) {
+                if (!isfinite(currentGal) || currentGal < 0.0f) currentGal = 0.0f;
+                if (currentGal > gal) currentGal = gal;
+                chemicalRemainingMl[i] = currentGal * ML_PER_GALLON;
+            } else {
+                if (chemicalRemainingMl[i] > maxMl) chemicalRemainingMl[i] = maxMl;
+                if (chemicalRemainingMl[i] < 0.0f) chemicalRemainingMl[i] = 0.0f;
+            }
+        } else {
+            // Save Capacity only: never assume refill.
+            // Preserve actual remaining amount, clamped to new capacity.
+            if (chemicalRemainingMl[i] > maxMl) chemicalRemainingMl[i] = maxMl;
+            if (chemicalRemainingMl[i] < 0.0f) chemicalRemainingMl[i] = 0.0f;
+        }
+    }
+
+    saveChemicalReservoirs();
+    evaluateAlertState("ChemicalLevel", true);
+
+    Serial.println("Chemical reservoir levels saved locally.");
+    logger.println("Chemical reservoir levels saved locally.");
+
+    handleGetChemicalLevels();
 }
 
 void handlePostEmergencyStop() {
@@ -1537,7 +1768,17 @@ void evaluateAlertState(const char* source, bool force) {
     } else if (currentTempF > 82.5f) {
         active = true; level = "severe"; code = "TEMP_CRITICAL_HIGH";
         message = "Temperature is critically high: " + String(currentTempF, 1) + " F";
-    } else if (currentAlk > 0.0f && currentAlk < 7.00f) {
+    } else {
+        for (int i = 0; i < 4; ++i) {
+            if (chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= (0.5f * ML_PER_GALLON)) {
+                active = true; level = "severe"; code = "CHEM_P" + String(i + 1) + "_CRITICAL_LOW";
+                message = "Pump " + String(i + 1) + " chemical is critically low: " + String(chemicalRemainingMl[i] / ML_PER_GALLON, 2) + " gal left";
+                break;
+            }
+        }
+    }
+
+    if (!active && currentAlk > 0.0f && currentAlk < 7.00f) {
         active = true; level = "warning"; code = "ALK_LOW";
         message = "Alk is low: " + String(currentAlk, 2) + " dKH";
     } else if (currentAlk > 9.30f) {
@@ -1555,6 +1796,14 @@ void evaluateAlertState(const char* source, bool force) {
     } else if (currentTempF > 81.5f) {
         active = true; level = "warning"; code = "TEMP_HIGH";
         message = "Temperature is high: " + String(currentTempF, 1) + " F";
+    } else {
+        for (int i = 0; i < 4; ++i) {
+            if (chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= ML_PER_GALLON) {
+                active = true; level = "warning"; code = "CHEM_P" + String(i + 1) + "_LOW";
+                message = "Pump " + String(i + 1) + " chemical is low: " + String(chemicalRemainingMl[i] / ML_PER_GALLON, 2) + " gal left";
+                break;
+            }
+        }
     }
 
     publishAlertState(level, code, message, active, source, force);
@@ -2031,6 +2280,13 @@ logger.println();
     prefs.end();
 
     loadLocalSettings();
+    Serial.printf("BOOT THRESHOLDS COMPILED: P1=%.2f P2=%.2f P3=%.2f P4=%.2f\n",
+  ai.getPumpDumpThresholdMl(1),
+  ai.getPumpDumpThresholdMl(2),
+  ai.getPumpDumpThresholdMl(3),
+  ai.getPumpDumpThresholdMl(4)
+);
+    loadChemicalReservoirs();
 
     bool wifiConnected = false;
 
@@ -2115,6 +2371,8 @@ logger.println();
     server.on("/api/calibration", HTTP_POST, handlePostCalibration);
     server.on("/api/calibration-run", HTTP_POST, handlePostCalibrationRun);
     server.on("/api/live-dose", HTTP_POST, handlePostLiveDose);
+    server.on("/api/chemical-levels", HTTP_GET, handleGetChemicalLevels);
+    server.on("/api/chemical-levels", HTTP_POST, handlePostChemicalLevels);
     server.on("/api/emergency-stop", HTTP_POST, handlePostEmergencyStop);
     server.on("/api/reset-wifi", HTTP_POST, handlePostResetWifi);
     // Notification level endpoints.
@@ -2413,22 +2671,32 @@ void loop() {
             logger.println(WiFi.localIP().toString());
         doseSlotId++;
 
-        Serial.printf("[SLOT %lu] checking buckets: P1=%.2f P2=%.2f P3=%.2f P4=%.2f threshold=%.2f\n",
-                      doseSlotId, pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3], DOSING_THRESHOLD);
-        logger.printf("[SLOT %lu] checking buckets: P1=%.2f P2=%.2f P3=%.2f P4=%.2f threshold=%.2f\n",
-                         doseSlotId, pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3], DOSING_THRESHOLD);
+        float slotThresholds[4] = {
+            getPumpDoseThresholdMl(0),
+            getPumpDoseThresholdMl(1),
+            getPumpDoseThresholdMl(2),
+            getPumpDoseThresholdMl(3)
+        };
+
+        Serial.printf("[SLOT %lu] checking buckets: P1=%.2f P2=%.2f P3=%.2f P4=%.2f thresholds: P1=%.2f P2=%.2f P3=%.2f P4=%.2f\n",
+                      doseSlotId, pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3],
+                      slotThresholds[0], slotThresholds[1], slotThresholds[2], slotThresholds[3]);
+        logger.printf("[SLOT %lu] checking buckets: P1=%.2f P2=%.2f P3=%.2f P4=%.2f thresholds: P1=%.2f P2=%.2f P3=%.2f P4=%.2f\n",
+                         doseSlotId, pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3],
+                         slotThresholds[0], slotThresholds[1], slotThresholds[2], slotThresholds[3]);
 
         for (int i = 0; i < 4; i++) {
-            if (pumpBuckets[i] >= DOSING_THRESHOLD) {
+            float pumpThreshold = slotThresholds[i];
+            if (pumpBuckets[i] >= pumpThreshold) {
                 Serial.printf("[SLOT %lu] PUMP %d queued: bucket %.2f ready to dose.\n",
                               doseSlotId, i + 1, pumpBuckets[i]);
                 logger.printf("[SLOT %lu] PUMP %d queued: bucket %.2f ready to dose.\n",
                                  doseSlotId, i + 1, pumpBuckets[i]);
             } else {
                 Serial.printf("[SLOT %lu] PUMP %d no dump: bucket %.2f below threshold %.2f\n",
-                              doseSlotId, i + 1, pumpBuckets[i], DOSING_THRESHOLD);
+                              doseSlotId, i + 1, pumpBuckets[i], pumpThreshold);
                 logger.printf("[SLOT %lu] PUMP %d no dump: bucket %.2f below threshold %.2f\n",
-                                 doseSlotId, i + 1, pumpBuckets[i], DOSING_THRESHOLD);
+                                 doseSlotId, i + 1, pumpBuckets[i], pumpThreshold);
             }
         }
     }
@@ -2450,7 +2718,7 @@ void loop() {
         static unsigned long lastBootGraceLogMs = 0;
         bool bucketReadyDuringBootGrace = false;
         for (int i = 0; i < 4; i++) {
-            if (pumpBuckets[i] >= DOSING_THRESHOLD) {
+            if (pumpBuckets[i] >= getPumpDoseThresholdMl(i)) {
                 bucketReadyDuringBootGrace = true;
                 break;
             }
@@ -2467,10 +2735,11 @@ void loop() {
         }
     } else if (!anyPumpRunning && !emergencyStop) {
         for (int i = 0; i < 4; i++) {
-            if (pumpBuckets[i] >= DOSING_THRESHOLD) {
+            if (pumpBuckets[i] >= getPumpDoseThresholdMl(i)) {
                 float doseAmount = pumpBuckets[i];
 
                 doser.doseMl(i, doseAmount);
+                recordChemicalDispense(i, doseAmount, "AutoDose");
                 pumpBuckets[i] = 0.0f;
 
                 saveDosingState();
@@ -2488,7 +2757,7 @@ void loop() {
         if (now - lastPumpQueueWaitLogMs >= 5000UL) {
             lastPumpQueueWaitLogMs = now;
             for (int i = 0; i < 4; i++) {
-                if (pumpBuckets[i] >= DOSING_THRESHOLD) {
+                if (pumpBuckets[i] >= getPumpDoseThresholdMl(i)) {
                     Serial.printf("[SLOT %lu] PUMP %d ready to dose %.2f ml, waiting for active pump to finish.\n",
                                   doseSlotId, i + 1, pumpBuckets[i]);
                     logger.printf("[SLOT %lu] PUMP %d ready to dose %.2f ml, waiting for active pump to finish.\n",

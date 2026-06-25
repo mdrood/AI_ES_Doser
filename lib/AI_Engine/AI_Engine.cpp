@@ -94,30 +94,114 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
             //   P3 = NaOH
             //   P4 = Alk solution using the old Mg pump
             //
-            // IMPORTANT MODE 7 FIX:
-            // High pH should block/taper NaOH, but it must NOT shut off Kalk.
-            // Eric still uses Kalk as a normal daily baseline/consumption path.
-            // The dedicated Alk pump handles the extra alk correction when pH is high.
-            if (currentPh >= 8.45f) {
-                // High pH: protect pH by blocking NaOH correction.
-                // Keep a small Kalk correction alive; baseline Kalk is added below.
-                // Alk pump carries the majority of alk recovery.
-                next.kalk = (adjAlk > 0.0f) ? ((adjAlk * 0.20f) / chem.dkhPerMlKalk) : 0.0f;
-                next.naoh = 0.0f;
-                next.alk  = (adjAlk > 0.0f) ? ((adjAlk * 0.80f) / chem.dkhPerMlAlk) : 0.0f;
-            } else if (currentPh < 8.15f) {
-                // Low pH: use NaOH/Kalk to help pH, but keep some Alk
-                // correction on P4 so the tank can catch up even if NaOH later
-                // gets tapered by pH safety.
-                next.naoh = (adjAlk * 0.60f) / chem.dkhPerMlNaoh;
-                next.kalk = (adjAlk * 0.20f) / chem.dkhPerMlKalk;
-                next.alk  = (adjAlk * 0.20f) / chem.dkhPerMlAlk;
-            } else {
-                // Normal pH: balanced split. Alk pump carries the majority of
-                // the correction so Mode 7 does not get stuck when pH rises.
-                next.kalk = (adjAlk * 0.30f) / chem.dkhPerMlKalk;
-                next.naoh = (adjAlk * 0.20f) / chem.dkhPerMlNaoh;
-                next.alk  = (adjAlk * 0.50f) / chem.dkhPerMlAlk;
+            // Adaptive Mode 7 split:
+            // The older fixed split could starve P4 Alk when Eric's alkalinity
+            // stayed low. This version shifts more correction onto the dedicated
+            // Alk pump as the alk deficit grows, while still protecting pH.
+            {
+                float kalkShare = 0.30f;
+                float naohShare = 0.20f;
+                float alkShare  = 0.50f;
+
+                if (consAlk >= 1.20f) {
+                    // Very low alk: P4 Alk carries most of the recovery.
+                    kalkShare = 0.15f;
+                    naohShare = 0.10f;
+                    alkShare  = 0.75f;
+                } else if (consAlk >= 0.80f) {
+                    // Low alk: bias recovery toward P4 Alk.
+                    kalkShare = 0.20f;
+                    naohShare = 0.15f;
+                    alkShare  = 0.65f;
+                }
+
+                if (currentPh >= 8.60f) {
+                    // Dangerous/high pH: block NaOH and move that correction to P4 Alk.
+                    alkShare += naohShare;
+                    naohShare = 0.0f;
+                    if (kalkShare > 0.20f) kalkShare = 0.20f;
+                    alkShare = 1.0f - kalkShare;
+                } else if (currentPh >= 8.45f) {
+                    // Eric recovery rule: if Alk is still badly low, do NOT fully
+                    // shut off Pump 3 just because pH is 8.45-8.59. Eric proved
+                    // NaOH is the fast alk recovery tool. Keep some NaOH unless
+                    // pH reaches the hard 8.60 cutoff.
+                    if (consAlk >= 1.20f) {
+                        kalkShare = 0.10f;
+                        naohShare = 0.35f;
+                        alkShare  = 0.55f;
+                    } else if (consAlk >= 0.80f) {
+                        kalkShare = 0.15f;
+                        naohShare = 0.25f;
+                        alkShare  = 0.60f;
+                    } else {
+                        // Alk is not far behind; use P4 Alk instead of NaOH at high-ish pH.
+                        alkShare += naohShare;
+                        naohShare = 0.0f;
+                        if (kalkShare > 0.20f) kalkShare = 0.20f;
+                        alkShare = 1.0f - kalkShare;
+                    }
+                } else if (currentPh > 0.0f && currentPh < 8.15f) {
+                    // Low pH: keep NaOH useful, but do not let it starve P4 Alk
+                    // when Alk is seriously behind.
+                    if (consAlk >= 1.20f) {
+                        // Very low Alk + low pH:
+                        // keep NaOH helping pH, but push most recovery to P4 Alk.
+                        kalkShare = 0.05f;
+                        naohShare = 0.25f;
+                        alkShare  = 0.70f;
+                    } else if (consAlk >= 0.80f) {
+                        // Low Alk + low pH:
+                        // still bias toward P4 Alk so Eric can catch up.
+                        kalkShare = 0.10f;
+                        naohShare = 0.30f;
+                        alkShare  = 0.60f;
+                    } else {
+                        kalkShare = 0.20f;
+                        naohShare = 0.60f;
+                        alkShare  = 0.20f;
+                    }
+                }
+
+
+                // ===== EVENING / NIGHT pH ASSIST (Mode 7 only) =====
+                // Lights OFF + Alk behind:
+                // start helping earlier in the evening before pH crashes.
+                // This does not create extra total correction here; it shifts
+                // more of the existing correction toward Pump 3 (NaOH).
+                if (!lightsActive && currentPh > 0.0f && consAlk >= 0.40f) {
+                    float nightBoost = 1.0f;
+
+                    if (currentPh < 7.90f && consAlk >= 0.80f) {
+                        nightBoost = 1.75f;   // severe overnight pH sag + low Alk
+                    } else if (currentPh < 8.05f && consAlk >= 0.80f) {
+                        nightBoost = 1.50f;   // night assist, stronger
+                    } else if (currentPh < 8.25f && consAlk >= 0.60f) {
+                        nightBoost = 1.25f;   // evening assist before the crash
+                    }
+
+                    if (nightBoost > 1.0f) {
+                        naohShare *= nightBoost;
+
+                        float total = kalkShare + naohShare + alkShare;
+                        if (total > 0.0f) {
+                            kalkShare /= total;
+                            naohShare /= total;
+                            alkShare  /= total;
+                        }
+
+                        Serial.printf(
+                            "[NIGHT PH ASSIST] lights=off pH=%.2f alkGap=%.2f boost=%.2f\n",
+                            currentPh,
+                            consAlk,
+                            nightBoost
+                        );
+                    }
+                }
+
+                next.kalk = (adjAlk > 0.0f && chem.dkhPerMlKalk > 0.0f) ? ((adjAlk * kalkShare) / chem.dkhPerMlKalk) : 0.0f;
+                next.naoh = (adjAlk > 0.0f && chem.dkhPerMlNaoh > 0.0f) ? ((adjAlk * naohShare) / chem.dkhPerMlNaoh) : 0.0f;
+                next.alk  = (adjAlk > 0.0f && chem.dkhPerMlAlk  > 0.0f) ? ((adjAlk * alkShare)  / chem.dkhPerMlAlk)  : 0.0f;
             }
             next.cacl2 = adjCa / chem.caPerMlCacl2;
             next.mg    = 0.0f; // Pump 4 is Alk in Mode 7, not Mg.
@@ -130,6 +214,64 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
     // still limits how aggressively it corrects parameter errors.
     applySafetyEnforcement(next);
     addBaselineDemand(next, mode);
+
+    // Adaptive Mode-7 P4 Alk demand-learning assist.
+    // This is different from the instant correction split above. It watches the
+    // alk trend over time and learns extra daily P4 Alk demand when Eric's tank
+    // keeps falling even while the normal plan is dosing.
+    static float mode7P4AlkAssistMlDay = 0.0f;
+    static float lastMode7ConsAlk = 0.0f;
+    static bool hasMode7TrendSample = false;
+    static unsigned long lastMode7AssistAdjustMs = 0;
+
+    if (mode == 7) {
+        const unsigned long MODE7_ASSIST_INTERVAL_MS = 60UL * 60UL * 1000UL; // adjust at most hourly
+        const float MODE7_ASSIST_STEP_UP_ML_DAY = 75.0f;
+        const float MODE7_ASSIST_STEP_DOWN_ML_DAY = 150.0f;
+        const float MODE7_ASSIST_MAX_ML_DAY = 1000.0f;
+        const float MODE7_LOW_ALK_GAP_DKH = 0.60f;
+        const float MODE7_NEAR_TARGET_GAP_DKH = 0.25f;
+        const float MODE7_NOT_IMPROVING_DKH = -0.05f; // consAlk must drop by >0.05 to count as improving
+        const float MODE7_FAST_IMPROVING_DKH = -0.20f;
+
+        unsigned long nowMs = millis();
+
+        if (!hasMode7TrendSample) {
+            hasMode7TrendSample = true;
+            lastMode7ConsAlk = consAlk;
+            lastMode7AssistAdjustMs = nowMs;
+
+            // Give very low alk an initial gentle assist immediately after boot/flash
+            // instead of waiting a full hour. This is still clamped below.
+            if (consAlk >= 1.20f) {
+                mode7P4AlkAssistMlDay = 100.0f;
+            }
+        } else if (nowMs - lastMode7AssistAdjustMs >= MODE7_ASSIST_INTERVAL_MS) {
+            float deltaGap = consAlk - lastMode7ConsAlk;
+
+            if (consAlk >= MODE7_LOW_ALK_GAP_DKH && deltaGap > MODE7_NOT_IMPROVING_DKH) {
+                // Alk is still low and has not clearly improved over the last hour.
+                mode7P4AlkAssistMlDay += MODE7_ASSIST_STEP_UP_ML_DAY;
+            } else if (consAlk <= MODE7_NEAR_TARGET_GAP_DKH || deltaGap <= MODE7_FAST_IMPROVING_DKH) {
+                // Near target or improving quickly: back off faster than we ramp up.
+                mode7P4AlkAssistMlDay -= MODE7_ASSIST_STEP_DOWN_ML_DAY;
+            }
+
+            if (mode7P4AlkAssistMlDay < 0.0f) mode7P4AlkAssistMlDay = 0.0f;
+            if (mode7P4AlkAssistMlDay > MODE7_ASSIST_MAX_ML_DAY) mode7P4AlkAssistMlDay = MODE7_ASSIST_MAX_ML_DAY;
+
+            Serial.printf("MODE7 ALK LEARN: gap=%.2f prevGap=%.2f delta=%.2f assist=%.2f ml/day\n",
+                          consAlk, lastMode7ConsAlk, deltaGap, mode7P4AlkAssistMlDay);
+
+            lastMode7ConsAlk = consAlk;
+            lastMode7AssistAdjustMs = nowMs;
+        }
+
+        if (mode7P4AlkAssistMlDay > 0.0f) {
+            next.alk += mode7P4AlkAssistMlDay;
+        }
+    }
+
 
     // Adaptive Mode-6 Alk recovery assist.
     // Mode 6 has no separate carbonate/bicarbonate Alk pump: low Alk is corrected
@@ -166,6 +308,52 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
     // This applies AFTER baseline demand is added so Eric's known daily NaOH
     // baseline is also reduced when pH is already high. Kalk is left alone.
     applyNaohPhCaution(next, currentPh);
+
+    // Mode 7 NaOH rescue for Eric:
+    // If Alk is low AND pH is low, Pump 3 must be allowed to help harder.
+    // The previous floor often left Eric stuck at naoh/day=450 even with
+    // Alk around 7.4-7.5 and pH in the 7.8s. This floor is still protected
+    // by maxNaohDay in applyAbsoluteCaps(), and still blocks at pH >= 8.60.
+    if (mode == 7 && consAlk >= 0.40f && currentPh > 0.0f && currentPh < 8.60f) {
+        float minNaohRecoveryMlDay = 0.0f;
+
+        if (currentPh < 7.90f && consAlk >= 0.80f) {
+            minNaohRecoveryMlDay = 1100.0f;   // severe low pH + low Alk
+        } else if (currentPh < 8.00f && consAlk >= 0.80f) {
+            minNaohRecoveryMlDay = 900.0f;    // low pH + low Alk
+        } else if (currentPh < 8.10f && consAlk >= 0.80f) {
+            minNaohRecoveryMlDay = 750.0f;    // early recovery support
+        } else if (consAlk >= 1.20f) {
+            minNaohRecoveryMlDay = 650.0f;    // very low Alk even if pH is not low
+        } else if (consAlk >= 0.80f) {
+            minNaohRecoveryMlDay = 450.0f;    // normal low-Alk floor
+        }
+
+        // At 8.45-8.59, still allow NaOH for low-Alk recovery, but do not
+        // push as hard as when pH is low/normal.
+        if (currentPh >= 8.45f) {
+            minNaohRecoveryMlDay *= 0.75f;
+        }
+
+        if (minNaohRecoveryMlDay > 0.0f && next.naoh < minNaohRecoveryMlDay) {
+            next.naoh = minNaohRecoveryMlDay;
+            Serial.printf("MODE7 NAOH RESCUE: gap=%.2f pH=%.2f floor=%.2f naoh=%.2f ml/day\n",
+                          consAlk, currentPh, minNaohRecoveryMlDay, next.naoh);
+        }
+    }
+
+    // Mode 7 recovery guard for Eric:
+    // If Alk and/or pH are low, do NOT let the adaptive split reduce Kalk.
+    // Kalk is Eric's steady pH support, so recovery mode keeps it pinned at
+    // the configured max while the learned P4 Alk assist adds catch-up dose.
+    if (mode == 7) {
+        const bool mode7Recovery = (consAlk >= 0.40f) || (currentPh > 0.0f && currentPh < 8.10f);
+        if (mode7Recovery && next.kalk < limits.maxKalkDay) {
+            next.kalk = limits.maxKalkDay;
+            Serial.printf("MODE7 RECOVERY: Kalk locked at %.2f ml/day (gap=%.2f pH=%.2f)\n",
+                          next.kalk, consAlk, currentPh);
+        }
+    }
 
     applyAbsoluteCaps(next);
 
@@ -243,12 +431,14 @@ void AIEngine::applyNaohPhCaution(DosingPlan &p, float currentPh) {
     // When pH is already high, taper NaOH down instead of letting baseline +
     // correction keep pushing pH higher.
     //
-    // Behavior:
+    // Global behavior:
     //   pH < 8.30  = normal NaOH
     //   8.30-8.35  = 80% NaOH
     //   8.35-8.40  = 60% NaOH
     //   8.40-8.45  = 35% NaOH
     //   >= 8.45    = 0% NaOH
+    // Mode 7 can restore NaOH immediately after this layer when Alk is
+    // badly low and pH is below the hard 8.60 cutoff.
     //
     // If pH is missing/invalid (0 or negative), do not apply a pH gate.
     if (currentPh <= 0.0f) return;

@@ -169,8 +169,8 @@ static bool parseApexStatusJson(const String& payload, ApexLatest& out) {
       if (type == "temp" || did == "base_temp" || name == "tmp" || name.indexOf("temp") >= 0) {
         if (did == "base_temp" || name == "tmp" || !isfinite(tempFound)) tempFound = v;
       }
-      else if (type == "ph" || did == "base_ph" || name.indexOf("ph") >= 0) {
-        if (did == "base_ph" || name.indexOf("sump") >= 0 || !isfinite(phFound)) phFound = v;
+      else if (type == "ph" || did == "base_ph" || name.indexOf("pH14ft") >= 0) {
+        if (did == "14_1" || name.indexOf("pH14ft") >= 0 || !isfinite(phFound)) phFound = v;
       }
       else if (type == "cond" || did == "base_cond" || name == "salt" || name.indexOf("cond") >= 0) {
         if (did == "base_cond" || name == "salt" || !isfinite(out.cond)) out.cond = v;
