@@ -34,7 +34,7 @@
 #define FIREBASE_API_KEY "AIzaSyB4XtC5Pvxw6To58EKTLMADQLqR_hTZK0M"
 #define FIREBASE_DB_URL "https://aiesdoser-default-rtdb.firebaseio.com"
 //TODO for firware update
-#define FW_VERSION "10.10.2"
+#define FW_VERSION "10.10.3"
 
 #include "Dashboard.h"
 
@@ -106,7 +106,7 @@ const unsigned long ALERT_INFO_REPEAT_MS = 24UL * 60UL * 60UL * 1000UL;   // max
 float DOSING_THRESHOLD = 1.0f; // Mutable now, default to 1ml
 float pumpBuckets[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 float maxDoseLimit = 15.0f;    // Safety rail
-
+extern float dailyDoseTotals[4]; // Links to Doser.cpp
 // ---------------- LOCAL CHEMICAL RESERVOIR TRACKING ----------------
 // Stored only in ESP32 Preferences/NVS. Volumes are NOT mirrored to Firebase.
 // Dashboard can set bucket size in gallons; firmware subtracts actual dispensed mL.
@@ -386,23 +386,42 @@ void saveChemicalReservoirs() {
 
 void recordChemicalDispense(int pumpIndex, float ml, const char* source) {
     if (pumpIndex < 0 || pumpIndex > 3 || ml <= 0.0f) return;
-    if (chemicalCapacityGal[pumpIndex] <= 0.0f) return; // disabled/unconfigured
 
-    float beforeMl = chemicalRemainingMl[pumpIndex];
+    // Single source of truth for daily dosing totals.
+    // Count the actual mL returned by Doser::doseMl(), after any runtime safety cap.
+    dailyDoseTotals[pumpIndex] += ml;
+    saveDosingState();
+
+    if (chemicalCapacityGal[pumpIndex] <= 0.0f) {
+        Serial.printf("DOSE ACCOUNTING [%s]: P%d dispensed %.2f ml, today %.2f ml, reservoir disabled\n",
+                      source ? source : "dose",
+                      pumpIndex + 1,
+                      ml,
+                      dailyDoseTotals[pumpIndex]);
+        logger.printf("DOSE ACCOUNTING [%s]: P%d dispensed %.2f ml, today %.2f ml, reservoir disabled\n",
+                      source ? source : "dose",
+                      pumpIndex + 1,
+                      ml,
+                      dailyDoseTotals[pumpIndex]);
+        return;
+    }
+
     chemicalRemainingMl[pumpIndex] -= ml;
     if (chemicalRemainingMl[pumpIndex] < 0.0f) chemicalRemainingMl[pumpIndex] = 0.0f;
 
     saveChemicalReservoirs();
 
-    Serial.printf("CHEM LEVEL [%s]: P%d dispensed %.2f ml, remaining %.2f gal\n",
+    Serial.printf("CHEM LEVEL [%s]: P%d dispensed %.2f ml, today %.2f ml, remaining %.2f gal\n",
                   source ? source : "dose",
                   pumpIndex + 1,
                   ml,
+                  dailyDoseTotals[pumpIndex],
                   chemicalRemainingMl[pumpIndex] / ML_PER_GALLON);
-    logger.printf("CHEM LEVEL [%s]: P%d dispensed %.2f ml, remaining %.2f gal\n",
+    logger.printf("CHEM LEVEL [%s]: P%d dispensed %.2f ml, today %.2f ml, remaining %.2f gal\n",
                   source ? source : "dose",
                   pumpIndex + 1,
                   ml,
+                  dailyDoseTotals[pumpIndex],
                   chemicalRemainingMl[pumpIndex] / ML_PER_GALLON);
 }
 
@@ -419,7 +438,7 @@ struct dailyStats {
 } dailyStats;
 
 bool reportPushedToday = false;
-extern float dailyDoseTotals[4]; // Links to Doser.cpp
+
 
 bool isValidSystemMode(int mode) {
     return mode >= 0 && mode <= 2;
@@ -1545,11 +1564,16 @@ void handlePostLiveDose() {
         return;
     }
 
-    doser.doseMl(pumpIndex, ml);
-    recordChemicalDispense(pumpIndex, ml, "LiveDose");
+    float actualMl = doser.doseMl(pumpIndex, ml);
+    if (actualMl <= 0.0f) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"Dose failed to start\"}");
+        return;
+    }
+
+    recordChemicalDispense(pumpIndex, actualMl, "LiveDose");
     evaluateAlertState("ChemicalLevel", true);
-    Serial.printf("Local live dose: physical pump %d, %.2f ml\n", pumpIndex + 1, ml);
-    logger.printf("Local live dose: physical pump %d, %.2f ml\n", pumpIndex + 1, ml);
+    Serial.printf("Local live dose: physical pump %d, requested %.2f ml, actual %.2f ml\n", pumpIndex + 1, ml, actualMl);
+    logger.printf("Local live dose: physical pump %d, requested %.2f ml, actual %.2f ml\n", pumpIndex + 1, ml, actualMl);
      server.send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -2143,11 +2167,9 @@ void pushDailyReport() {
     json.set("sampleCount", dailyStats.count);
     json.set("timestamp", (uint32_t)(millis() / 1000UL));
 
-    // Always keep physical-pump totals, and also include the active chemical aliases.
-    json.set("dosing/p1", dailyDoseTotals[0]);
-    json.set("dosing/p2", dailyDoseTotals[1]);
-    json.set("dosing/p3", dailyDoseTotals[2]);
-    json.set("dosing/p4", dailyDoseTotals[3]);
+    // Write only chemical aliases for history. Do not also write p1/p2/p3/p4 here,
+    // because the hosted index page displays chemical dosing history and older records
+    // with both physical and chemical keys are easy to misread or double-count.
     for (int i = 0; i < 4; ++i) {
         const char* key = pumpKeyForPhysicalIndex(i);
         if (strcmp(key, "unused") != 0) {
@@ -2177,6 +2199,7 @@ void pushDailyReport() {
 
     memset(&dailyStats, 0, sizeof(dailyStats));
     for (int i = 0; i < 4; i++) dailyDoseTotals[i] = 0.0f;
+    doser.resetDailyTotal();
 
     saveDosingState();
     Serial.println("Midnight: daily stats/totals cleared and saved.");
@@ -2738,17 +2761,26 @@ void loop() {
             if (pumpBuckets[i] >= getPumpDoseThresholdMl(i)) {
                 float doseAmount = pumpBuckets[i];
 
-                doser.doseMl(i, doseAmount);
-                recordChemicalDispense(i, doseAmount, "AutoDose");
-                pumpBuckets[i] = 0.0f;
+                float actualMl = doser.doseMl(i, doseAmount);
+                if (actualMl <= 0.0f) {
+                    Serial.printf("[SLOT %lu] PUMP %d dose failed to start; bucket held at %.2f ml\n",
+                                  doseSlotId, i + 1, pumpBuckets[i]);
+                    logger.printf("[SLOT %lu] PUMP %d dose failed to start; bucket held at %.2f ml\n",
+                                  doseSlotId, i + 1, pumpBuckets[i]);
+                    break;
+                }
+
+                recordChemicalDispense(i, actualMl, "AutoDose");
+                pumpBuckets[i] -= actualMl;
+                if (pumpBuckets[i] < 0.01f) pumpBuckets[i] = 0.0f;
 
                 saveDosingState();
                 pumpDumpCount[i]++;
 
-                Serial.printf("[SLOT %lu] DUMP #%lu PUMP %d: %.2f ml, bucket reset to %.2f\n",
-                              doseSlotId, pumpDumpCount[i], i + 1, doseAmount, pumpBuckets[i]);
-                logger.printf("[SLOT %lu] DUMP #%lu PUMP %d: %.2f ml, bucket reset to %.2f\n",
-                                 doseSlotId, pumpDumpCount[i], i + 1, doseAmount, pumpBuckets[i]);
+                Serial.printf("[SLOT %lu] DUMP #%lu PUMP %d: requested %.2f ml, actual %.2f ml, bucket now %.2f\n",
+                              doseSlotId, pumpDumpCount[i], i + 1, doseAmount, actualMl, pumpBuckets[i]);
+                logger.printf("[SLOT %lu] DUMP #%lu PUMP %d: requested %.2f ml, actual %.2f ml, bucket now %.2f\n",
+                                 doseSlotId, pumpDumpCount[i], i + 1, doseAmount, actualMl, pumpBuckets[i]);
                 break;
             }
         }

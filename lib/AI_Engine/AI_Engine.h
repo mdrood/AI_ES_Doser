@@ -2,7 +2,7 @@
 #define AI_ENGINE_H
 
 #include <Arduino.h>
-#warning "USING AI_ENGINE HEADER WITH ERIC SMALL PUMP THRESHOLDS"
+
 struct DosingPlan {
     float kalk; float afr; float alk; float cacl2; float naoh; float mg; // Changed from double to float to fix warnings
     bool active = false;

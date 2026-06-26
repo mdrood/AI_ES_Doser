@@ -14,7 +14,7 @@ class Doser {
 public:
     Doser();
     void begin();
-    void doseMl(int pumpIdx, float ml); 
+    float doseMl(int pumpIdx, float ml); 
     void tick();
     bool isPumpRunning(int pumpIdx);
 
