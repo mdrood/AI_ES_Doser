@@ -178,6 +178,17 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
     .history-stat{border:1px solid rgba(148,163,184,.16);background:rgba(2,6,23,.28);border-radius:14px;padding:12px}
     .history-stat .k{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.10em}
     .history-stat .v{font-size:1.18rem;font-weight:900;color:#f8fafc;margin-top:5px}
+    .danger-warning{
+      border:2px solid rgba(248,113,113,.78);
+      background:linear-gradient(180deg, rgba(127,29,29,.72), rgba(69,10,10,.62));
+      color:#fee2e2;
+      border-radius:16px;
+      padding:14px;
+      margin:12px 0;
+      font-weight:900;
+      box-shadow:0 0 28px rgba(248,113,113,.18);
+    }
+    .danger-warning small{display:block;margin-top:6px;color:#fecaca;font-weight:700;line-height:1.45}
     @media (max-width: 820px){
       .hero{flex-direction:column;align-items:flex-start}
       .hero-right{justify-content:flex-start}
@@ -441,6 +452,46 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
   <div class="footer-note">Use this for large reef systems: enter the dosing the tank already consumes each day. The AI then adjusts up/down from this baseline instead of guessing total demand from zero.</div>
 </div>
 
+
+<div class="card" style="grid-column: 1 / -1">
+  <div class="card-title">
+    <h3>Chemical Strengths</h3>
+    <span class="meta">Advanced per-device tuning</span>
+  </div>
+  <div class="danger-warning">
+    ⚠️ BIG WARNING: These numbers directly change how many mL the AI doses.
+    <small>Lower strength = AI doses more. Higher strength = AI doses less. Do not change these unless you measured the solution strength or know exactly why you are changing it.</small>
+  </div>
+  <div class="two">
+    <div>
+      <div class="help" style="margin-bottom:8px;">Kalk Strength (dKH per mL)</div>
+      <input type="number" id="strKalk" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+    </div>
+    <div>
+      <div class="help" style="margin-bottom:8px;">AFR Strength (dKH per mL)</div>
+      <input type="number" id="strAfr" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+    </div>
+    <div>
+      <div class="help" style="margin-bottom:8px;">P4 Alk Strength (dKH per mL)</div>
+      <input type="number" id="strAlk" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+    </div>
+    <div>
+      <div class="help" style="margin-bottom:8px;">NaOH Strength (dKH per mL)</div>
+      <input type="number" id="strNaoh" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+    </div>
+    <div>
+      <div class="help" style="margin-bottom:8px;">Mg Strength (ppm per mL)</div>
+      <input type="number" id="strMg" step="0.00001" min="0.00001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+    </div>
+    <div>
+      <div class="help" style="margin-bottom:8px;">CaCl2 Strength (ppm per mL)</div>
+      <input type="number" id="strCacl2" step="0.00001" min="0.00001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+    </div>
+  </div>
+  <button class="danger" onclick="saveChemicalStrengths()" style="margin-top:12px">Save Chemical Strengths</button>
+  <div class="footer-note">Stored locally in ESP32 Preferences. This lets Mark and Eric use the same firmware with different solution strengths.</div>
+</div>
+
 <div class="card" style="grid-column: 1 / -1">
   <div class="card-title">
     <h3>Dosing History</h3>
@@ -593,6 +644,14 @@ const FIREBASE_WEB_PUSH_VAPID_KEY = "BNEHGv71r2Ac8cvVOtthjvCJfPPGeYC-IUEOesBK_EF
   function isAiBaselineEditing(){
     const activeId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
     return aiBaselineDirty || activeId === 'coralLoad' || activeId === 'baseKalk' || activeId === 'baseCacl2' || activeId === 'baseNaoh' || activeId === 'baseMg';
+  }
+
+  let chemicalStrengthDirty = false;
+  function markChemicalStrengthDirty(){ chemicalStrengthDirty = true; }
+  function clearChemicalStrengthDirty(){ chemicalStrengthDirty = false; }
+  function isChemicalStrengthEditing(){
+    const activeId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
+    return chemicalStrengthDirty || activeId === 'strKalk' || activeId === 'strAfr' || activeId === 'strAlk' || activeId === 'strNaoh' || activeId === 'strMg' || activeId === 'strCacl2';
   }
 
   // Prevent the 5-second status refresh from rebuilding calibration inputs
@@ -1044,6 +1103,22 @@ function localPlanValue(s, pump){
       if (baseMgEl) baseMgEl.value = Number(baseline.mg || 0).toFixed(0);
     }
 
+    const strengths = s.chemicalStrengths || {};
+    if (!isChemicalStrengthEditing()) {
+      const strKalkEl = document.getElementById('strKalk');
+      const strAfrEl = document.getElementById('strAfr');
+      const strAlkEl = document.getElementById('strAlk');
+      const strNaohEl = document.getElementById('strNaoh');
+      const strMgEl = document.getElementById('strMg');
+      const strCacl2El = document.getElementById('strCacl2');
+      if (strKalkEl) strKalkEl.value = Number(strengths.kalk || 0).toFixed(7);
+      if (strAfrEl) strAfrEl.value = Number(strengths.afr || 0).toFixed(7);
+      if (strAlkEl) strAlkEl.value = Number(strengths.alk || 0).toFixed(7);
+      if (strNaohEl) strNaohEl.value = Number(strengths.naoh || 0).toFixed(7);
+      if (strMgEl) strMgEl.value = Number(strengths.mg || 0).toFixed(5);
+      if (strCacl2El) strCacl2El.value = Number(strengths.cacl2 || 0).toFixed(5);
+    }
+
     const tankInput = document.getElementById('tankGal');
     if (tankInput && document.activeElement !== tankInput) {
       const gal = Number(s.tankGallons ?? s.tankGal ?? s.gallons);
@@ -1382,6 +1457,44 @@ async function saveAiBaseline() {
   await loadAll();
   alert('AI baseline demand saved.');
 }
+
+async function saveChemicalStrengths() {
+  const payload = {
+    kalk: parseFloat(gv('strKalk')),
+    afr: parseFloat(gv('strAfr')),
+    alk: parseFloat(gv('strAlk')),
+    naoh: parseFloat(gv('strNaoh')),
+    mg: parseFloat(gv('strMg')),
+    cacl2: parseFloat(gv('strCacl2'))
+  };
+
+  for (const key of ['kalk','afr','alk','naoh','mg','cacl2']) {
+    if (!Number.isFinite(payload[key]) || payload[key] <= 0) {
+      alert('Enter a valid positive chemical strength for ' + key + '.');
+      return;
+    }
+  }
+
+  const ok = confirm(
+    'BIG WARNING:\\n\\n' +
+    'These chemical strength numbers directly change how many mL AI Doser will dose.\\n' +
+    'Lower strength = more dosing. Higher strength = less dosing.\\n\\n' +
+    'Save these chemical strengths?'
+  );
+  if (!ok) return;
+
+  const res = await api('/api/config/chemical-strengths', 'POST', payload);
+  if (res && res.ok === false) {
+    alert('Chemical strength save failed: ' + (res.error || res.raw || 'unknown error'));
+    return;
+  }
+
+  currentStatus.chemicalStrengths = payload;
+  clearChemicalStrengthDirty();
+  await loadAll();
+  alert('Chemical strengths saved.');
+}
+
 
 async function saveDosingSafeties() {
   const threshold = parseFloat(gv('dTresh'));

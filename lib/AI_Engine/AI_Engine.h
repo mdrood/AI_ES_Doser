@@ -29,6 +29,23 @@ public:
         baselineMgMlDay = mgMlDay;
     }
 
+    void setChemicalStrengths(float kalkDkhPerMl, float afrDkhPerMl, float alkDkhPerMl,
+                              float naohDkhPerMl, float mgPpmPerMl, float cacl2PpmPerMl) {
+        if (isfinite(kalkDkhPerMl) && kalkDkhPerMl > 0.0f) chem.dkhPerMlKalk = kalkDkhPerMl;
+        if (isfinite(afrDkhPerMl) && afrDkhPerMl > 0.0f) chem.dkhPerMlAfr = afrDkhPerMl;
+        if (isfinite(alkDkhPerMl) && alkDkhPerMl > 0.0f) chem.dkhPerMlAlk = alkDkhPerMl;
+        if (isfinite(naohDkhPerMl) && naohDkhPerMl > 0.0f) chem.dkhPerMlNaoh = naohDkhPerMl;
+        if (isfinite(mgPpmPerMl) && mgPpmPerMl > 0.0f) chem.mgPerMlMg = mgPpmPerMl;
+        if (isfinite(cacl2PpmPerMl) && cacl2PpmPerMl > 0.0f) chem.caPerMlCacl2 = cacl2PpmPerMl;
+    }
+
+    float getDkhPerMlKalk() const { return chem.dkhPerMlKalk; }
+    float getDkhPerMlAfr() const { return chem.dkhPerMlAfr; }
+    float getDkhPerMlAlk() const { return chem.dkhPerMlAlk; }
+    float getDkhPerMlNaoh() const { return chem.dkhPerMlNaoh; }
+    float getMgPerMlMg() const { return chem.mgPerMlMg; }
+    float getCaPerMlCacl2() const { return chem.caPerMlCacl2; }
+
     // Per-pump accumulator dump thresholds in mL.
     // Eric Mode 7 physical pump map:
     //   P1 = Kalk, P2 = CaCl2, P3 = NaOH, P4 = Alk
@@ -58,7 +75,7 @@ private:
         // Mark (300g) Inactive
         //float dkhPerMlKalk = 0.0000085f, dkhPerMlAfr = 0.00015f, dkhPerMlAlk = 0.0050f, dkhPerMlNaoh = 0.00255f, mgPerMlMg = 0.0050f, caPerMlCacl2 = 0.42f;
         // Eric (1100g) Active
-        float dkhPerMlKalk = 0.0000046f, dkhPerMlAfr = 0.000082f, dkhPerMlAlk = 0.00126f, dkhPerMlNaoh = 0.00139f, mgPerMlMg = 0.00273f, caPerMlCacl2 = 0.229f;
+        float dkhPerMlKalk = 0.0000046f, dkhPerMlAfr = 0.000082f, dkhPerMlAlk = 0.00126f, dkhPerMlNaoh = 0.00139f, mgPerMlMg = 0.00273f, caPerMlCacl2 = 0.0545f;
     } chem;
 
     // ====== PER-PUMP ACCUMULATOR / DUMP THRESHOLDS ======

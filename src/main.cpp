@@ -26,6 +26,7 @@
 #include <time.h> // Native ESP32 time library
 
 #include "apexapi.h"
+#include "ApexLogEmulator.h"
 #include <ArduinoJson.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
@@ -34,7 +35,7 @@
 #define FIREBASE_API_KEY "AIzaSyB4XtC5Pvxw6To58EKTLMADQLqR_hTZK0M"
 #define FIREBASE_DB_URL "https://aiesdoser-default-rtdb.firebaseio.com"
 //TODO for firware update
-#define FW_VERSION "10.10.3"
+#define FW_VERSION "P_1.0.0"
 
 #include "Dashboard.h"
 
@@ -123,6 +124,22 @@ bool hasSavedManualTest = false;
 
 ApexApi apex;
 
+// ============================================================================
+// TEST ONLY: reefDoser3 Apex Log Emulator
+// ----------------------------------------------------------------------------
+// This does NOT change OTA and does NOT affect reefDoser1 or reefDoser2.
+// When enabled on reefDoser3, syncAllTruths() reads Eric's latest reefDoser2
+// Google Drive serial log through Apps Script instead of calling the real Apex.
+//
+// Deploy AppsScript_ReefDoserLogApi.gs as a web app, then paste the /exec URL
+// below. Use folder=roofDoser2 if the Drive folder is really misspelled that way.
+// ============================================================================
+#define REEFDOSER3_APEX_EMULATOR_TEST 1
+const char* APEX_EMULATOR_URL = "https://script.google.com/macros/s/AKfycbxN_NPXAxSR54WUfZmQeqPMv-S3GJzsQvhGHHWP2udwtONEoDrXordu-h_7tGUiXSPlwQ/exec?raw=1";
+const unsigned long APEX_EMULATOR_POLL_MS = 60000UL;
+
+ApexLogEmulator apexEmu;
+
 FirebaseData streamFbdo;
 FirebaseData writeFbdo;
 FirebaseAuth auth;
@@ -162,6 +179,10 @@ const unsigned long BOOT_DOSING_GRACE_MS = 120000UL; // 2 minutes
 Provisioner provisioner;
 //TODO new customer
 String deviceID = "reefDoser2";
+
+bool useApexLogEmulatorForThisDevice() {
+    return REEFDOSER3_APEX_EMULATOR_TEST && deviceID == "reefDoser3";
+}
 
 WebServer server(80);
 AsyncWebServer serialServer(81);
@@ -208,6 +229,7 @@ void tokenStatusCallback(TokenInfo info);
 void streamTimeoutCallback(bool timeout);
 void streamCallback(StreamData data);
 void syncAllTruths();
+bool syncApexLogEmulatorTruths();
 
 void handleRoot();
 void handleGetStatus();
@@ -226,6 +248,8 @@ void handlePostAiBaseline();
 void handleGetChemicalLevels();
 void handlePostChemicalLevels();
 void applyAiBaselineToEngine();
+void loadChemicalStrengths();
+void handlePostChemicalStrengths();
 
 void saveManualTestLocally(float alk, float ca, float mg, float ph);
 void loadManualTestLocally();
@@ -438,6 +462,7 @@ struct dailyStats {
 } dailyStats;
 
 bool reportPushedToday = false;
+String dailyAccountingDate = "";
 
 
 bool isValidSystemMode(int mode) {
@@ -493,6 +518,7 @@ void calculateAiFromBestChemistry(const char* sourceLabel) {
     }
 
     ai.setTankVolumeGallons(TANK_VOLUME_L / 3.78541f);
+    loadChemicalStrengths();
     applyAiBaselineToEngine();
     ai.calculateNextPlan(dosingMode, targetAlk - useAlk, targetCa - useCa, targetMg - useMg, usePh, isLightsOn());
     ai.currentPlan.active = true;
@@ -522,10 +548,7 @@ const char* resetReasonToString(esp_reset_reason_t reason) {
 
 void applyAiBaselineToEngine() {
 
-    float fourthPumpBaseline =
-        (dosingMode == 7)
-        ? 325.0f          // Mode 7 → Alk baseline
-        : baselineMgMlDay; // All other modes unchanged
+float fourthPumpBaseline = baselineMgMlDay;
 
     ai.setBaselineDemand(
         baselineKalkMlDay,
@@ -534,6 +557,90 @@ void applyAiBaselineToEngine() {
         fourthPumpBaseline
     );
 }
+
+void loadChemicalStrengths() {
+    prefs.begin("doser-settings", true);
+
+    float kalkStrength  = prefs.getFloat("str_kalk",  ai.getDkhPerMlKalk());
+    float afrStrength   = prefs.getFloat("str_afr",   ai.getDkhPerMlAfr());
+    float alkStrength   = prefs.getFloat("str_alk",   ai.getDkhPerMlAlk());
+    float naohStrength  = prefs.getFloat("str_naoh",  ai.getDkhPerMlNaoh());
+    float mgStrength    = prefs.getFloat("str_mg",    ai.getMgPerMlMg());
+    float cacl2Strength = prefs.getFloat("str_cacl2", ai.getCaPerMlCacl2());
+
+    prefs.end();
+
+    ai.setChemicalStrengths(
+        kalkStrength,
+        afrStrength,
+        alkStrength,
+        naohStrength,
+        mgStrength,
+        cacl2Strength
+    );
+}
+
+void handlePostChemicalStrengths() {
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, server.arg("plain"));
+    if (error) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
+        return;
+    }
+
+    float kalkStrength  = doc["kalk"]  | ai.getDkhPerMlKalk();
+    float afrStrength   = doc["afr"]   | ai.getDkhPerMlAfr();
+    float alkStrength   = doc["alk"]   | ai.getDkhPerMlAlk();
+    float naohStrength  = doc["naoh"]  | ai.getDkhPerMlNaoh();
+    float mgStrength    = doc["mg"]    | ai.getMgPerMlMg();
+    float cacl2Strength = doc["cacl2"] | ai.getCaPerMlCacl2();
+
+    if (!isfinite(kalkStrength) || kalkStrength <= 0.0f || kalkStrength > 1.0f ||
+        !isfinite(afrStrength) || afrStrength <= 0.0f || afrStrength > 1.0f ||
+        !isfinite(alkStrength) || alkStrength <= 0.0f || alkStrength > 1.0f ||
+        !isfinite(naohStrength) || naohStrength <= 0.0f || naohStrength > 1.0f ||
+        !isfinite(mgStrength) || mgStrength <= 0.0f || mgStrength > 100.0f ||
+        !isfinite(cacl2Strength) || cacl2Strength <= 0.0f || cacl2Strength > 100.0f) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid chemical strength values\"}");
+        return;
+    }
+
+    ai.setChemicalStrengths(
+        kalkStrength,
+        afrStrength,
+        alkStrength,
+        naohStrength,
+        mgStrength,
+        cacl2Strength
+    );
+
+    prefs.begin("doser-settings", false);
+    prefs.putFloat("str_kalk", ai.getDkhPerMlKalk());
+    prefs.putFloat("str_afr", ai.getDkhPerMlAfr());
+    prefs.putFloat("str_alk", ai.getDkhPerMlAlk());
+    prefs.putFloat("str_naoh", ai.getDkhPerMlNaoh());
+    prefs.putFloat("str_mg", ai.getMgPerMlMg());
+    prefs.putFloat("str_cacl2", ai.getCaPerMlCacl2());
+    prefs.end();
+
+    Serial.printf("CHEMICAL STRENGTHS UPDATED: kalk=%.7f afr=%.7f alk=%.7f naoh=%.7f mg=%.7f cacl2=%.7f\n",
+                  ai.getDkhPerMlKalk(), ai.getDkhPerMlAfr(), ai.getDkhPerMlAlk(),
+                  ai.getDkhPerMlNaoh(), ai.getMgPerMlMg(), ai.getCaPerMlCacl2());
+    logger.printf("CHEMICAL STRENGTHS UPDATED: kalk=%.7f afr=%.7f alk=%.7f naoh=%.7f mg=%.7f cacl2=%.7f\n",
+                  ai.getDkhPerMlKalk(), ai.getDkhPerMlAfr(), ai.getDkhPerMlAlk(),
+                  ai.getDkhPerMlNaoh(), ai.getMgPerMlMg(), ai.getCaPerMlCacl2());
+
+    calculateAiFromBestChemistry("StrengthConfig");
+    publishAiPlanIfNeeded("StrengthConfig", true);
+
+    server.send(200, "application/json", "{\"ok\":true}");
+}
+
 
 void tokenStatusCallback(TokenInfo info) {
     if (info.status == token_status_error) {
@@ -546,27 +653,123 @@ void tokenStatusCallback(TokenInfo info) {
     }
 }
 
-void saveDosingState() {
-    prefs.begin("doser-state", false);
-    // Save Buckets
-    prefs.putBytes("buckets", &pumpBuckets, sizeof(pumpBuckets));
-    // Save Daily Stats
-    prefs.putBytes("stats", &dailyStats, sizeof(dailyStats));
-    // Save Daily Totals (for the graph)
-    prefs.putBytes("totals", &dailyDoseTotals, sizeof(dailyDoseTotals));
-    prefs.end();
+String getTodayDateKey() {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        return "";
+    }
+
+    char today[11];
+    strftime(today, sizeof(today), "%Y-%m-%d", &timeinfo);
+    return String(today);
 }
 
-void loadDosingState() {
-    prefs.begin("doser-state", true); // Read-only mode
-    if (prefs.isKey("buckets")) {
-        prefs.getBytes("buckets", &pumpBuckets, sizeof(pumpBuckets));
-        prefs.getBytes("stats", &dailyStats, sizeof(dailyStats));
-        prefs.getBytes("totals", &dailyDoseTotals, sizeof(dailyDoseTotals));
+void clearDailyAccountingOnly(const char* reason) {
+    memset(&dailyStats, 0, sizeof(dailyStats));
+    for (int i = 0; i < 4; i++) {
+        dailyDoseTotals[i] = 0.0f;
+    }
+    doser.resetDailyTotal();
+
+    Serial.printf("DAILY ACCOUNTING RESET [%s]: stats and daily dose totals cleared.\n",
+                  reason ? reason : "date-change");
+    logger.printf("DAILY ACCOUNTING RESET [%s]: stats and daily dose totals cleared.\n",
+                  reason ? reason : "date-change");
+}
+
+void rolloverDailyAccountingIfNeeded(const char* reason) {
+    String today = getTodayDateKey();
+    if (today.length() == 0) return;
+
+    if (dailyAccountingDate.length() == 0) {
+        dailyAccountingDate = today;
+        return;
+    }
+
+    if (dailyAccountingDate != today) {
+        Serial.printf("DAILY ACCOUNTING ROLLOVER: saved='%s' today='%s'. Clearing daily totals.\n",
+                      dailyAccountingDate.c_str(), today.c_str());
+        logger.printf("DAILY ACCOUNTING ROLLOVER: saved='%s' today='%s'. Clearing daily totals.\n",
+                      dailyAccountingDate.c_str(), today.c_str());
+        clearDailyAccountingOnly(reason ? reason : "date-rollover");
+        dailyAccountingDate = today;
+    }
+}
+
+void saveDosingState() {
+    // Prevent old daily totals from being stamped with today's date after midnight.
+    rolloverDailyAccountingIfNeeded("save-date-rollover");
+
+    String today = getTodayDateKey();
+    if (today.length() > 0) {
+        dailyAccountingDate = today;
+    }
+
+    prefs.begin("doser-state", false);
+    // Save buckets separately from daily accounting; buckets may safely survive reboot.
+    prefs.putBytes("buckets", &pumpBuckets, sizeof(pumpBuckets));
+
+    // Save Daily Stats and Daily Totals (for the graph), tied to a calendar date.
+    prefs.putBytes("stats", &dailyStats, sizeof(dailyStats));
+    prefs.putBytes("totals", &dailyDoseTotals, sizeof(dailyDoseTotals));
+    if (dailyAccountingDate.length() > 0) {
+        prefs.putString("date", dailyAccountingDate);
     }
     prefs.end();
 }
 
+void loadDosingState() {
+    String today = getTodayDateKey();
+    String savedDate = "";
+    bool loadedBuckets = false;
+    bool loadedDailyAccounting = false;
+
+    prefs.begin("doser-state", true); // Read-only mode
+    if (prefs.isKey("buckets")) {
+        prefs.getBytes("buckets", &pumpBuckets, sizeof(pumpBuckets));
+        loadedBuckets = true;
+    }
+    if (prefs.isKey("stats")) {
+        prefs.getBytes("stats", &dailyStats, sizeof(dailyStats));
+        loadedDailyAccounting = true;
+    }
+    if (prefs.isKey("totals")) {
+        prefs.getBytes("totals", &dailyDoseTotals, sizeof(dailyDoseTotals));
+        loadedDailyAccounting = true;
+    }
+    savedDate = prefs.getString("date", "");
+    prefs.end();
+
+    dailyAccountingDate = savedDate;
+
+    // Critical fix: never carry yesterday's or undated daily totals into today.
+    // Older firmware did not store a date, so an empty savedDate is treated as stale
+    // once time is available. Buckets remain restored; only daily stats/totals clear.
+    if (today.length() > 0 && loadedDailyAccounting && savedDate != today) {
+        Serial.printf("DAILY ACCOUNTING DATE MISMATCH: saved='%s' today='%s'. Clearing stale totals.\n",
+                      savedDate.c_str(), today.c_str());
+        logger.printf("DAILY ACCOUNTING DATE MISMATCH: saved='%s' today='%s'. Clearing stale totals.\n",
+                      savedDate.c_str(), today.c_str());
+        clearDailyAccountingOnly("boot-date-mismatch");
+        dailyAccountingDate = today;
+        saveDosingState();
+        return;
+    }
+
+    if (today.length() > 0 && dailyAccountingDate.length() == 0) {
+        dailyAccountingDate = today;
+        saveDosingState();
+    }
+
+    Serial.printf("Dosing state recovered from memory. buckets=%s daily=%s date=%s\n",
+                  loadedBuckets ? "yes" : "no",
+                  loadedDailyAccounting ? "yes" : "no",
+                  dailyAccountingDate.length() ? dailyAccountingDate.c_str() : "none");
+    logger.printf("Dosing state recovered from memory. buckets=%s daily=%s date=%s\n",
+                  loadedBuckets ? "yes" : "no",
+                  loadedDailyAccounting ? "yes" : "no",
+                  dailyAccountingDate.length() ? dailyAccountingDate.c_str() : "none");
+}
 
 bool planPublishChangeIsSignificant(float oldVal, float newVal) {
     if (oldVal < 0.0f) return true;
@@ -715,7 +918,13 @@ void addCurrentAiPlanToBuckets(const char* source, bool force) {
 
 // 2. Logic to determine Light State
 bool isLightsOn() {
-    if (lightConfig.source == 1) { 
+    if (lightConfig.source == 1) {
+        if (useApexLogEmulatorForThisDevice()) {
+            // Test emulator only supplies chemistry, not Apex outlet/light state.
+            // Fall back to the local timer so reefDoser3 never calls real Apex in emulator mode.
+            int hr = getLocalHour();
+            return (hr >= lightConfig.start && hr < lightConfig.end);
+        }
         return apex.getLightStatus();
     }
     int hr = getLocalHour();
@@ -1187,6 +1396,13 @@ void handleGetStatus() {
     doc["sg"] = currentSg;
     doc["apexEnabled"] = apexEnabled;
     doc["apexIp"] = apexIp;
+    doc["apexEmulator"]["enabled"] = useApexLogEmulatorForThisDevice();
+    doc["apexEmulator"]["urlConfigured"] = String(APEX_EMULATOR_URL).indexOf("YOUR_DEPLOYMENT_ID") < 0;
+    doc["apexEmulator"]["lastPollMs"] = apexEmu.lastPollMs();
+    doc["apexEmulator"]["lastGoodMs"] = apexEmu.lastGoodMs();
+    doc["apexEmulator"]["sourceDevice"] = apexEmu.chemistry().deviceId;
+    doc["apexEmulator"]["logTime"] = apexEmu.chemistry().logTime;
+    doc["apexEmulator"]["error"] = apexEmu.chemistry().error;
     doc["lightConfig"]["source"] = lightConfig.source;
     doc["lightConfig"]["start"] = lightConfig.start;
     doc["lightConfig"]["end"] = lightConfig.end;
@@ -1196,6 +1412,12 @@ void handleGetStatus() {
     doc["aiBaseline"]["naoh"] = baselineNaohMlDay;
     doc["aiBaseline"]["mg"] = baselineMgMlDay;
     doc["aiBaseline"]["coralLoad"] = baselineCoralLoad;
+    doc["chemicalStrengths"]["kalk"] = ai.getDkhPerMlKalk();
+    doc["chemicalStrengths"]["afr"] = ai.getDkhPerMlAfr();
+    doc["chemicalStrengths"]["alk"] = ai.getDkhPerMlAlk();
+    doc["chemicalStrengths"]["naoh"] = ai.getDkhPerMlNaoh();
+    doc["chemicalStrengths"]["mg"] = ai.getMgPerMlMg();
+    doc["chemicalStrengths"]["cacl2"] = ai.getCaPerMlCacl2();
     doc["dosingMlPerDay"]["kalk"] = ai.currentPlan.kalk;
     doc["dosingMlPerDay"]["afr"] = ai.currentPlan.afr;
     doc["dosingMlPerDay"]["alk"] = ai.currentPlan.alk;
@@ -1997,7 +2219,64 @@ void onNewDataArrived(float rawAlk) {
 }
 
 
+bool syncApexLogEmulatorTruths() {
+    if (!useApexLogEmulatorForThisDevice()) return false;
+
+    String url = String(APEX_EMULATOR_URL);
+    if (url.length() < 20 || url.indexOf("YOUR_DEPLOYMENT_ID") >= 0) {
+        Serial.println("APEX EMU skipped: paste deployed Apps Script /exec URL into APEX_EMULATOR_URL.");
+        logger.println("APEX EMU skipped: paste deployed Apps Script /exec URL into APEX_EMULATOR_URL.");
+        return false;
+    }
+
+    if (!apexEmu.pollNow()) {
+        Serial.println("APEX EMU failed: " + apexEmu.chemistry().error);
+        logger.println("APEX EMU failed: " + apexEmu.chemistry().error);
+        return false;
+    }
+
+    const ApexEmuChemistry& c = apexEmu.chemistry();
+
+    // Require all four AI chemistry values. The Apps Script has a STATS fallback,
+    // but reefDoser AI should not recalculate from Alk/pH only.
+    if (c.alk <= 0.0f || c.alk > 20.0f ||
+        c.ca  < 250.0f || c.ca  > 700.0f ||
+        c.mg  < 800.0f || c.mg  > 1800.0f ||
+        c.ph  < 6.50f  || c.ph  > 9.00f) {
+        Serial.printf("APEX EMU rejected: invalid chemistry Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f\n",
+                      c.alk, c.ca, c.mg, c.ph);
+        logger.printf("APEX EMU rejected: invalid chemistry Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f\n",
+                      c.alk, c.ca, c.mg, c.ph);
+        return false;
+    }
+
+    currentAlk = c.alk;
+    currentCa  = c.ca;
+    currentMg  = c.mg;
+    currentPh  = c.ph;
+
+    // Eric's serial log line does not include temp/cond. Keep those as-is, but
+    // make pH/Alk/Ca/Mg look exactly like live Apex chemistry to the AI engine.
+    Serial.printf("APEX EMU OK [%s]: Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f logTime=%s\n",
+                  c.source.c_str(), currentAlk, currentCa, currentMg, currentPh, c.logTime.c_str());
+    logger.printf("APEX EMU OK [%s]: Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f logTime=%s\n",
+                  c.source.c_str(), currentAlk, currentCa, currentMg, currentPh, c.logTime.c_str());
+
+    onNewDataArrived(currentAlk);
+    return true;
+}
+
 void syncAllTruths() {
+    if (useApexLogEmulatorForThisDevice()) {
+        syncApexLogEmulatorTruths();
+
+        if (millis() - lastFirebaseMirrorMs >= FIREBASE_MIRROR_INTERVAL_MS) {
+            lastFirebaseMirrorMs = millis();
+            mirrorStatusToFirebase();
+        }
+        return;
+    }
+
     if (!apexEnabled || apexIp.length() < 7) {
         Serial.println("Apex skipped: disabled or missing IP");
         logger.println("Apex skipped: disabled or missing IP");
@@ -2197,10 +2476,8 @@ void pushDailyReport() {
         return; // Keep totals in NVS and try again in the midnight window.
     }
 
-    memset(&dailyStats, 0, sizeof(dailyStats));
-    for (int i = 0; i < 4; i++) dailyDoseTotals[i] = 0.0f;
-    doser.resetDailyTotal();
-
+    clearDailyAccountingOnly("midnight-history-pushed");
+    dailyAccountingDate = getTodayDateKey();
     saveDosingState();
     Serial.println("Midnight: daily stats/totals cleared and saved.");
     logger.println("Midnight: daily stats/totals cleared and saved.");
@@ -2303,6 +2580,11 @@ logger.println();
     prefs.end();
 
     loadLocalSettings();
+    if (useApexLogEmulatorForThisDevice()) {
+        apexEmu.begin(APEX_EMULATOR_URL, APEX_EMULATOR_POLL_MS);
+        Serial.println("APEX EMU TEST ENABLED: reefDoser3 will use reefDoser2 Drive log instead of real Apex.");
+        logger.println("APEX EMU TEST ENABLED: reefDoser3 will use reefDoser2 Drive log instead of real Apex.");
+    }
     Serial.printf("BOOT THRESHOLDS COMPILED: P1=%.2f P2=%.2f P3=%.2f P4=%.2f\n",
   ai.getPumpDumpThresholdMl(1),
   ai.getPumpDumpThresholdMl(2),
@@ -2413,6 +2695,7 @@ logger.println();
     });
     server.on("/api/config/safeties", HTTP_POST, handlePostDosingSafeties);
     server.on("/api/config/ai-baseline", HTTP_POST, handlePostAiBaseline);
+    server.on("/api/config/chemical-strengths", HTTP_POST, handlePostChemicalStrengths);
     server.on("/api/config/lights", HTTP_POST, handlePostLightConfig);
 
     server.on("/api/history", HTTP_GET, []() {
@@ -2821,7 +3104,7 @@ void loop() {
     }
 
     static unsigned long lastApexPull = 0;
-    if (apexEnabled && (millis() - lastApexPull > 300000UL)) {
+    if ((apexEnabled || useApexLogEmulatorForThisDevice()) && (millis() - lastApexPull > 300000UL)) {
         lastApexPull = millis();
         syncAllTruths();
     }
