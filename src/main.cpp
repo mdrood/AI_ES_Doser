@@ -35,7 +35,7 @@
 #define FIREBASE_API_KEY "AIzaSyB4XtC5Pvxw6To58EKTLMADQLqR_hTZK0M"
 #define FIREBASE_DB_URL "https://aiesdoser-default-rtdb.firebaseio.com"
 //TODO for firware update
-#define FW_VERSION "P_1.0.6"
+#define FW_VERSION "P_1.1.0"
 
 #include "Dashboard.h"
 
@@ -82,7 +82,7 @@ String recipeMgType    = "mag_chloride";
 String recipeCacl2Type = "cacl2_dihydrate";
 
 
-// 1..7 dosing implementation used for pump mapping
+// 1..8 dosing implementation used for pump mapping
 int dosingMode = 1;
 
 bool apexEnabled = false;
@@ -125,7 +125,7 @@ float maxDoseLimit = 15.0f;    // Backward-compatible global max only
 
 // ---------------- PER-PUMP DOSING SAFETIES ----------------
 // Stored in Preferences/NVS under doser-settings. Physical pump order:
-//   P1, P2, P3, P4. Mode 7 Eric map: P1=Kalk, P2=CaCl2, P3=NaOH, P4=Alk.
+//   P1, P2, P3, P4. Mode 7 Eric map: P1=Kalk, P2=CaCl2, P3=NaOH, P4=Alk. Mode 8: P1=Kalk, P2=CaCl2, P3=NaOH, P4 unused.
 // Threshold = bucket mL required before that pump is allowed to run.
 // Max single dose = most mL allowed in one automatic/live dose command.
 // Max daily dose = calendar-day limit for each physical pump.
@@ -135,7 +135,7 @@ float pumpMaxDayMl[4]       = {35000.0f, 2000.0f, 1200.0f, 2500.0f};
 
 
 // ---------------- MODE 7 DAY/NIGHT ALK SOURCE SPLIT ----------------
-// Mode 7 physical map: P3 = NaOH, P4 = Alk solution.
+// Mode 7 physical map: P3 = NaOH, P4 = Alk solution. Mode 8 does not use P4 Alk.
 // These settings control how Mode 7 splits alkalinity correction by light state.
 // Defaults match Eric's test request: daytime=P4 Alk, nighttime=P3 NaOH.
 bool mode7DayNightSplitEnabled = true;
@@ -226,7 +226,7 @@ const unsigned long BOOT_DOSING_GRACE_MS = 120000UL; // 2 minutes
 
 Provisioner provisioner;
 //TODO new customer
-String deviceID = "reefDoser2";
+String deviceID = "reefDoser3";
 
 bool useApexLogEmulatorForThisDevice() {
     return REEFDOSER3_APEX_EMULATOR_TEST && deviceID == "reefDoser3";
@@ -395,6 +395,13 @@ const char* pumpKeyForPhysicalIndex(int idx) {
                 case 3: return "alk";
                 default: return "unused";
             }
+        case 8: // Mode 8: Mode 7 with Alk pump removed: P1 Kalk, P2 CaCl2, P3 NaOH, P4 unused
+            switch (idx) {
+                case 0: return "kalk";
+                case 1: return "cacl2";
+                case 2: return "naoh";
+                default: return "unused";
+            }
         default:
             return (idx == 0) ? "kalk" : "unused";
     }
@@ -412,6 +419,8 @@ int pumpCountForCurrentDosingMode() {
         case 6:
         case 7:
             return 4;
+        case 8:
+            return 3;
         default:
             return 1;
     }
@@ -479,7 +488,7 @@ float defaultMode7KalkBaselineMlDay() {
 
 float defaultPumpThresholdMl(int idx) {
     // Missing Preference only. Existing saved values are never changed.
-    // Physical pump order. Mode 7 Eric map: P1=Kalk, P2=CaCl2, P3=NaOH, P4=Alk.
+    // Physical pump order. Mode 7 Eric map: P1=Kalk, P2=CaCl2, P3=NaOH, P4=Alk. Mode 8: P1=Kalk, P2=CaCl2, P3=NaOH, P4 unused.
     switch (idx) {
         case 0: return scaledDefault300To1100(20.0f, 100.0f);  // Kalk needs larger accurate dumps on big tanks
         case 1: return scaledDefault300To1100(10.0f, 10.0f);   // CaCl2
@@ -857,7 +866,7 @@ bool isValidSystemMode(int mode) {
 }
 
 bool isValidDosingMode(int mode) {
-    return mode >= 1 && mode <= 7;
+    return mode >= 1 && mode <= 8;
 }
 
 bool isValidNotificationLevel(const String& level) {
@@ -1357,6 +1366,12 @@ void addCurrentAiPlanToBuckets(const char* source, bool force) {
             pumpBuckets[2] += ai.currentPlan.naoh  / 144.0f;
             pumpBuckets[3] += ai.currentPlan.alk   / 144.0f;
             break;
+
+        case 8: // P1 Kalk, P2 CaCl2, P3 NaOH, P4 unused
+            pumpBuckets[0] += ai.currentPlan.kalk  / 144.0f;
+            pumpBuckets[1] += ai.currentPlan.cacl2 / 144.0f;
+            pumpBuckets[2] += ai.currentPlan.naoh  / 144.0f;
+            break;
     }
 
     saveDosingState();
@@ -1717,10 +1732,10 @@ void loadLocalSettings() {
 
     // Mode 7 must not come up with kalk/day = 0. Saved positive baseline wins;
     // missing or zero baseline gets a tank-size-scaled default.
-    if (dosingMode == 7 && (!hasBaseKalk || !isfinite(baselineKalkMlDay) || baselineKalkMlDay <= 0.0f)) {
+    if ((dosingMode == 7 || dosingMode == 8) && (!hasBaseKalk || !isfinite(baselineKalkMlDay) || baselineKalkMlDay <= 0.0f)) {
         baselineKalkMlDay = defaultMode7KalkBaselineMlDay();
-        Serial.printf("MODE7 KALK BASELINE DEFAULT: using %.2f ml/day because saved base_kalk is missing/zero\n", baselineKalkMlDay);
-        logger.printf("MODE7 KALK BASELINE DEFAULT: using %.2f ml/day because saved base_kalk is missing/zero\n", baselineKalkMlDay);
+        Serial.printf("MODE7/8 KALK BASELINE DEFAULT: using %.2f ml/day because saved base_kalk is missing/zero\n", baselineKalkMlDay);
+        logger.printf("MODE7/8 KALK BASELINE DEFAULT: using %.2f ml/day because saved base_kalk is missing/zero\n", baselineKalkMlDay);
     }
 
     loadPumpSafeties();
@@ -1817,6 +1832,9 @@ void mirrorStatusToFirebase() {
     stateJson.set("flowMlPerMin/naoh", pumpFlowRates[2]);
     if (dosingMode == 7) {
         stateJson.set("flowMlPerMin/alk", pumpFlowRates[3]);
+        stateJson.set("flowMlPerMin/mg", 0.0f);
+    } else if (dosingMode == 8) {
+        stateJson.set("flowMlPerMin/alk", 0.0f);
         stateJson.set("flowMlPerMin/mg", 0.0f);
     } else {
         stateJson.set("flowMlPerMin/alk", pumpFlowRates[0]);
@@ -1926,6 +1944,9 @@ void handleGetStatus() {
     doc["buckets"]["naoh"] = pumpBuckets[2];
     if (dosingMode == 7) {
         doc["buckets"]["alk"] = pumpBuckets[3];
+        doc["buckets"]["mg"] = 0.0f;
+    } else if (dosingMode == 8) {
+        doc["buckets"]["alk"] = 0.0f;
         doc["buckets"]["mg"] = 0.0f;
     } else {
         doc["buckets"]["alk"] = alkBucket;

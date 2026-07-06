@@ -238,6 +238,35 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
             next.cacl2 = adjCa / chem.caPerMlCacl2;
             next.mg    = 0.0f; // Pump 4 is Alk in Mode 7, not Mg.
             break;
+
+        case 8: // Mode 8: Kalk + CaCl2 + NaOH only. Mode 7 with P4 Alk removed.
+            // Physical map:
+            //   P1 = Kalk
+            //   P2 = CaCl2
+            //   P3 = NaOH
+            //   P4 = unused
+            //
+            // Keep the Mode 7 kalk support and calcium logic, but never create
+            // P4 Alk or Mg demand. Alkalinity correction is handled by NaOH when
+            // pH is below the NaOH safety cutoff. If pH is too high, NaOH is blocked
+            // and only the protected kalk baseline remains after baseline demand is added.
+            {
+                next.kalk = 0.0f; // baseline added/protected after safety layer
+                if (adjAlk > 0.0f && chem.dkhPerMlNaoh > 0.0f &&
+                    (currentPh <= 0.0f || currentPh < mode7Split.naohMaxPh)) {
+                    next.naoh = adjAlk / chem.dkhPerMlNaoh;
+                } else {
+                    next.naoh = 0.0f;
+                    if (currentPh > 0.0f) {
+                        Serial.printf("MODE8 NAOH BLOCKED: pH=%.2f cutoff=%.2f\n",
+                                      currentPh, mode7Split.naohMaxPh);
+                    }
+                }
+                next.alk = 0.0f;
+                next.cacl2 = adjCa / chem.caPerMlCacl2;
+                next.mg = 0.0f;
+            }
+            break;
     }
 
     // --- The "Expert" Safety Layer ---
@@ -346,8 +375,8 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
     // The previous floor often left Eric stuck at naoh/day=450 even with
     // Alk around 7.4-7.5 and pH in the 7.8s. This floor is still protected
     // by maxNaohDay in applyAbsoluteCaps(), and still blocks at pH >= 8.60.
-    if (mode == 7 && consAlk >= 0.40f && currentPh > 0.0f && currentPh < (mode7Split.enabled ? mode7Split.naohMaxPh : 8.60f) &&
-        (!mode7Split.enabled || !lightsActive || mode7Split.dayNaohPct > 0.0f)) {
+    if ((mode == 7 || mode == 8) && consAlk >= 0.40f && currentPh > 0.0f && currentPh < (mode7Split.enabled ? mode7Split.naohMaxPh : 8.60f) &&
+        (mode == 8 || !mode7Split.enabled || !lightsActive || mode7Split.dayNaohPct > 0.0f)) {
         float minNaohRecoveryMlDay = 0.0f;
 
         if (currentPh < 7.90f && consAlk >= 0.80f) {
@@ -370,8 +399,8 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
 
         if (minNaohRecoveryMlDay > 0.0f && next.naoh < minNaohRecoveryMlDay) {
             next.naoh = minNaohRecoveryMlDay;
-            Serial.printf("MODE7 NAOH RESCUE: gap=%.2f pH=%.2f floor=%.2f naoh=%.2f ml/day\n",
-                          consAlk, currentPh, minNaohRecoveryMlDay, next.naoh);
+            Serial.printf("MODE%d NAOH RESCUE: gap=%.2f pH=%.2f floor=%.2f naoh=%.2f ml/day\n",
+                          mode, consAlk, currentPh, minNaohRecoveryMlDay, next.naoh);
         }
     }
 
@@ -379,12 +408,12 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
     // If Alk and/or pH are low, do NOT let the adaptive split reduce Kalk.
     // Kalk is Eric's steady pH support, so recovery mode keeps it pinned at
     // the configured max while the learned P4 Alk assist adds catch-up dose.
-    if (mode == 7) {
+    if (mode == 7 || mode == 8) {
         const bool mode7Recovery = (consAlk >= 0.40f) || (currentPh > 0.0f && currentPh < 8.10f);
         if (mode7Recovery && next.kalk < limits.maxKalkDay) {
             next.kalk = limits.maxKalkDay;
-            Serial.printf("MODE7 RECOVERY: Kalk locked at %.2f ml/day (gap=%.2f pH=%.2f)\n",
-                          next.kalk, consAlk, currentPh);
+            Serial.printf("MODE%d RECOVERY: Kalk locked at %.2f ml/day (gap=%.2f pH=%.2f)\n",
+                          mode, next.kalk, consAlk, currentPh);
         }
     }
 
@@ -465,6 +494,22 @@ void AIEngine::addBaselineDemand(DosingPlan &p, int mode) {
             // Reuse the existing Mg baseline setting as P4 Alk baseline so
             // no new API/config field is required.
             p.alk   += baselineMgMlDay;
+            break;
+        }
+        case 8: {
+            // Mode 8 is Mode 7 with P4 Alk removed.
+            // Preserve Kalk, CaCl2, and NaOH baselines only. P4 remains unused.
+            float mode8KalkBaseline = baselineKalkMlDay;
+            if (!isfinite(mode8KalkBaseline) || mode8KalkBaseline <= 0.0f) {
+                mode8KalkBaseline = limits.maxKalkDay;
+                Serial.printf("MODE8 KALK FALLBACK: saved baseline missing/zero, using %.2f ml/day\n", mode8KalkBaseline);
+            }
+
+            p.kalk  += mode8KalkBaseline;
+            p.cacl2 += baselineCacl2MlDay;
+            p.naoh  += baselineNaohMlDay;
+            p.alk = 0.0f;
+            p.mg = 0.0f;
             break;
         }
         default:

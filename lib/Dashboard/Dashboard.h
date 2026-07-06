@@ -295,7 +295,7 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
           <button class="mode-btn pill-btn" id="m2" onclick="setMode(2)">MAN</button>
         </div>
         <button id="eStopBtn" class="danger" onclick="toggleEmergency()">🛑 Emergency Stop</button>
-        <div class="footer-note">This is your local operating mode. It is separate from the 1–7 dosing implementation below.</div>
+        <div class="footer-note">This is your local operating mode. It is separate from the 1–8 dosing implementation below.</div>
       </div>
 
       <div class="card">
@@ -311,9 +311,10 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
           <option value="5">Mode 5: Kalk + Alk + Ca + Mg (P1–P4)</option>
           <option value="6">Mode 6: Kalk + CaCl2 + NaOH + Mg (P1–P4)</option>
           <option value="7">Mode 7: Kalk + CaCl2 + NaOH + Alk (P1–P4)</option>
+          <option value="8">Mode 8: Kalk + CaCl2 + NaOH (P1–P3, no Alk pump)</option>
         </select>
         <button onclick="saveDosingMode()">Save Dosing Implementation</button>
-        <div class="help" id="doseModeHelp">Pump mapping will update immediately below. Mode 7 advanced users can leave NaOH recipe concentration at 144 g/gal unless they intentionally mix a different NaOH solution.</div>
+        <div class="help" id="doseModeHelp">Pump mapping will update immediately below. Mode 7/8 advanced users can leave NaOH recipe concentration at 144 g/gal unless they intentionally mix a different NaOH solution.</div>
       </div>
 
       <div class="card">
@@ -531,7 +532,7 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
     <h3>Mode 7 Day/Night Alk Split</h3>
     <span class="meta" id="mode7SplitState">Uses light state</span>
   </div>
-  <div class="help">Mode 7 only. Controls how alkalinity correction is split between P3 NaOH and P4 Alk based on lights. Existing pH safety still blocks NaOH if pH is too high.</div>
+  <div class="help">Mode 7 only. Mode 8 does not use P4 Alk, so this split is ignored in Mode 8. Controls how alkalinity correction is split between P3 NaOH and P4 Alk based on lights. Existing pH safety still blocks NaOH if pH is too high.</div>
   <div class="two" style="margin-top:12px;">
     <div>
       <div class="help" style="margin-bottom:8px;">Enable Day/Night Split</div>
@@ -919,6 +920,14 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
         {index:1,key:"cacl2",name:"CaCl2 (Pump 2)"},
         {index:2,key:"naoh",name:"NaOH (Pump 3)"},
         {index:3,key:"alk",name:"Alk (Pump 4 / old Mg pump)"}
+      ]
+    },
+    8: {
+      title: "Mode 8 • Kalk + CaCl2 + NaOH",
+      pumps: [
+        {index:0,key:"kalk",name:"Kalk (Pump 1)"},
+        {index:1,key:"cacl2",name:"CaCl2 (Pump 2)"},
+        {index:2,key:"naoh",name:"NaOH (Pump 3)"}
       ]
     }
   };
