@@ -171,6 +171,18 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
     .chem-badge.warn{color:var(--warning);border-color:rgba(251,191,36,.45);background:rgba(251,191,36,.08)}
     .chem-badge.severe{color:var(--danger);border-color:rgba(248,113,113,.5);background:rgba(248,113,113,.10)}
 
+    .safety-table{display:grid;grid-template-columns:1.25fr repeat(3,1fr);gap:10px;align-items:end;margin-top:12px}
+    .safety-head{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.10em;font-weight:900}
+    .safety-pump{font-weight:900;color:#f8fafc;padding:12px 0}
+    .safety-used{font-size:.72rem;color:var(--muted);margin-top:4px}
+    @media (max-width: 760px){.safety-table{grid-template-columns:1fr}.safety-head{display:none}.safety-pump{padding-top:8px}}
+    .chem-level-bar{margin:12px 0 10px;border-radius:999px;height:18px;overflow:hidden;background:rgba(15,23,42,.82);border:1px solid rgba(148,163,184,.24)}
+    .chem-level-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--success));width:0%;transition:width .35s ease}
+    .chem-level-fill.warn{background:linear-gradient(90deg,var(--warning),#f97316)}
+    .chem-level-fill.severe{background:linear-gradient(90deg,var(--danger),#dc2626)}
+    .chem-level-meta{display:flex;justify-content:space-between;gap:10px;align-items:center;font-size:.78rem;color:var(--muted);font-weight:800;margin-bottom:10px}
+    .chem-level-percent{font-size:1.1rem;color:#f8fafc;font-weight:950}
+
     .history-toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
     .history-toolbar button{width:auto;min-width:130px}
     .history-select{width:auto;min-width:150px}
@@ -189,6 +201,42 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
       box-shadow:0 0 28px rgba(248,113,113,.18);
     }
     .danger-warning small{display:block;margin-top:6px;color:#fecaca;font-weight:700;line-height:1.45}
+    .recipe-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:14px}
+    .recipe-card{border:1px solid rgba(148,163,184,.20);background:rgba(2,6,23,.34);border-radius:18px;padding:16px}
+    .recipe-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
+    .recipe-title{font-size:1.02rem;font-weight:950;color:#f8fafc}
+    .recipe-pump{font-size:.72rem;font-weight:900;color:var(--accent);border:1px solid rgba(34,211,238,.32);background:rgba(34,211,238,.08);border-radius:999px;padding:6px 9px;white-space:nowrap}
+    .recipe-row{display:grid;grid-template-columns:1fr;gap:8px;margin-top:10px}
+    .recipe-label{font-size:.74rem;text-transform:uppercase;letter-spacing:.10em;color:var(--muted);font-weight:850}
+    .recipe-note{font-size:.76rem;color:var(--muted);line-height:1.45;margin-top:8px}
+    .recipe-result{margin-top:12px;border-radius:14px;padding:12px;background:rgba(34,211,238,.08);border:1px solid rgba(34,211,238,.20)}
+    .recipe-result .k{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.10em;font-weight:850}
+    .recipe-result .v{font-size:1.12rem;color:var(--accent);font-weight:950;margin-top:4px}
+    .recipe-result .u{font-size:.78rem;color:var(--muted);font-weight:800;margin-left:4px}
+    .recipe-red-note{
+      margin-top:10px;
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid rgba(248,113,113,.42);
+      background:rgba(127,29,29,.30);
+      color:#fecaca;
+      font-size:.78rem;
+      font-weight:850;
+      line-height:1.45;
+    }
+    .recipe-red-note b{color:#fee2e2}
+    .recipe-source-pill{
+      display:inline-flex;
+      margin-top:8px;
+      padding:7px 10px;
+      border-radius:999px;
+      border:1px solid rgba(251,191,36,.44);
+      background:rgba(251,191,36,.10);
+      color:#fde68a;
+      font-size:.74rem;
+      font-weight:950;
+    }
+    .recipe-full{grid-column:1 / -1}
     @media (max-width: 820px){
       .hero{flex-direction:column;align-items:flex-start}
       .hero-right{justify-content:flex-start}
@@ -232,7 +280,7 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
   <div class="card-title"><h3>System Geometry</h3></div>
   <div class="line">
     <div class="k">Tank Volume (Gallons)</div>
-    <input type="number" id="tankGal" step="0.1" placeholder="e.g. 120" style="width:100px">
+    <input type="number" id="tankGal" step="0.1" placeholder="e.g. 120" style="width:100px" oninput="updateRecipePreview()">
   </div>
   <button class="sec" onclick="saveVol()">Update Volume</button>
 </div>
@@ -265,7 +313,7 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
           <option value="7">Mode 7: Kalk + CaCl2 + NaOH + Alk (P1–P4)</option>
         </select>
         <button onclick="saveDosingMode()">Save Dosing Implementation</button>
-        <div class="help" id="doseModeHelp">Pump mapping will update immediately below.</div>
+        <div class="help" id="doseModeHelp">Pump mapping will update immediately below. Mode 7 advanced users can leave NaOH recipe concentration at 144 g/gal unless they intentionally mix a different NaOH solution.</div>
       </div>
 
       <div class="card">
@@ -340,7 +388,7 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
           <button class="sec" onclick="setChemicalCurrentLevel()">Set Current Level</button>
           <button class="sec" onclick="fillChemicalToFull()">Fill to Full</button>
         </div>
-        <div class="footer-note">Capacity is the container size. Current Level is what is actually in the container now, useful for partial refills like setting a 5 gal bucket to 3.0 gal. Firmware subtracts only confirmed pump doses. Warning at 1 gallon left, severe at 0.5 gallon left.</div>
+        <div class="footer-note">Each bar shows the estimated chemical left in that reservoir. Capacity is the container size. Current Level is what is actually in the container now, useful for partial refills like setting a 5 gal bucket to 3.0 gal. Firmware subtracts only confirmed pump doses. Warning at 1 gallon left, severe at 0.5 gallon left.</div>
       </div>
 
       <div class="card">
@@ -387,23 +435,134 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
       </div>
     </section>
   </div>
-  <div class="card">
+  <div class="card" style="grid-column:1 / -1">
   <div class="card-title">
-    <h3>Dosing Safeties</h3>
-    <span class="meta">AI Logic Constraints</span>
+    <h3>Pump Dosing Safeties</h3>
+    <span class="meta">Per-pump limits</span>
   </div>
-  <div class="two">
+  <div class="help">Each physical pump has its own accumulator threshold, maximum single dose, and maximum daily dose. This protects small chemical pumps without limiting large kalk dosing.</div>
+
+  <div class="safety-table">
+    <div class="safety-head">Pump</div>
+    <div class="safety-head">Dose Threshold (mL)</div>
+    <div class="safety-head">Max Single Dose (mL)</div>
+    <div class="safety-head">Max Daily Dose (mL/day)</div>
+
+    <div class="safety-pump"><span id="safetyPumpName0">P1</span><div class="safety-used" id="safetyUsed0">Used today: --</div></div>
+    <input type="number" id="safeThr0" step="0.1" min="0.1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+    <input type="number" id="safeMax0" step="1" min="1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+    <input type="number" id="safeDay0" step="1" min="1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+
+    <div class="safety-pump"><span id="safetyPumpName1">P2</span><div class="safety-used" id="safetyUsed1">Used today: --</div></div>
+    <input type="number" id="safeThr1" step="0.1" min="0.1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+    <input type="number" id="safeMax1" step="1" min="1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+    <input type="number" id="safeDay1" step="1" min="1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+
+    <div class="safety-pump"><span id="safetyPumpName2">P3</span><div class="safety-used" id="safetyUsed2">Used today: --</div></div>
+    <input type="number" id="safeThr2" step="0.1" min="0.1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+    <input type="number" id="safeMax2" step="1" min="1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+    <input type="number" id="safeDay2" step="1" min="1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+
+    <div class="safety-pump"><span id="safetyPumpName3">P4</span><div class="safety-used" id="safetyUsed3">Used today: --</div></div>
+    <input type="number" id="safeThr3" step="0.1" min="0.1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+    <input type="number" id="safeMax3" step="1" min="1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+    <input type="number" id="safeDay3" step="1" min="1" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+  </div>
+
+  <button class="sec" onclick="saveDosingSafeties()" style="margin-top:14px">Update Pump Safety Rails</button>
+  <div class="footer-note">Threshold: bucket amount required before a pump fires. Max Single Dose: cap for one pump run before the 60-second hardware cap. Max Daily Dose: calendar-day limit for each physical pump.</div>
+</div>
+
+<div class="card" style="grid-column:1 / -1">
+  <div class="card-title">
+    <h3>AI Chemistry Safeties</h3>
+    <span class="meta">AI plan limits before pump rails</span>
+  </div>
+  <div class="help">These limits control what the AI is allowed to request chemically. Pump Dosing Safeties still cap what each physical pump can actually run.</div>
+
+  <div class="safety-table">
+    <div class="safety-head">Safety</div>
+    <div class="safety-head">Value</div>
+    <div class="safety-head">Units</div>
+    <div class="safety-head">What it protects</div>
+
+    <div class="safety-pump">Max Kalk Per Day</div>
+    <input type="number" id="aiSafeMaxKalk" step="1" min="1" onfocus="markAiChemSafetyDirty()" oninput="markAiChemSafetyDirty()">
+    <div class="help">mL/day</div>
+    <div class="help">Caps AI-requested kalk volume.</div>
+
+    <div class="safety-pump">Max NaOH Per Day</div>
+    <input type="number" id="aiSafeMaxNaoh" step="1" min="1" onfocus="markAiChemSafetyDirty()" oninput="markAiChemSafetyDirty()">
+    <div class="help">mL/day</div>
+    <div class="help">Caps AI-requested high-pH NaOH.</div>
+
+    <div class="safety-pump">Max Alk Solution Per Day</div>
+    <input type="number" id="aiSafeMaxAlk" step="1" min="1" onfocus="markAiChemSafetyDirty()" oninput="markAiChemSafetyDirty()">
+    <div class="help">mL/day</div>
+    <div class="help">Caps AI-requested P4 Alk solution.</div>
+
+    <div class="safety-pump">Max Alk Rise Per Day</div>
+    <input type="number" id="aiSafeMaxAlkRise" step="0.05" min="0.05" max="5" onfocus="markAiChemSafetyDirty()" oninput="markAiChemSafetyDirty()">
+    <div class="help">dKH/day</div>
+    <div class="help">Limits correction aggressiveness before baseline demand is added.</div>
+
+    <div class="safety-pump">Max Mg Correction Per Day</div>
+    <input type="number" id="aiSafeMaxMgCorrection" step="1" min="0" onfocus="markAiChemSafetyDirty()" oninput="markAiChemSafetyDirty()">
+    <div class="help">mL/day</div>
+    <div class="help">Caps one-day Mg correction amount.</div>
+
+    <div class="safety-pump">Max Mg Per Day</div>
+    <input type="number" id="aiSafeMaxMg" step="1" min="1" onfocus="markAiChemSafetyDirty()" oninput="markAiChemSafetyDirty()">
+    <div class="help">mL/day</div>
+    <div class="help">Absolute Mg daily cap after baseline/correction.</div>
+
+    <div class="safety-pump">Mg Deadband</div>
+    <input type="number" id="aiSafeMgDeadband" step="1" min="0" max="200" onfocus="markAiChemSafetyDirty()" oninput="markAiChemSafetyDirty()">
+    <div class="help">ppm</div>
+    <div class="help">Ignores small Mg test noise inside this gap.</div>
+  </div>
+
+  <button class="sec" onclick="saveAiChemistrySafeties()" style="margin-top:14px">Update AI Chemistry Safeties</button>
+  <div class="footer-note">These are chemistry-planning caps. Per-pump rails below/above still protect the actual pump runtime and daily delivered mL.</div>
+</div>
+
+<div class="card" style="grid-column:1 / -1">
+  <div class="card-title">
+    <h3>Mode 7 Day/Night Alk Split</h3>
+    <span class="meta" id="mode7SplitState">Uses light state</span>
+  </div>
+  <div class="help">Mode 7 only. Controls how alkalinity correction is split between P3 NaOH and P4 Alk based on lights. Existing pH safety still blocks NaOH if pH is too high.</div>
+  <div class="two" style="margin-top:12px;">
     <div>
-      <div class="help" style="margin-bottom:8px;">Frequency Threshold (mL)</div>
-      <input type="number" id="dTresh" step="0.1" min="0.1" placeholder="e.g. 25" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+      <div class="help" style="margin-bottom:8px;">Enable Day/Night Split</div>
+      <select id="m7SplitEnabled" onfocus="markMode7SplitDirty()" onchange="markMode7SplitDirty()">
+        <option value="1">Enabled</option>
+        <option value="0">Disabled</option>
+      </select>
     </div>
     <div>
-      <div class="help" style="margin-bottom:8px;">Max Hourly Safety (mL)</div>
-      <input type="number" id="dMax" step="1" min="1" placeholder="e.g. 1500" onfocus="markSafetyDirty()" oninput="markSafetyDirty()">
+      <div class="help" style="margin-bottom:8px;">NaOH pH Cutoff</div>
+      <input type="number" id="m7NaohMaxPh" step="0.01" min="7.80" max="8.80" onfocus="markMode7SplitDirty()" oninput="markMode7SplitDirty()">
     </div>
   </div>
-  <button class="sec" onclick="saveDosingSafeties()" style="margin-top:12px">Update Safety Rails</button>
-  <div class="footer-note">Threshold: accumulation required to fire pumps. Max: hardware safety cutoff.</div>
+  <div class="safety-table" style="margin-top:14px;">
+    <div class="safety-head">Light State</div>
+    <div class="safety-head">P3 NaOH %</div>
+    <div class="safety-head">P4 Alk %</div>
+    <div class="safety-head">Meaning</div>
+
+    <div class="safety-pump"><span>Lights ON / Day</span><div class="safety-used">Eric test: Alk only</div></div>
+    <input type="number" id="m7DayNaohPct" step="1" min="0" max="100" onfocus="markMode7SplitDirty()" oninput="markMode7SplitDirty()">
+    <input type="number" id="m7DayAlkPct" step="1" min="0" max="100" onfocus="markMode7SplitDirty()" oninput="markMode7SplitDirty()">
+    <div class="help">Daytime correction favors P4 Alk to avoid pushing pH higher.</div>
+
+    <div class="safety-pump"><span>Lights OFF / Night</span><div class="safety-used">Eric test: NaOH only</div></div>
+    <input type="number" id="m7NightNaohPct" step="1" min="0" max="100" onfocus="markMode7SplitDirty()" oninput="markMode7SplitDirty()">
+    <input type="number" id="m7NightAlkPct" step="1" min="0" max="100" onfocus="markMode7SplitDirty()" oninput="markMode7SplitDirty()">
+    <div class="help">Night correction favors P3 NaOH to support pH while correcting Alk.</div>
+  </div>
+  <button class="sec" onclick="saveMode7DayNightSplit()" style="margin-top:14px">Save Mode 7 Day/Night Split</button>
+  <div class="footer-note">Default test setup: Day = 0% NaOH / 100% Alk. Night = 100% NaOH / 0% Alk. If pH is at or above the cutoff, NaOH is moved/blocked for safety.</div>
 </div>
 
 <div class="card">
@@ -455,41 +614,215 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
 
 <div class="card" style="grid-column: 1 / -1">
   <div class="card-title">
-    <h3>Chemical Strengths</h3>
-    <span class="meta">Advanced per-device tuning</span>
+    <h3>Chemical Recipes → Strengths</h3>
+    <span class="meta">Easy customer setup</span>
   </div>
   <div class="danger-warning">
-    ⚠️ BIG WARNING: These numbers directly change how many mL the AI doses.
-    <small>Lower strength = AI doses more. Higher strength = AI doses less. Do not change these unless you measured the solution strength or know exactly why you are changing it.</small>
+    ⚠️ BIG WARNING: These recipes calculate the hidden AI strength numbers.
+    <small>These defaults are AI Doser Standard recipes unless the card says otherwise. They are not labeled as BRS unless a verified BRS preset is selected. AIDoser calculates the internal strength from the recipe and tank volume. Lower calculated strength = AI doses more. Higher calculated strength = AI doses less.</small>
   </div>
-  <div class="two">
+
+  <div class="two" style="margin-top:12px;margin-bottom:4px">
     <div>
-      <div class="help" style="margin-bottom:8px;">Kalk Strength (dKH per mL)</div>
-      <input type="number" id="strKalk" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+      <div class="help" style="margin-bottom:8px;">Show recipe notes as</div>
+      <select id="recipeUnitMode" onchange="onRecipeUnitChange()">
+        <option value="gallon">Per gallon</option>
+        <option value="liter">Per liter</option>
+      </select>
     </div>
     <div>
-      <div class="help" style="margin-bottom:8px;">AFR Strength (dKH per mL)</div>
-      <input type="number" id="strAfr" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
-    </div>
-    <div>
-      <div class="help" style="margin-bottom:8px;">P4 Alk Strength (dKH per mL)</div>
-      <input type="number" id="strAlk" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
-    </div>
-    <div>
-      <div class="help" style="margin-bottom:8px;">NaOH Strength (dKH per mL)</div>
-      <input type="number" id="strNaoh" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
-    </div>
-    <div>
-      <div class="help" style="margin-bottom:8px;">Mg Strength (ppm per mL)</div>
-      <input type="number" id="strMg" step="0.00001" min="0.00001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
-    </div>
-    <div>
-      <div class="help" style="margin-bottom:8px;">CaCl2 Strength (ppm per mL)</div>
-      <input type="number" id="strCacl2" step="0.00001" min="0.00001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+      <div class="help" style="margin-bottom:8px;">Recipe note</div>
+      <div class="recipe-red-note"><b>Tip:</b> Changing this dropdown only changes the display units on this page. Nothing is saved to the ESP32 until you click Save Recipes + Calculated Strengths.</div>
     </div>
   </div>
-  <button class="danger" onclick="saveChemicalStrengths()" style="margin-top:12px">Save Chemical Strengths</button>
-  <div class="footer-note">Stored locally in ESP32 Preferences. This lets Mark and Eric use the same firmware with different solution strengths.</div>
+
+  <div class="recipe-grid">
+    <div class="recipe-card">
+      <div class="recipe-head">
+        <div>
+          <div class="recipe-title">Kalkwasser</div>
+          <div class="recipe-note">Calcium hydroxide solution</div><div class="recipe-source-pill">Recipe Source: AI Doser Standard</div>
+        </div>
+        <div class="recipe-pump">Kalk</div>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Recipe</div>
+        <input type="number" id="recipeKalkGpg" step="0.1" min="0" placeholder="12" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty();updateRecipePreview()">
+        <div class="recipe-red-note" id="noteKalk"><b>Recommended:</b> Saturated kalk = 2 tsp, 12 g per gallon of RO/DI water.</div>
+      </div>
+      <div class="recipe-result"><div class="k">Calculated Strength</div><div class="v"><span id="calcKalk">--</span><span class="u">dKH/mL</span></div></div>
+    </div>
+
+    <div class="recipe-card">
+      <div class="recipe-head">
+        <div>
+          <div class="recipe-title">All-For-Reef</div>
+          <div class="recipe-note">AFR powder or commercial liquid</div><div class="recipe-source-pill">Recipe Source: Tropic Marin / Custom</div>
+        </div>
+        <div class="recipe-pump">AFR</div>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Recipe Type</div>
+        <select id="recipeAfrType" onchange="markChemicalStrengthDirty();updateRecipePreview()">
+          <option value="tm_afr_powder">Tropic Marin AFR Powder Standard</option>
+          <option value="custom">Custom AFR / Commercial Liquid</option>
+        </select>
+        <div class="recipe-red-note" id="noteAfr"><b>Recommended:</b> Tropic Marin AFR powder = 160 g/L or 606 g/gal final solution.</div>
+      </div>
+      <div class="recipe-row" id="afrCustomBox" style="display:none">
+        <div class="recipe-label">Custom AFR Strength</div>
+        <input type="number" id="strAfr" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty();updateRecipePreview()">
+        <div class="recipe-note">Only for premixed AFR or another commercial liquid.</div>
+      </div>
+      <div class="recipe-result"><div class="k">Calculated Strength</div><div class="v"><span id="calcAfr">--</span><span class="u">dKH/mL</span></div></div>
+    </div>
+
+    <div class="recipe-card">
+      <div class="recipe-head">
+        <div>
+          <div class="recipe-title">Alkalinity</div>
+          <div class="recipe-note">Soda ash or baking soda</div>
+        </div>
+        <div class="recipe-pump">Alk</div>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Recipe Source</div>
+        <select id="recipeAlkSource" onchange="applyRecipeSourceDefaults()">
+          <option value="aid_standard">AI Doser Standard</option>
+          <option value="brs_not_set">BRS Recipe - verify before use</option>
+          <option value="custom">Custom</option>
+        </select>
+        <div class="recipe-note">Current default is AI Doser Standard, not BRS.</div>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Chemical Type</div>
+        <select id="recipeAlkType" onchange="markChemicalStrengthDirty();updateRecipePreview()">
+          <option value="soda_ash">Soda Ash / Sodium Carbonate</option>
+          <option value="baking_soda">Baking Soda / Sodium Bicarbonate</option>
+        </select>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Recipe: <span class="recipeUnitLabel">grams per gallon</span></div>
+        <input type="number" id="recipeAlkGpg" step="0.1" min="0" placeholder="100" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty();updateRecipePreview()">
+      </div>
+      <div class="recipe-red-note" id="noteAlk"><b>Recommended:</b> Soda Ash = 100 g/gal or 26.4 g/L RO/DI water.</div>
+      <div class="recipe-result"><div class="k">Calculated Strength</div><div class="v"><span id="calcAlk">--</span><span class="u">dKH/mL</span></div></div>
+    </div>
+
+    <div class="recipe-card">
+      <div class="recipe-head">
+        <div>
+          <div class="recipe-title">Sodium Hydroxide (NaOH)</div>
+          <div class="recipe-note">Advanced high-pH alkalinity • mainly for Mode 6 / Mode 7</div>
+        </div>
+        <div class="recipe-pump">NaOH</div>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Recipe Source</div>
+        <select id="recipeNaohSource" onchange="applyRecipeSourceDefaults()">
+          <option value="aid_standard">AI Doser Standard for Mode 6 / Mode 7</option>
+          <option value="custom">Custom NaOH Recipe</option>
+        </select>
+        <div class="recipe-note">Recommended for Mode 7: leave this at AI Doser Standard unless intentionally mixed differently.</div>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Recipe Concentration: <span class="recipeUnitLabel">grams per gallon</span></div>
+        <input type="number" id="recipeNaohGpg" step="0.1" min="0" placeholder="144" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty();updateRecipePreview()">
+        <div class="recipe-red-note" id="noteNaoh"><b>AI Doser Standard:</b> 144 g/gal or 38.0 g/L NaOH in RO/DI water. Do not change unless you intentionally mix a different concentration.</div>
+      </div>
+      <div class="recipe-result"><div class="k">Calculated Strength Saved to AI</div><div class="v"><span id="calcNaoh">--</span><span class="u">dKH/mL</span></div></div>
+    </div>
+
+    <div class="recipe-card">
+      <div class="recipe-head">
+        <div>
+          <div class="recipe-title">Calcium Chloride</div>
+          <div class="recipe-note">Calcium supplement</div>
+        </div>
+        <div class="recipe-pump">CaCl2</div>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Recipe Source</div>
+        <select id="recipeCacl2Source" onchange="applyRecipeSourceDefaults()">
+          <option value="aid_standard">AI Doser Standard</option>
+          <option value="brs_not_set">BRS Recipe - verify before use</option>
+          <option value="custom">Custom</option>
+        </select>
+        <div class="recipe-note">Current default is AI Doser Standard, not BRS.</div>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Chemical Type</div>
+        <select id="recipeCacl2Type" onchange="markChemicalStrengthDirty();updateRecipePreview()">
+          <option value="cacl2_dihydrate">Calcium Chloride Dihydrate</option>
+          <option value="cacl2_anhydrous">Calcium Chloride Anhydrous</option>
+        </select>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Recipe: <span class="recipeUnitLabel">grams per gallon</span></div>
+        <input type="number" id="recipeCacl2Gpg" step="0.1" min="0" placeholder="250" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty();updateRecipePreview()">
+      </div>
+      <div class="recipe-red-note" id="noteCacl2"><b>Recommended:</b> Calcium Chloride Dihydrate = 250 g/gal or 66.0 g/L RO/DI water.</div>
+      <div class="recipe-result"><div class="k">Calculated Strength</div><div class="v"><span id="calcCacl2">--</span><span class="u">ppm/mL</span></div></div>
+    </div>
+
+    <div class="recipe-card">
+      <div class="recipe-head">
+        <div>
+          <div class="recipe-title">Magnesium</div>
+          <div class="recipe-note">Mag chloride or Epsom salt</div>
+        </div>
+        <div class="recipe-pump">Mg</div>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Recipe Source</div>
+        <select id="recipeMgSource" onchange="applyRecipeSourceDefaults()">
+          <option value="aid_standard">AI Doser Standard</option>
+          <option value="brs_not_set">BRS Recipe - verify before use</option>
+          <option value="custom">Custom</option>
+        </select>
+        <div class="recipe-note">Current default is AI Doser Standard, not BRS.</div>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Chemical Type</div>
+        <select id="recipeMgType" onchange="markChemicalStrengthDirty();updateRecipePreview()">
+          <option value="mag_chloride">Magnesium Chloride Hexahydrate</option>
+          <option value="epsom">Epsom Salt / Magnesium Sulfate</option>
+        </select>
+      </div>
+      <div class="recipe-row">
+        <div class="recipe-label">Recipe: <span class="recipeUnitLabel">grams per gallon</span></div>
+        <input type="number" id="recipeMgGpg" step="0.1" min="0" placeholder="500" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty();updateRecipePreview()">
+      </div>
+      <div class="recipe-red-note" id="noteMg"><b>Recommended:</b> Magnesium Chloride Hexahydrate = 500 g/gal or 132.1 g/L RO/DI water.</div>
+      <div class="recipe-result"><div class="k">Calculated Strength</div><div class="v"><span id="calcMg">--</span><span class="u">ppm/mL</span></div></div>
+    </div>
+
+    <div class="recipe-card recipe-full">
+      <div class="recipe-head">
+        <div>
+          <div class="recipe-title">Summary</div>
+          <div class="recipe-note">These are the internal values saved to the ESP32. Customers usually only need the recipe cards above.</div>
+        </div>
+        <div class="recipe-pump" id="recipeTankSummary">Using tank volume</div>
+      </div>
+      <button class="sec" style="margin-bottom:12px" onclick="updateRecipePreview()">Recalculate Chemical Strengths</button>
+      <div class="help" id="recipePreview">Enter tank volume and recipes to calculate.</div>
+
+      <details style="margin-top:14px">
+        <summary class="help" style="cursor:pointer;color:var(--accent);font-weight:900">Advanced: raw internal strength fields</summary>
+        <div class="two" style="margin-top:12px">
+          <input type="number" id="strKalk" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+          <input type="number" id="strAlk" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+          <input type="number" id="strNaoh" step="0.0000001" min="0.0000001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+          <input type="number" id="strMg" step="0.00001" min="0.00001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+          <input type="number" id="strCacl2" step="0.00001" min="0.00001" onfocus="markChemicalStrengthDirty()" oninput="markChemicalStrengthDirty()">
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <button class="danger" onclick="saveChemicalStrengths()" style="margin-top:14px">Save Recipes + Calculated Strengths</button>
+  <div class="footer-note">Recipes are customer-friendly. Internal strengths are calculated automatically from grams/gallon and tank volume.</div>
 </div>
 
 <div class="card" style="grid-column: 1 / -1">
@@ -635,7 +968,23 @@ const FIREBASE_WEB_PUSH_VAPID_KEY = "BNEHGv71r2Ac8cvVOtthjvCJfPPGeYC-IUEOesBK_EF
   function clearSafetyDirty(){ safetyDirty = false; }
   function isSafetyEditing(){
     const activeId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
-    return safetyDirty || activeId === 'dTresh' || activeId === 'dMax';
+    return safetyDirty || activeId === 'dTresh' || activeId === 'dMax' || activeId.startsWith('safeThr') || activeId.startsWith('safeMax') || activeId.startsWith('safeDay');
+  }
+
+  let aiChemSafetyDirty = false;
+  function markAiChemSafetyDirty(){ aiChemSafetyDirty = true; }
+  function clearAiChemSafetyDirty(){ aiChemSafetyDirty = false; }
+  function isAiChemSafetyEditing(){
+    const activeId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
+    return aiChemSafetyDirty || activeId.startsWith('aiSafe');
+  }
+
+  let mode7SplitDirty = false;
+  function markMode7SplitDirty(){ mode7SplitDirty = true; }
+  function clearMode7SplitDirty(){ mode7SplitDirty = false; }
+  function isMode7SplitEditing(){
+    const activeId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
+    return mode7SplitDirty || activeId === 'm7SplitEnabled' || activeId === 'm7NaohMaxPh' || activeId.startsWith('m7Day') || activeId.startsWith('m7Night');
   }
 
   let aiBaselineDirty = false;
@@ -720,6 +1069,7 @@ async function saveVol() {
     body: JSON.stringify({ gallons: gal, volume: gal * 3.78541 })
   });
   await loadAll();
+  updateRecipePreview();
   alert("System volume set to " + gal.toFixed(1) + " Gallons");
 }
 
@@ -927,13 +1277,27 @@ function localPlanValue(s, pump){
       const capOptions = [0,1,2,3,4,5].map(g => `<option value="${g}" ${Math.round(cap) === g ? 'selected' : ''}>${g === 0 ? 'Disabled' : g + ' gal'}</option>`).join('');
       const currentOptions = chemicalLevelOptions(remainingGal, cap);
 
+      const cleanPct = cap > 0 ? Math.max(0, Math.min(100, pct)) : 0;
+      const barClass = r.severe ? 'severe' : (r.warning ? 'warn' : '');
+      const levelText = cap > 0
+        ? `${remainingGal.toFixed(2)} gal left of ${cap.toFixed(1)} gal`
+        : 'Reservoir tracking disabled';
+
       html += `<div class="chem-item">
         <div class="chem-top">
           <div>
             <div class="chem-name">P${i + 1} ${pumpChemicalName(i, currentDosingMode)}</div>
-            <div class="chem-left">${cap > 0 ? remainingGal.toFixed(2) + ' gal left • ' + pct.toFixed(0) + '%' : 'not tracked'}</div>
+            <div class="chem-left">${levelText}</div>
           </div>
           ${chemicalStatusBadge(r)}
+        </div>
+
+        <div class="chem-level-meta">
+          <span>Reservoir level</span>
+          <span class="chem-level-percent">${cap > 0 ? cleanPct.toFixed(0) + '%' : '--'}</span>
+        </div>
+        <div class="chem-level-bar" title="${levelText}">
+          <div class="chem-level-fill ${barClass}" style="width:${cleanPct.toFixed(0)}%"></div>
         </div>
 
         <div class="two">
@@ -1078,11 +1442,14 @@ function localPlanValue(s, pump){
     document.getElementById('onlineDot').style.boxShadow = s.wifiConnected ? '0 0 10px rgba(74,222,128,.8)' : '0 0 10px rgba(248,113,113,.8)';
     document.getElementById('syncBox').textContent = 'Last local sync: ' + new Date().toLocaleTimeString();
     // Do not overwrite safety inputs while the user is changing them.
-    const dTreshEl = document.getElementById('dTresh');
-    const dMaxEl = document.getElementById('dMax');
     if (!isSafetyEditing()) {
-      if (dTreshEl) dTreshEl.value = s.dosingThreshold || 1.0;
-      if (dMaxEl) dMaxEl.value = s.maxHourlyLimit || 15;
+      renderPumpSafetyInputs(s);
+    }
+    if (!isAiChemSafetyEditing()) {
+      renderAiChemistrySafeties(s);
+    }
+    if (!isMode7SplitEditing()) {
+      renderMode7DayNightSplit(s);
     }
 
 
@@ -1117,6 +1484,32 @@ function localPlanValue(s, pump){
       if (strNaohEl) strNaohEl.value = Number(strengths.naoh || 0).toFixed(7);
       if (strMgEl) strMgEl.value = Number(strengths.mg || 0).toFixed(5);
       if (strCacl2El) strCacl2El.value = Number(strengths.cacl2 || 0).toFixed(5);
+
+      const recipe = s.chemicalRecipes || {};
+      const setRecipeVal = (id, val) => {
+        const input = document.getElementById(id);
+        if (!input || document.activeElement === input) return;
+        const shown = getRecipeUnitMode() === 'liter' ? Number(val) / 3.78541 : Number(val);
+        input.value = formatRecipeValue(shown);
+      };
+
+      const afrTypeEl = document.getElementById('recipeAfrType');
+      if (afrTypeEl && document.activeElement !== afrTypeEl) afrTypeEl.value = recipe.afrType || 'tm_afr_powder';
+
+      setRecipeVal('recipeKalkGpg', Number(recipe.kalkGpg ?? 12));
+      setRecipeVal('recipeAlkGpg', Number(recipe.alkGpg ?? 100));
+      setRecipeVal('recipeNaohGpg', Number(recipe.naohGpg ?? 144));
+      setRecipeVal('recipeMgGpg', Number(recipe.mgGpg ?? 500));
+      setRecipeVal('recipeCacl2Gpg', Number(recipe.cacl2Gpg ?? 250));
+
+      const alkTypeEl = document.getElementById('recipeAlkType');
+      const mgTypeEl = document.getElementById('recipeMgType');
+      const caTypeEl = document.getElementById('recipeCacl2Type');
+      if (alkTypeEl && document.activeElement !== alkTypeEl) alkTypeEl.value = recipe.alkType || 'soda_ash';
+      if (mgTypeEl && document.activeElement !== mgTypeEl) mgTypeEl.value = recipe.mgType || 'mag_chloride';
+      if (caTypeEl && document.activeElement !== caTypeEl) caTypeEl.value = recipe.cacl2Type || 'cacl2_dihydrate';
+
+      updateRecipePreview();
     }
 
     const tankInput = document.getElementById('tankGal');
@@ -1124,6 +1517,7 @@ function localPlanValue(s, pump){
       const gal = Number(s.tankGallons ?? s.tankGal ?? s.gallons);
       if (Number.isFinite(gal) && gal > 0) tankInput.value = gal.toFixed(1);
     }
+    if (typeof updateRecipePreview === 'function') updateRecipePreview();
     }
 
   // Populate the hour dropdowns (0-23)
@@ -1458,76 +1852,498 @@ async function saveAiBaseline() {
   alert('AI baseline demand saved.');
 }
 
-async function saveChemicalStrengths() {
-  const payload = {
-    kalk: parseFloat(gv('strKalk')),
-    afr: parseFloat(gv('strAfr')),
-    alk: parseFloat(gv('strAlk')),
-    naoh: parseFloat(gv('strNaoh')),
-    mg: parseFloat(gv('strMg')),
-    cacl2: parseFloat(gv('strCacl2'))
-  };
 
-  for (const key of ['kalk','afr','alk','naoh','mg','cacl2']) {
-    if (!Number.isFinite(payload[key]) || payload[key] <= 0) {
-      alert('Enter a valid positive chemical strength for ' + key + '.');
-      return;
-    }
+function recipeTankGallons(){
+  const inputGal = Number(gv('tankGal'));
+  if (Number.isFinite(inputGal) && inputGal > 0) return inputGal;
+
+  const s = currentStatus || {};
+  const candidates = [
+    Number(s.tankGallons),
+    Number(s.tankGal),
+    Number(s.gallons),
+    Number(s.tankVolumeGallons),
+    Number(s.tankVolumeGal)
+  ];
+
+  for (const gal of candidates) {
+    if (Number.isFinite(gal) && gal > 0) return gal;
   }
 
-  const ok = confirm(
-    'BIG WARNING:\\n\\n' +
-    'These chemical strength numbers directly change how many mL AI Doser will dose.\\n' +
-    'Lower strength = more dosing. Higher strength = less dosing.\\n\\n' +
-    'Save these chemical strengths?'
-  );
-  if (!ok) return;
+  const liters = Number(s.tankLiters ?? s.tankVolumeLiters ?? s.volumeLiters ?? s.volume);
+  if (Number.isFinite(liters) && liters > 0) return liters / 3.78541;
+
+  return 0;
+}
+
+function getRecipeUnitMode(){
+  const el = document.getElementById('recipeUnitMode');
+  return el && el.value === 'liter' ? 'liter' : 'gallon';
+}
+
+function setRecipeUnitLabels(){
+  const label = getRecipeUnitMode() === 'liter' ? 'grams per liter' : 'grams per gallon';
+  document.querySelectorAll('.recipeUnitLabel').forEach(el => el.textContent = label);
+}
+
+function formatRecipeValue(value){
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '';
+  const digits = n >= 100 ? 0 : (n >= 10 ? 1 : 2);
+  return n.toFixed(digits).replace(/\.0$/, '');
+}
+
+function setRecipeInputFromGpg(id, gpg){
+  const el = document.getElementById(id);
+  if (!el) return;
+  const shown = getRecipeUnitMode() === 'liter' ? Number(gpg) / 3.78541 : Number(gpg);
+  el.value = formatRecipeValue(shown);
+}
+
+function recipeInputToGpg(id, defaultGpg){
+  const el = document.getElementById(id);
+  const shown = el ? Number(el.value) : NaN;
+  const value = Number.isFinite(shown) && shown >= 0 ? shown : Number(defaultGpg);
+  return getRecipeUnitMode() === 'liter' ? value * 3.78541 : value;
+}
+
+function recipeAmountTextFromGpg(gpg, tspLabel){
+  const unit = getRecipeUnitMode();
+  const shown = unit === 'liter' ? Number(gpg) / 3.78541 : Number(gpg);
+  const unitText = unit === 'liter' ? 'liter' : 'gallon';
+  const amount = formatRecipeValue(shown);
+  if (tspLabel && unit === 'gallon') {
+    return `${tspLabel}, about ${amount} g per ${unitText}`;
+  }
+  return `${amount} g per ${unitText}`;
+}
+
+function onRecipeUnitChange(){
+  // Convert the visible AI Doser Standard values when the user switches unit display.
+  const unit = getRecipeUnitMode();
+  setRecipeUnitLabels();
+
+  const sourceVal = (id, fallback) => {
+    const el = document.getElementById(id);
+    return el ? el.value : fallback;
+  };
+
+  // Keep custom entries by converting their current visible value.
+  // If source is AI standard, use known defaults.
+  const alkSrc = sourceVal('recipeAlkSource', 'aid_standard');
+  const naohSrc = sourceVal('recipeNaohSource', 'aid_standard');
+  const caSrc = sourceVal('recipeCacl2Source', 'aid_standard');
+  const mgSrc = sourceVal('recipeMgSource', 'aid_standard');
+
+  setRecipeInputFromGpg('recipeKalkGpg', 12);
+  if (alkSrc === 'aid_standard') setRecipeInputFromGpg('recipeAlkGpg', 100);
+  if (naohSrc === 'aid_standard') setRecipeInputFromGpg('recipeNaohGpg', 144);
+  if (caSrc === 'aid_standard') setRecipeInputFromGpg('recipeCacl2Gpg', 250);
+  if (mgSrc === 'aid_standard') setRecipeInputFromGpg('recipeMgGpg', 500);
+
+  updateRecipeNotes();
+  updateRecipePreview();
+}
+
+function toggleAfrCustom(){
+  const box = document.getElementById('afrCustomBox');
+  const type = gv('recipeAfrType') || 'tm_afr_powder';
+  if (box) box.style.display = type === 'custom' ? 'block' : 'none';
+}
+
+function applyRecipeSourceDefaults(){
+  const unit = getRecipeUnitMode();
+  setRecipeUnitLabels();
+
+  if ((gv('recipeAlkSource') || 'aid_standard') === 'aid_standard') setRecipeInputFromGpg('recipeAlkGpg', 100);
+  if ((gv('recipeNaohSource') || 'aid_standard') === 'aid_standard') setRecipeInputFromGpg('recipeNaohGpg', 144);
+  if ((gv('recipeCacl2Source') || 'aid_standard') === 'aid_standard') setRecipeInputFromGpg('recipeCacl2Gpg', 250);
+  if ((gv('recipeMgSource') || 'aid_standard') === 'aid_standard') setRecipeInputFromGpg('recipeMgGpg', 500);
+
+  updateRecipeNotes();
+  updateRecipePreview();
+}
+
+function calcRecipeStrengths(){
+  const gal = recipeTankGallons();
+  if (!Number.isFinite(gal) || gal <= 0) return null;
+
+  const kalkGpg = recipeInputToGpg('recipeKalkGpg', 12);
+  const alkGpg = recipeInputToGpg('recipeAlkGpg', 100);
+  const naohGpg = recipeInputToGpg('recipeNaohGpg', 144);
+  const mgGpg = recipeInputToGpg('recipeMgGpg', 500);
+  const cacl2Gpg = recipeInputToGpg('recipeCacl2Gpg', 250);
+
+  const alkType = gv('recipeAlkType') || 'soda_ash';
+  const mgType = gv('recipeMgType') || 'mag_chloride';
+  const cacl2Type = gv('recipeCacl2Type') || 'cacl2_dihydrate';
+  const afrType = gv('recipeAfrType') || 'tm_afr_powder';
+
+  const alkFactor = alkType === 'baking_soda' ? 0.00252 : 0.00400;
+  const mgFactor = mgType === 'epsom' ? 0.373 : 0.452;
+  const cacl2Factor = cacl2Type === 'cacl2_anhydrous' ? 1.365 : 1.034;
+
+  // Tropic Marin AFR powder standard solution: 160 g per final liter.
+  // Internal dashboard strength is dKH change per 1 mL added to this tank.
+  const afrPresetStrength = 6.0 / (gal * 3.78541);
+  const afrStrength = afrType === 'tm_afr_powder' ? afrPresetStrength : (Number(gv('strAfr')) || 0.0000001);
+
+  return {
+    gal,
+    recipe: {
+      kalkGpg,
+      afrGpg: 160,
+      afrType,
+      alkGpg,
+      naohGpg,
+      mgGpg,
+      cacl2Gpg,
+      alkType,
+      mgType,
+      cacl2Type
+    },
+    strengths: {
+      kalk: (0.00573 * kalkGpg) / gal,
+      afr: afrStrength,
+      alk: (alkFactor * alkGpg) / gal,
+      naoh: (0.00530 * naohGpg) / gal,
+      mg: (mgFactor * mgGpg) / gal,
+      cacl2: (cacl2Factor * cacl2Gpg) / gal
+    }
+  };
+}
+
+function updateRecipeNotes(){
+  const setHtml = (id, html) => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  };
+
+  const unit = getRecipeUnitMode();
+  const afrType = gv('recipeAfrType') || 'tm_afr_powder';
+  const alkType = gv('recipeAlkType') || 'soda_ash';
+  const cacl2Type = gv('recipeCacl2Type') || 'cacl2_dihydrate';
+  const mgType = gv('recipeMgType') || 'mag_chloride';
+
+  const kalkGpg = recipeInputToGpg('recipeKalkGpg', 12);
+  const alkGpg = recipeInputToGpg('recipeAlkGpg', 100);
+  const naohGpg = recipeInputToGpg('recipeNaohGpg', 144);
+  const cacl2Gpg = recipeInputToGpg('recipeCacl2Gpg', 250);
+  const mgGpg = recipeInputToGpg('recipeMgGpg', 500);
+
+  setHtml('noteKalk', `<b>AI Doser Standard:</b> Saturated kalk = ${recipeAmountTextFromGpg(kalkGpg, '2 tsp')} of RO/DI water.`);
+
+  if (afrType === 'custom') {
+    setHtml('noteAfr', '<b>Custom AFR:</b> Use the bottle label or measured tank result to enter dKH per mL.');
+  } else if (unit === 'liter') {
+    setHtml('noteAfr', '<b>Tropic Marin Standard:</b> AFR powder = 160 g per final 1 liter dosing solution.');
+  } else {
+    setHtml('noteAfr', '<b>Tropic Marin Standard:</b> AFR powder = about 606 g per final 1 gallon dosing solution.');
+  }
+
+  if (alkType === 'baking_soda') {
+    setHtml('noteAlk', `<b>AI Doser Standard:</b> Baking Soda / Sodium Bicarbonate = ${recipeAmountTextFromGpg(alkGpg)} of RO/DI water.`);
+  } else {
+    setHtml('noteAlk', `<b>AI Doser Standard:</b> Soda Ash / Sodium Carbonate = ${recipeAmountTextFromGpg(alkGpg)} of RO/DI water.`);
+  }
+
+  setHtml('noteNaoh', `<b>AI Doser Standard:</b> ${recipeAmountTextFromGpg(naohGpg)} NaOH in RO/DI water. Do not change unless you intentionally mix a different concentration.`);
+
+  if (cacl2Type === 'cacl2_anhydrous') {
+    setHtml('noteCacl2', `<b>AI Doser Standard:</b> Anhydrous Calcium Chloride = ${recipeAmountTextFromGpg(cacl2Gpg)} of RO/DI water.`);
+  } else {
+    setHtml('noteCacl2', `<b>AI Doser Standard:</b> Calcium Chloride Dihydrate = ${recipeAmountTextFromGpg(cacl2Gpg)} of RO/DI water.`);
+  }
+
+  if (mgType === 'epsom') {
+    setHtml('noteMg', `<b>AI Doser Standard:</b> Epsom Salt / Magnesium Sulfate = ${recipeAmountTextFromGpg(mgGpg)} of RO/DI water.`);
+  } else {
+    setHtml('noteMg', `<b>AI Doser Standard:</b> Magnesium Chloride Hexahydrate = ${recipeAmountTextFromGpg(mgGpg)} of RO/DI water.`);
+  }
+}
+
+function updateRecipePreview(){
+  setRecipeUnitLabels();
+  toggleAfrCustom();
+  updateRecipeNotes();
+
+  const calc = calcRecipeStrengths();
+  const el = document.getElementById('recipePreview');
+  const tankEl = document.getElementById('recipeTankSummary');
+
+  const setText = (id, text) => {
+    const node = document.getElementById(id);
+    if (node) node.textContent = text;
+  };
+
+  if (!calc) {
+    if (el) el.innerHTML = '<b>Enter tank volume first.</b> Use the Tank Volume field at the top of the dashboard.';
+    if (tankEl) tankEl.textContent = 'Tank volume needed';
+    ['calcKalk','calcAfr','calcAlk','calcNaoh','calcCacl2','calcMg'].forEach(id => setText(id, 'enter tank'));
+    return;
+  }
+
+  const s = calc.strengths;
+  if (tankEl) tankEl.textContent = `Tank ${calc.gal.toFixed(1)} gal`;
+
+  setText('calcKalk', s.kalk.toFixed(7));
+  setText('calcAfr', s.afr.toFixed(7));
+  setText('calcAlk', s.alk.toFixed(7));
+  setText('calcNaoh', s.naoh.toFixed(7));
+  setText('calcCacl2', s.cacl2.toFixed(5));
+  setText('calcMg', s.mg.toFixed(5));
+
+  if (el) {
+    el.innerHTML =
+      `<b>Using tank volume:</b> ${calc.gal.toFixed(1)} gallons<br>` +
+      `<b>Kalk:</b> ${s.kalk.toFixed(7)} dKH/mL &nbsp; ` +
+      `<b>AFR:</b> ${s.afr.toFixed(7)} dKH/mL &nbsp; ` +
+      `<b>Alk:</b> ${s.alk.toFixed(7)} dKH/mL &nbsp; ` +
+      `<b>NaOH:</b> ${s.naoh.toFixed(7)} dKH/mL<br>` +
+      `<b>CaCl2:</b> ${s.cacl2.toFixed(5)} ppm/mL &nbsp; ` +
+      `<b>Mg:</b> ${s.mg.toFixed(5)} ppm/mL`;
+  }
+
+  const setVal = (id, val, digits) => {
+    const input = document.getElementById(id);
+    if (input && document.activeElement !== input) input.value = Number(val).toFixed(digits);
+  };
+
+  setVal('strKalk', s.kalk, 7);
+  setVal('strAlk', s.alk, 7);
+  setVal('strNaoh', s.naoh, 7);
+  setVal('strMg', s.mg, 5);
+  setVal('strCacl2', s.cacl2, 5);
+}
+
+async function saveChemicalStrengths(){
+  const calc = calcRecipeStrengths();
+  if (!calc) {
+    alert('Enter a valid tank volume before saving chemical recipes.');
+    return;
+  }
+
+  const s = calc.strengths;
+  if (!Number.isFinite(s.kalk) || s.kalk <= 0 ||
+      !Number.isFinite(s.alk) || s.alk <= 0 ||
+      !Number.isFinite(s.naoh) || s.naoh <= 0 ||
+      !Number.isFinite(s.mg) || s.mg <= 0 ||
+      !Number.isFinite(s.cacl2) || s.cacl2 <= 0) {
+    alert('Enter valid recipe gram-per-gallon values greater than zero.');
+    return;
+  }
+
+  const payload = {
+    kalk: s.kalk,
+    afr: s.afr,
+    alk: s.alk,
+    naoh: s.naoh,
+    mg: s.mg,
+    cacl2: s.cacl2,
+    recipe: calc.recipe
+  };
 
   const res = await api('/api/config/chemical-strengths', 'POST', payload);
   if (res && res.ok === false) {
-    alert('Chemical strength save failed: ' + (res.error || res.raw || 'unknown error'));
+    alert('Chemical recipe save failed: ' + (res.error || res.raw || 'unknown error'));
     return;
   }
 
   currentStatus.chemicalStrengths = payload;
+  currentStatus.chemicalRecipes = calc.recipe;
   clearChemicalStrengthDirty();
   await loadAll();
-  alert('Chemical strengths saved.');
+  alert('Chemical recipes and calculated strengths saved.');
 }
 
 
+
+function pumpSafetyName(index){
+  return pumpChemicalName(index, currentDosingMode || 1);
+}
+
+function renderPumpSafetyInputs(s){
+  const safeties = (s && s.pumpSafeties) || {};
+  const defaults = [
+    {thresholdMl:100, maxDoseMl:1500, maxDayMl:35000},
+    {thresholdMl:10,  maxDoseMl:250,  maxDayMl:2000},
+    {thresholdMl:5,   maxDoseMl:100,  maxDayMl:1200},
+    {thresholdMl:5,   maxDoseMl:100,  maxDayMl:2500}
+  ];
+
+  for (let i = 0; i < 4; i++) {
+    const key = 'p' + (i + 1);
+    const row = safeties[key] || defaults[i];
+    const nameEl = document.getElementById('safetyPumpName' + i);
+    const usedEl = document.getElementById('safetyUsed' + i);
+    const thrEl = document.getElementById('safeThr' + i);
+    const maxEl = document.getElementById('safeMax' + i);
+    const dayEl = document.getElementById('safeDay' + i);
+
+    if (nameEl) nameEl.textContent = 'P' + (i + 1) + ' ' + pumpSafetyName(i);
+    const used = Number(row.usedTodayMl || 0);
+    const remaining = Number(row.remainingTodayMl || 0);
+    if (usedEl) usedEl.textContent = 'Used today: ' + used.toFixed(1) + ' mL • left: ' + remaining.toFixed(1) + ' mL';
+
+    if (thrEl) thrEl.value = Number(row.thresholdMl ?? defaults[i].thresholdMl).toFixed(1).replace(/\.0$/, '');
+    if (maxEl) maxEl.value = Number(row.maxDoseMl ?? defaults[i].maxDoseMl).toFixed(0);
+    if (dayEl) dayEl.value = Number(row.maxDayMl ?? defaults[i].maxDayMl).toFixed(0);
+  }
+}
+
+function readPumpSafetyRow(i){
+  const thresholdMl = parseFloat(gv('safeThr' + i));
+  const maxDoseMl = parseFloat(gv('safeMax' + i));
+  const maxDayMl = parseFloat(gv('safeDay' + i));
+
+  if (!Number.isFinite(thresholdMl) || thresholdMl <= 0) throw new Error('Enter a valid threshold for P' + (i + 1));
+  if (!Number.isFinite(maxDoseMl) || maxDoseMl <= 0) throw new Error('Enter a valid max single dose for P' + (i + 1));
+  if (!Number.isFinite(maxDayMl) || maxDayMl <= 0) throw new Error('Enter a valid max daily dose for P' + (i + 1));
+
+  return { thresholdMl, maxDoseMl, maxDayMl };
+}
+
 async function saveDosingSafeties() {
-  const threshold = parseFloat(gv('dTresh'));
-  const maxLimit = parseFloat(gv('dMax'));
-
-  if (!Number.isFinite(threshold) || threshold <= 0) {
-    alert('Enter a valid Frequency Threshold in mL.');
+  let pumpSafeties;
+  try {
+    pumpSafeties = {
+      p1: readPumpSafetyRow(0),
+      p2: readPumpSafetyRow(1),
+      p3: readPumpSafetyRow(2),
+      p4: readPumpSafetyRow(3)
+    };
+  } catch (err) {
+    alert(err.message || err);
     return;
   }
-  if (!Number.isFinite(maxLimit) || maxLimit <= 0) {
-    alert('Enter a valid Max Hourly Safety in mL.');
-    return;
-  }
 
-  const payload = { threshold, maxLimit };
+  const payload = { pumpSafeties };
   const res = await api('/api/config/safeties', 'POST', payload);
   if (res && res.ok === false) {
     alert('Safety save failed: ' + (res.error || res.raw || 'unknown error'));
     return;
   }
 
-  // Update local copy immediately so the next refresh displays what was saved.
-  currentStatus.dosingThreshold = threshold;
-  currentStatus.maxHourlyLimit = maxLimit;
+  currentStatus.pumpSafeties = pumpSafeties;
+  currentStatus.dosingThreshold = pumpSafeties.p1.thresholdMl;
+  currentStatus.maxHourlyLimit = pumpSafeties.p1.maxDoseMl;
   clearSafetyDirty();
 
-  const dTreshEl = document.getElementById('dTresh');
-  const dMaxEl = document.getElementById('dMax');
-  if (dTreshEl) dTreshEl.value = threshold;
-  if (dMaxEl) dMaxEl.value = maxLimit;
-
   await loadAll();
-  alert("Safety Rails Updated");
+  alert("Pump Safety Rails Updated");
+}
+
+
+function renderAiChemistrySafeties(s){
+  const cfg = (s && s.aiChemistrySafeties) || {};
+  const setVal = (id, value, digits=0) => {
+    const el = document.getElementById(id);
+    if (el) el.value = Number(value).toFixed(digits).replace(/\.0$/, '');
+  };
+
+  setVal('aiSafeMaxKalk', cfg.maxKalkDayMl ?? 35000, 0);
+  setVal('aiSafeMaxNaoh', cfg.maxNaohDayMl ?? 1200, 0);
+  setVal('aiSafeMaxAlk', cfg.maxAlkDayMl ?? 2500, 0);
+  setVal('aiSafeMaxAlkRise', cfg.maxAlkRiseDkhDay ?? 2.0, 2);
+  setVal('aiSafeMaxMgCorrection', cfg.maxMgCorrectionDayMl ?? 250, 0);
+  setVal('aiSafeMaxMg', cfg.maxMgDayMl ?? 250, 0);
+  setVal('aiSafeMgDeadband', cfg.mgDeadbandPpm ?? 25, 0);
+}
+
+function readPositiveNumber(id, label, allowZero=false){
+  const n = Number(gv(id));
+  if (!Number.isFinite(n) || (allowZero ? n < 0 : n <= 0)) throw new Error('Enter a valid ' + label + '.');
+  return n;
+}
+
+async function saveAiChemistrySafeties(){
+  let payload;
+  try {
+    payload = {
+      maxKalkDayMl: readPositiveNumber('aiSafeMaxKalk', 'Max Kalk Per Day'),
+      maxNaohDayMl: readPositiveNumber('aiSafeMaxNaoh', 'Max NaOH Per Day'),
+      maxAlkDayMl: readPositiveNumber('aiSafeMaxAlk', 'Max Alk Solution Per Day'),
+      maxAlkRiseDkhDay: readPositiveNumber('aiSafeMaxAlkRise', 'Max Alk Rise Per Day'),
+      maxMgCorrectionDayMl: readPositiveNumber('aiSafeMaxMgCorrection', 'Max Mg Correction Per Day', true),
+      maxMgDayMl: readPositiveNumber('aiSafeMaxMg', 'Max Mg Per Day'),
+      mgDeadbandPpm: readPositiveNumber('aiSafeMgDeadband', 'Mg Deadband', true)
+    };
+  } catch (err) {
+    alert(err.message || err);
+    return;
+  }
+
+  const res = await api('/api/config/ai-chemistry-safeties', 'POST', payload);
+  if (res && res.ok === false) {
+    alert('AI chemistry safety save failed: ' + (res.error || res.raw || 'unknown error'));
+    return;
+  }
+
+  currentStatus.aiChemistrySafeties = payload;
+  clearAiChemSafetyDirty();
+  await loadAll();
+  alert('AI Chemistry Safeties Updated');
+}
+
+function renderMode7DayNightSplit(s){
+  const cfg = (s && s.mode7DayNightSplit) || {};
+  const setVal = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.value = String(value);
+  };
+
+  setVal('m7SplitEnabled', cfg.enabled === false ? 0 : 1);
+  setVal('m7DayNaohPct', Number(cfg.dayNaohPct ?? 0).toFixed(0));
+  setVal('m7DayAlkPct', Number(cfg.dayAlkPct ?? 100).toFixed(0));
+  setVal('m7NightNaohPct', Number(cfg.nightNaohPct ?? 100).toFixed(0));
+  setVal('m7NightAlkPct', Number(cfg.nightAlkPct ?? 0).toFixed(0));
+  setVal('m7NaohMaxPh', Number(cfg.naohMaxPh ?? 8.45).toFixed(2));
+
+  const state = document.getElementById('mode7SplitState');
+  if (state) {
+    const light = cfg.lightsActive === true ? 'Lights ON' : (cfg.lightsActive === false ? 'Lights OFF' : 'Light state --');
+    state.textContent = (cfg.enabled === false ? 'Disabled' : 'Enabled') + ' • ' + light;
+  }
+}
+
+function readPctInput(id, fallback){
+  const n = Number(gv(id));
+  if (!Number.isFinite(n) || n < 0 || n > 100) throw new Error('Enter 0-100 for ' + id);
+  return n;
+}
+
+async function saveMode7DayNightSplit(){
+  let payload;
+  try {
+    payload = {
+      enabled: gv('m7SplitEnabled') !== '0',
+      dayNaohPct: readPctInput('m7DayNaohPct', 0),
+      dayAlkPct: readPctInput('m7DayAlkPct', 100),
+      nightNaohPct: readPctInput('m7NightNaohPct', 100),
+      nightAlkPct: readPctInput('m7NightAlkPct', 0),
+      naohMaxPh: Number(gv('m7NaohMaxPh'))
+    };
+    if (!Number.isFinite(payload.naohMaxPh) || payload.naohMaxPh < 7.80 || payload.naohMaxPh > 8.80) {
+      throw new Error('Enter a valid NaOH pH cutoff from 7.80 to 8.80.');
+    }
+    if ((payload.dayNaohPct + payload.dayAlkPct) <= 0 || (payload.nightNaohPct + payload.nightAlkPct) <= 0) {
+      throw new Error('Day and night split totals must be greater than zero.');
+    }
+  } catch (err) {
+    alert(err.message || err);
+    return;
+  }
+
+  const res = await api('/api/config/mode7-split', 'POST', payload);
+  if (res && res.ok === false) {
+    alert('Mode 7 split save failed: ' + (res.error || res.raw || 'unknown error'));
+    return;
+  }
+
+  currentStatus.mode7DayNightSplit = payload;
+  clearMode7SplitDirty();
+  await loadAll();
+  alert('Mode 7 Day/Night Alk Split saved.');
 }
 
 function uiToggleLights() {
@@ -1983,7 +2799,31 @@ function loadLocalReport(){
 
   setInterval(loadAll, 5000);
   loadAll();
+
+
+
+
+
+
+
+
+
+  document.addEventListener('DOMContentLoaded', function(){
+    setTimeout(function(){
+      setRecipeUnitLabels();
+      updateRecipePreview();
+    }, 500);
+  });
+
 </script>
+
+
+
+
+
+
+
+
 </body>
 </html>
 )HTML";

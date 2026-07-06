@@ -46,6 +46,45 @@ public:
     float getMgPerMlMg() const { return chem.mgPerMlMg; }
     float getCaPerMlCacl2() const { return chem.caPerMlCacl2; }
 
+
+    void setMode7DayNightSplit(float dayNaohPct, float dayAlkPct,
+                                float nightNaohPct, float nightAlkPct,
+                                float naohMaxPh, bool enabled) {
+        mode7Split.enabled = enabled;
+        mode7Split.dayNaohPct = constrain(dayNaohPct, 0.0f, 100.0f);
+        mode7Split.dayAlkPct = constrain(dayAlkPct, 0.0f, 100.0f);
+        mode7Split.nightNaohPct = constrain(nightNaohPct, 0.0f, 100.0f);
+        mode7Split.nightAlkPct = constrain(nightAlkPct, 0.0f, 100.0f);
+        mode7Split.naohMaxPh = constrain(naohMaxPh, 7.80f, 8.80f);
+    }
+
+    bool getMode7SplitEnabled() const { return mode7Split.enabled; }
+    float getMode7DayNaohPct() const { return mode7Split.dayNaohPct; }
+    float getMode7DayAlkPct() const { return mode7Split.dayAlkPct; }
+    float getMode7NightNaohPct() const { return mode7Split.nightNaohPct; }
+    float getMode7NightAlkPct() const { return mode7Split.nightAlkPct; }
+    float getMode7NaohMaxPh() const { return mode7Split.naohMaxPh; }
+
+    void setChemistrySafetyLimits(float maxKalkDay, float maxNaohDay, float maxAlkDay,
+                                  float maxAlkRisePerDay, float maxMgCorrectionDay,
+                                  float maxMgDay, float mgDeadbandPpm) {
+        if (isfinite(maxKalkDay) && maxKalkDay > 0.0f) limits.maxKalkDay = maxKalkDay;
+        if (isfinite(maxNaohDay) && maxNaohDay > 0.0f) limits.maxNaohDay = maxNaohDay;
+        if (isfinite(maxAlkDay) && maxAlkDay > 0.0f) limits.maxAlkDay = maxAlkDay;
+        if (isfinite(maxAlkRisePerDay) && maxAlkRisePerDay > 0.0f) limits.maxAlkRisePerDay = maxAlkRisePerDay;
+        if (isfinite(maxMgCorrectionDay) && maxMgCorrectionDay > 0.0f) limits.maxMgCorrectionDay = maxMgCorrectionDay;
+        if (isfinite(maxMgDay) && maxMgDay > 0.0f) limits.maxMgDay = maxMgDay;
+        if (isfinite(mgDeadbandPpm) && mgDeadbandPpm >= 0.0f) limits.mgDeadbandPpm = mgDeadbandPpm;
+    }
+
+    float getMaxKalkDay() const { return limits.maxKalkDay; }
+    float getMaxNaohDay() const { return limits.maxNaohDay; }
+    float getMaxAlkDay() const { return limits.maxAlkDay; }
+    float getMaxAlkRisePerDay() const { return limits.maxAlkRisePerDay; }
+    float getMaxMgCorrectionDay() const { return limits.maxMgCorrectionDay; }
+    float getMaxMgDay() const { return limits.maxMgDay; }
+    float getMgDeadbandPpm() const { return limits.mgDeadbandPpm; }
+
     // Per-pump accumulator dump thresholds in mL.
     // Eric Mode 7 physical pump map:
     //   P1 = Kalk, P2 = CaCl2, P3 = NaOH, P4 = Alk
@@ -105,6 +144,20 @@ private:
         float maxKalkDay = 35000.0f, maxNaohDay = 1200.0f, maxAlkDay = 2500.0f, maxAlkRisePerDay = 2.0f;
         float maxMgCorrectionDay = 250.0f, maxMgDay = 250.0f, mgDeadbandPpm = 25.0f;
     } limits;
+
+
+    // ====== MODE 7 DAY/NIGHT ALK SOURCE SPLIT ======
+    struct {
+        // Enabled by default for Eric test: day favors P4 Alk, night favors P3 NaOH.
+        // Percentages split the Mode 7 alkalinity correction between NaOH and Alk.
+        // Kalk baseline/caps remain separate, and pH safety can still block NaOH.
+        bool enabled = true;
+        float dayNaohPct = 0.0f;
+        float dayAlkPct = 100.0f;
+        float nightNaohPct = 100.0f;
+        float nightAlkPct = 0.0f;
+        float naohMaxPh = 8.45f;
+    } mode7Split;
 
     HistoryEntry* aiHistory = nullptr; 
     void applySafetyEnforcement(DosingPlan &p);

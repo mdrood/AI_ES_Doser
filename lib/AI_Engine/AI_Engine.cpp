@@ -199,6 +199,38 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
                     }
                 }
 
+                // ===== MODE 7 DAY/NIGHT ALK SOURCE SPLIT =====
+                // If enabled, use lightsActive to decide whether correction should
+                // mostly go to P4 Alk during the day or P3 NaOH at night.
+                // This overrides the adaptive P3/P4 split above, but keeps:
+                //   - CaCl2 logic unchanged
+                //   - baseline demand added later
+                //   - pH safety/caps below
+                if (mode7Split.enabled && adjAlk > 0.0f) {
+                    float configuredNaohPct = lightsActive ? mode7Split.dayNaohPct : mode7Split.nightNaohPct;
+                    float configuredAlkPct  = lightsActive ? mode7Split.dayAlkPct  : mode7Split.nightAlkPct;
+
+                    if (currentPh > 0.0f && currentPh >= mode7Split.naohMaxPh) {
+                        // pH is too high for NaOH; move NaOH correction to P4 Alk.
+                        configuredAlkPct += configuredNaohPct;
+                        configuredNaohPct = 0.0f;
+                    }
+
+                    float totalConfigured = configuredNaohPct + configuredAlkPct;
+                    if (totalConfigured > 0.0f) {
+                        kalkShare = 0.0f; // Correction split only: use P3/P4. P1 kalk baseline is added later and protected.
+                        naohShare = configuredNaohPct / totalConfigured;
+                        alkShare  = configuredAlkPct / totalConfigured;
+
+                        Serial.printf("MODE7 DAY/NIGHT SPLIT: lights=%s pH=%.2f NaOH=%.1f%% Alk=%.1f%% cutoff=%.2f\n",
+                                      lightsActive ? "on" : "off",
+                                      currentPh,
+                                      naohShare * 100.0f,
+                                      alkShare * 100.0f,
+                                      mode7Split.naohMaxPh);
+                    }
+                }
+
                 next.kalk = (adjAlk > 0.0f && chem.dkhPerMlKalk > 0.0f) ? ((adjAlk * kalkShare) / chem.dkhPerMlKalk) : 0.0f;
                 next.naoh = (adjAlk > 0.0f && chem.dkhPerMlNaoh > 0.0f) ? ((adjAlk * naohShare) / chem.dkhPerMlNaoh) : 0.0f;
                 next.alk  = (adjAlk > 0.0f && chem.dkhPerMlAlk  > 0.0f) ? ((adjAlk * alkShare)  / chem.dkhPerMlAlk)  : 0.0f;
@@ -314,7 +346,8 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
     // The previous floor often left Eric stuck at naoh/day=450 even with
     // Alk around 7.4-7.5 and pH in the 7.8s. This floor is still protected
     // by maxNaohDay in applyAbsoluteCaps(), and still blocks at pH >= 8.60.
-    if (mode == 7 && consAlk >= 0.40f && currentPh > 0.0f && currentPh < 8.60f) {
+    if (mode == 7 && consAlk >= 0.40f && currentPh > 0.0f && currentPh < (mode7Split.enabled ? mode7Split.naohMaxPh : 8.60f) &&
+        (!mode7Split.enabled || !lightsActive || mode7Split.dayNaohPct > 0.0f)) {
         float minNaohRecoveryMlDay = 0.0f;
 
         if (currentPh < 7.90f && consAlk >= 0.80f) {
@@ -412,8 +445,20 @@ void AIEngine::addBaselineDemand(DosingPlan &p, int mode) {
             p.naoh  += baselineNaohMlDay;
             p.mg    += baselineMgMlDay;
             break;
-        case 7:
-            p.kalk  += baselineKalkMlDay;
+        case 7: {
+            // Mode 7 must never lose kalk support. The day/night split only chooses
+            // between P3 NaOH and P4 Alk for alkalinity correction. P1 Kalk remains
+            // the steady baseline pH/alk support.
+            //
+            // If no positive kalk baseline is saved, fall back to maxKalkDay so
+            // Eric/new Mode 7 systems do not accidentally run with kalk/day = 0.
+            float mode7KalkBaseline = baselineKalkMlDay;
+            if (!isfinite(mode7KalkBaseline) || mode7KalkBaseline <= 0.0f) {
+                mode7KalkBaseline = limits.maxKalkDay;
+                Serial.printf("MODE7 KALK FALLBACK: saved baseline missing/zero, using %.2f ml/day\n", mode7KalkBaseline);
+            }
+
+            p.kalk  += mode7KalkBaseline;
             p.cacl2 += baselineCacl2MlDay;
             p.naoh  += baselineNaohMlDay;
             // In Mode 7 the physical Mg pump is repurposed as Alk.
@@ -421,6 +466,7 @@ void AIEngine::addBaselineDemand(DosingPlan &p, int mode) {
             // no new API/config field is required.
             p.alk   += baselineMgMlDay;
             break;
+        }
         default:
             break;
     }
