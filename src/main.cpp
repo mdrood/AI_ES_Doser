@@ -34,8 +34,12 @@
 
 #define FIREBASE_API_KEY "AIzaSyB4XtC5Pvxw6To58EKTLMADQLqR_hTZK0M"
 #define FIREBASE_DB_URL "https://aiesdoser-default-rtdb.firebaseio.com"
-//TODO for firware update
-#define FW_VERSION "P_1.1.0"
+
+#include "../generated/device_config.generated.h"
+
+// Build script writes BUILD_FW_VERSION into generated/device_config.generated.h.
+// Keep the old FW_VERSION name so the rest of this file stays unchanged.
+#define FW_VERSION BUILD_FW_VERSION
 
 #include "Dashboard.h"
 
@@ -202,6 +206,18 @@ unsigned long lastTankVolumePublishAttemptMs = 0;
 bool fwVersionPublished = false;
 unsigned long lastFwVersionPublishAttemptMs = 0;
 
+// OTA safety gate. Once an OTA starts, all pumps are forced off and no new
+// automatic dosing is allowed to start until the firmware reboots.
+bool otaInProgress = false;
+unsigned long otaStartedMs = 0;
+
+// Firebase stream callbacks must not perform OTA network work directly.
+// They only queue the request; loop() executes the OTA outside the callback.
+bool pendingOtaRequested = false;
+String pendingOtaUrl = "";
+String pendingOtaSource = "";
+bool emergencyStopBeforeOta = false;
+
 // Push Apex/state mirrors to Firebase on a timer so RTDB is not hammered.
 // Local dashboard still updates immediately from currentTemp/currentPh/currentAlk/etc.
 const unsigned long FIREBASE_MIRROR_INTERVAL_MS = 300000UL; // 5 minutes
@@ -226,7 +242,7 @@ const unsigned long BOOT_DOSING_GRACE_MS = 120000UL; // 2 minutes
 
 Provisioner provisioner;
 //TODO new customer
-String deviceID = "reefDoser3";
+String deviceID = BUILD_DEVICE_ID;
 
 bool useApexLogEmulatorForThisDevice() {
     return REEFDOSER3_APEX_EMULATOR_TEST && deviceID == "reefDoser3";
@@ -254,11 +270,145 @@ unsigned long lastSliceMillis = 0;
 
 const char* GOOGLE_LOG_URL ="https://script.google.com/macros/s/AKfycbzXjvrBBfkzdYW6BsBreZXV8lznugdBzwyS1jrxPXgs5zoFfi20-RVGqlsarmzbuUmsAw/exec";
 
+// ---------------- GOOGLE DRIVE LOGGER DIAGNOSTICS ----------------
+// These diagnostics only observe the local LittleFS log queue and network health.
+// They do not change OTA, dosing, Firebase, or the logger upload behavior.
+const unsigned long GDRIVE_DIAG_INTERVAL_MS = 300000UL; // 5 minutes
+const unsigned long LOGGER_HEALTH_FIREBASE_INTERVAL_MS = 300000UL; // 5 minutes; tiny RTDB heartbeat for remote logger debugging
+unsigned long lastGoogleDriveDiagMs = 0;
+unsigned long lastLoggerHealthFirebaseMs = 0;
+unsigned long googleDriveDiagCount = 0;
+
+struct GoogleDriveLogQueueStats {
+    int fileCount = 0;
+    size_t totalBytes = 0;
+    String oldestPath = "none";
+    size_t oldestSize = 0;
+    String newestPath = "none";
+    size_t newestSize = 0;
+};
+
 // Calibration timed runs are intentionally time-based, not mL-based.
 // This prevents a bad/old calibration value from making a 60-second calibration run
 // stop after only a few seconds.
 bool calibrationRunActive[4] = {false, false, false, false};
 unsigned long calibrationRunUntilMs[4] = {0, 0, 0, 0};
+
+// ============================================================================
+// HARD PUMP FAIL-SAFE SUPERVISOR
+// ----------------------------------------------------------------------------
+// Pumps are active HIGH on the current AIDoser hardware.
+// These direct GPIO writes intentionally do not depend on Doser, LittleFS,
+// Preferences, Wi-Fi, Firebase, or the logger.
+//
+// IMPORTANT: Software cannot turn a pump off while the CPU is physically frozen.
+// Add 10 kOhm pull-down resistors to each pump input and use an external
+// heartbeat-controlled pump-power enable for true hardware fail-safe protection.
+// ============================================================================
+static constexpr uint8_t SAFETY_PUMP_PINS[4] = {25, 26, 27, 22};
+static constexpr uint32_t PUMP_RUNTIME_MARGIN_MS = 5000UL;
+static constexpr uint32_t PUMP_RUNTIME_ABSOLUTE_MAX_MS = 5UL * 60UL * 1000UL;
+
+int safetyActivePump = -1;
+unsigned long safetyPumpDeadlineMs = 0;
+bool pumpRuntimeSafetyTripped = false;
+
+void forcePumpPinsOffDirect() {
+    for (int i = 0; i < 4; ++i) {
+        pinMode(SAFETY_PUMP_PINS[i], OUTPUT);
+        digitalWrite(SAFETY_PUMP_PINS[i], LOW);
+    }
+}
+
+bool anyDoserPumpRunning() {
+    for (int i = 0; i < 4; ++i) {
+        if (doser.isPumpRunning(i)) return true;
+    }
+    return false;
+}
+
+void clearPumpRuntimeDeadline() {
+    safetyActivePump = -1;
+    safetyPumpDeadlineMs = 0;
+}
+
+void armPumpRuntimeDeadlineMs(int pumpIndex, unsigned long requestedRunMs, const char* source) {
+    if (pumpIndex < 0 || pumpIndex > 3) return;
+
+    unsigned long safeRunMs = requestedRunMs + PUMP_RUNTIME_MARGIN_MS;
+    if (safeRunMs < 1000UL) safeRunMs = 1000UL;
+    if (safeRunMs > PUMP_RUNTIME_ABSOLUTE_MAX_MS) {
+        safeRunMs = PUMP_RUNTIME_ABSOLUTE_MAX_MS;
+    }
+
+    safetyActivePump = pumpIndex;
+    safetyPumpDeadlineMs = millis() + safeRunMs;
+    pumpRuntimeSafetyTripped = false;
+
+    Serial.printf(
+        "PUMP RUNTIME SAFETY ARMED [%s]: P%d deadline in %lu ms\n",
+        source ? source : "dose",
+        pumpIndex + 1,
+        safeRunMs
+    );
+}
+
+void armPumpRuntimeDeadlineForMl(int pumpIndex, float ml, const char* source) {
+    float flow = (pumpIndex >= 0 && pumpIndex < 4) ? pumpFlowRates[pumpIndex] : 0.0f;
+
+    // Invalid flow must never create an unlimited run. Use the absolute cap.
+    unsigned long expectedMs = PUMP_RUNTIME_ABSOLUTE_MAX_MS - PUMP_RUNTIME_MARGIN_MS;
+
+    if (isfinite(flow) && flow > 0.01f && isfinite(ml) && ml > 0.0f) {
+        double calculatedMs = (static_cast<double>(ml) / static_cast<double>(flow)) * 60000.0;
+        if (calculatedMs < 1.0) calculatedMs = 1.0;
+        if (calculatedMs > static_cast<double>(PUMP_RUNTIME_ABSOLUTE_MAX_MS - PUMP_RUNTIME_MARGIN_MS)) {
+            calculatedMs = static_cast<double>(PUMP_RUNTIME_ABSOLUTE_MAX_MS - PUMP_RUNTIME_MARGIN_MS);
+        }
+        expectedMs = static_cast<unsigned long>(calculatedMs);
+    }
+
+    armPumpRuntimeDeadlineMs(pumpIndex, expectedMs, source);
+}
+
+void servicePumpRuntimeSafety() {
+    bool running = anyDoserPumpRunning();
+
+    if (!running) {
+        clearPumpRuntimeDeadline();
+        return;
+    }
+
+    // A pump running without an armed deadline is itself unsafe.
+    if (safetyPumpDeadlineMs == 0) {
+        doser.stopAllPumps();
+        forcePumpPinsOffDirect();
+        emergencyStop = true;
+        pumpRuntimeSafetyTripped = true;
+        Serial.println("PUMP RUNTIME SAFETY TRIPPED: running pump had no deadline.");
+        return;
+    }
+
+    if ((long)(millis() - safetyPumpDeadlineMs) >= 0) {
+        doser.stopAllPumps();
+        forcePumpPinsOffDirect();
+
+        for (int i = 0; i < 4; ++i) {
+            calibrationRunActive[i] = false;
+            calibrationRunUntilMs[i] = 0;
+        }
+
+        emergencyStop = true;
+        pumpRuntimeSafetyTripped = true;
+
+        Serial.printf(
+            "PUMP RUNTIME SAFETY TRIPPED: P%d exceeded its absolute deadline; all pumps OFF and emergency stop enabled.\n",
+            safetyActivePump + 1
+        );
+
+        clearPumpRuntimeDeadline();
+    }
+}
 
 struct DailyStats {
     float alkSum = 0;
@@ -331,15 +481,176 @@ void updateDailyAverages();
 void pushDailyReport();
 void loadDosingState();
 void saveDosingState();
+GoogleDriveLogQueueStats collectGoogleDriveLogQueueStats();
+void logGoogleDriveDiagnostics(const char* source);
+bool publishLoggerHealthToFirebase(const char* source, bool force = false);
 void addCurrentAiPlanToBuckets(const char* source, bool force = false);
 void publishAiPlanIfNeeded(const char* source, bool force = false);
 bool isLightsOn();
 void publishFirmwareVersionIfReady(bool force = false);
+void prepareForOtaUpdate(const String& firmwareUrl);
 void evaluateAlertState(const char* source = "loop", bool force = false);
 bool publishAlertState(const String& level, const String& code, const String& message, bool active, const char* source, bool force = false);
 void handleGetNotificationSettings();
 void handlePostNotificationSettings();
 bool isValidNotificationLevel(const String& level);
+void forcePumpPinsOffDirect();
+bool anyDoserPumpRunning();
+void clearPumpRuntimeDeadline();
+void armPumpRuntimeDeadlineMs(int pumpIndex, unsigned long requestedRunMs, const char* source);
+void armPumpRuntimeDeadlineForMl(int pumpIndex, float ml, const char* source);
+void servicePumpRuntimeSafety();
+
+GoogleDriveLogQueueStats collectGoogleDriveLogQueueStats() {
+    GoogleDriveLogQueueStats stats;
+
+    File root = LittleFS.open("/logs");
+    if (!root || !root.isDirectory()) {
+        return stats;
+    }
+
+    File file = root.openNextFile();
+    while (file) {
+        String path = file.path();
+        size_t sz = file.size();
+
+        // Count only logger files. This keeps unrelated LittleFS files out of the queue number.
+        if (path.endsWith(".log")) {
+            stats.fileCount++;
+            stats.totalBytes += sz;
+
+            // Logger filenames include timestamps/sequence numbers, so lexical order is useful enough
+            // for debugging oldest/newest queued Google Drive uploads.
+            if (stats.oldestPath == "none" || path < stats.oldestPath) {
+                stats.oldestPath = path;
+                stats.oldestSize = sz;
+            }
+            if (stats.newestPath == "none" || path > stats.newestPath) {
+                stats.newestPath = path;
+                stats.newestSize = sz;
+            }
+        }
+
+        file.close();
+        file = root.openNextFile();
+    }
+
+    root.close();
+    return stats;
+}
+
+void logGoogleDriveDiagnostics(const char* source) {
+    GoogleDriveLogQueueStats q = collectGoogleDriveLogQueueStats();
+    googleDriveDiagCount++;
+
+    String ip = WiFi.localIP().toString();
+    String gw = WiFi.gatewayIP().toString();
+    String dns = WiFi.dnsIP().toString();
+
+    Serial.printf("[GDRIVE DIAG #%lu %s] up=%lus wifi=%d rssi=%d ip=%s gw=%s dns=%s heap=%u minHeap=%u fsUsed=%u fsTotal=%u queuedFiles=%d queuedBytes=%u oldest=%s(%u) newest=%s(%u)\n",
+                  googleDriveDiagCount,
+                  source ? source : "diag",
+                  millis() / 1000UL,
+                  WiFi.status(),
+                  WiFi.RSSI(),
+                  ip.c_str(),
+                  gw.c_str(),
+                  dns.c_str(),
+                  ESP.getFreeHeap(),
+                  ESP.getMinFreeHeap(),
+                  LittleFS.usedBytes(),
+                  LittleFS.totalBytes(),
+                  q.fileCount,
+                  (unsigned)q.totalBytes,
+                  q.oldestPath.c_str(),
+                  (unsigned)q.oldestSize,
+                  q.newestPath.c_str(),
+                  (unsigned)q.newestSize);
+
+    logger.printf("[GDRIVE DIAG #%lu %s] up=%lus wifi=%d rssi=%d ip=%s gw=%s dns=%s heap=%u minHeap=%u fsUsed=%u fsTotal=%u queuedFiles=%d queuedBytes=%u oldest=%s(%u) newest=%s(%u)\n",
+                  googleDriveDiagCount,
+                  source ? source : "diag",
+                  millis() / 1000UL,
+                  WiFi.status(),
+                  WiFi.RSSI(),
+                  ip.c_str(),
+                  gw.c_str(),
+                  dns.c_str(),
+                  ESP.getFreeHeap(),
+                  ESP.getMinFreeHeap(),
+                  LittleFS.usedBytes(),
+                  LittleFS.totalBytes(),
+                  q.fileCount,
+                  (unsigned)q.totalBytes,
+                  q.oldestPath.c_str(),
+                  (unsigned)q.oldestSize,
+                  q.newestPath.c_str(),
+                  (unsigned)q.newestSize);
+}
+
+
+bool publishLoggerHealthToFirebase(const char* source, bool force) {
+    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !Firebase.ready()) {
+        return false;
+    }
+
+    unsigned long nowMs = millis();
+    if (!force && lastLoggerHealthFirebaseMs != 0 &&
+        (nowMs - lastLoggerHealthFirebaseMs) < LOGGER_HEALTH_FIREBASE_INTERVAL_MS) {
+        return false;
+    }
+    lastLoggerHealthFirebaseMs = nowMs;
+
+    GoogleDriveLogQueueStats q = collectGoogleDriveLogQueueStats();
+
+    FirebaseJson json;
+    json.set("updatedAtSec", (uint32_t)(nowMs / 1000UL));
+    json.set("source", source ? source : "loggerHealth");
+    json.set("wifiStatus", (int)WiFi.status());
+    json.set("rssi", WiFi.RSSI());
+    json.set("ip", WiFi.localIP().toString());
+    json.set("gateway", WiFi.gatewayIP().toString());
+    json.set("dns", WiFi.dnsIP().toString());
+    json.set("freeHeap", (uint32_t)ESP.getFreeHeap());
+    json.set("minFreeHeap", (uint32_t)ESP.getMinFreeHeap());
+    json.set("littleFsUsed", (uint32_t)LittleFS.usedBytes());
+    json.set("littleFsTotal", (uint32_t)LittleFS.totalBytes());
+    json.set("queuedFiles", q.fileCount);
+    json.set("queuedBytes", (uint32_t)q.totalBytes);
+    json.set("oldestFile", q.oldestPath);
+    json.set("oldestBytes", (uint32_t)q.oldestSize);
+    json.set("newestFile", q.newestPath);
+    json.set("newestBytes", (uint32_t)q.newestSize);
+
+    String path = "/devices/" + deviceID + "/loggerHealth";
+    if (Firebase.updateNode(writeFbdo, path.c_str(), json)) {
+        static unsigned long lastOkLogMs = 0;
+        if (force || nowMs - lastOkLogMs > 600000UL) {
+            lastOkLogMs = nowMs;
+            Serial.printf("[LOGGER HEALTH FIREBASE OK] source=%s queuedFiles=%d queuedBytes=%u rssi=%d heap=%u\n",
+                          source ? source : "loggerHealth",
+                          q.fileCount,
+                          (unsigned)q.totalBytes,
+                          WiFi.RSSI(),
+                          ESP.getFreeHeap());
+            logger.printf("[LOGGER HEALTH FIREBASE OK] source=%s queuedFiles=%d queuedBytes=%u rssi=%d heap=%u\n",
+                          source ? source : "loggerHealth",
+                          q.fileCount,
+                          (unsigned)q.totalBytes,
+                          WiFi.RSSI(),
+                          ESP.getFreeHeap());
+        }
+        return true;
+    }
+
+    Serial.printf("[LOGGER HEALTH FIREBASE FAILED] source=%s error=%s\n",
+                  source ? source : "loggerHealth",
+                  writeFbdo.errorReason().c_str());
+    logger.printf("[LOGGER HEALTH FIREBASE FAILED] source=%s error=%s\n",
+                  source ? source : "loggerHealth",
+                  writeFbdo.errorReason().c_str());
+    return false;
+}
 
 const char* flowPrefKeyForIndex(int idx) {
     switch (idx) {
@@ -943,6 +1254,109 @@ const char* resetReasonToString(esp_reset_reason_t reason) {
   }
 }
 
+
+// ---------------- PERSISTENT BOOT / RESET HISTORY ----------------
+// Stored separately from the rotating Google Drive logger so the reason for a
+// reboot survives even if the normal log upload was interrupted.
+const char* BOOT_HISTORY_PATH = "/boot_history.log";
+const size_t BOOT_HISTORY_MAX_BYTES = 16384;  // Keep the file small.
+const size_t BOOT_HISTORY_KEEP_BYTES = 8192;  // Retain the newest half when trimmed.
+
+void trimBootHistoryIfNeeded() {
+    File in = LittleFS.open(BOOT_HISTORY_PATH, "r");
+    if (!in) return;
+
+    size_t fileSize = in.size();
+    if (fileSize <= BOOT_HISTORY_MAX_BYTES) {
+        in.close();
+        return;
+    }
+
+    size_t start = fileSize > BOOT_HISTORY_KEEP_BYTES
+                     ? fileSize - BOOT_HISTORY_KEEP_BYTES
+                     : 0;
+    in.seek(start, SeekSet);
+
+    // Discard the first partial line after seeking into the middle of the file.
+    if (start > 0) in.readStringUntil('\n');
+
+    File out = LittleFS.open("/boot_history.tmp", "w");
+    if (!out) {
+        in.close();
+        return;
+    }
+
+    uint8_t buffer[256];
+    while (in.available()) {
+        size_t count = in.read(buffer, sizeof(buffer));
+        if (count == 0) break;
+        out.write(buffer, count);
+    }
+
+    in.close();
+    out.close();
+    LittleFS.remove(BOOT_HISTORY_PATH);
+    LittleFS.rename("/boot_history.tmp", BOOT_HISTORY_PATH);
+}
+
+void saveBootRecordToLittleFS(esp_reset_reason_t reason, uint64_t chipid) {
+    trimBootHistoryIfNeeded();
+
+    File file = LittleFS.open(BOOT_HISTORY_PATH, "a");
+    if (!file) {
+        Serial.println("BOOT HISTORY ERROR: unable to open /boot_history.log");
+        return;
+    }
+
+    // Time is normally not synchronized this early in setup(), so use a clear
+    // unsynced marker. Later uploaded logs still provide the wall-clock context.
+    file.printf("BOOT reason=%s(%d) firmware=%s device=%s chip=%04X%08X "
+                "freeHeap=%u minHeap=%u fsUsed=%u fsTotal=%u bootMillis=%lu time=not-synced\n",
+                resetReasonToString(reason),
+                (int)reason,
+                FW_VERSION,
+                deviceID.c_str(),
+                (uint16_t)(chipid >> 32),
+                (uint32_t)chipid,
+                ESP.getFreeHeap(),
+                ESP.getMinFreeHeap(),
+                (unsigned)LittleFS.usedBytes(),
+                (unsigned)LittleFS.totalBytes(),
+                millis());
+    file.close();
+}
+
+void printSavedBootHistory() {
+    File file = LittleFS.open(BOOT_HISTORY_PATH, "r");
+
+    Serial.println();
+    Serial.println("================================");
+    Serial.println("SAVED BOOT / RESET HISTORY");
+    Serial.println("================================");
+
+    if (!file) {
+        Serial.println("No saved boot history found.");
+        Serial.println("================================");
+        return;
+    }
+
+    while (file.available()) {
+        String line = file.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) continue;
+
+        Serial.println(line);
+        WebSerial.println(line);
+        logger.println(line);
+    }
+
+    file.close();
+    Serial.println("================================");
+    Serial.println();
+    WebSerial.println("================================");
+    logger.println("================================");
+}
+
 void applyAiBaselineToEngine() {
 
 float fourthPumpBaseline = baselineMgMlDay;
@@ -1417,6 +1831,34 @@ void serviceWatchdogAndUi(uint16_t pauseMs = 5) {
     esp_task_wdt_reset();
 }
 
+void prepareForOtaUpdate(const String& firmwareUrl) {
+    if (!otaInProgress) {
+        otaInProgress = true;
+        otaStartedMs = millis();
+
+        // Hard safety: OTA must never begin while a pump is allowed to keep running
+        // or while the scheduler can start the next queued bucket.
+        for (int i = 0; i < 4; i++) {
+            calibrationRunActive[i] = false;
+            calibrationRunUntilMs[i] = 0;
+        }
+        doser.stopAllPumps();
+        forcePumpPinsOffDirect();
+        clearPumpRuntimeDeadline();
+        emergencyStop = true;
+
+        Serial.println("OTA SAFETY: all pumps forced OFF; dosing blocked until reboot.");
+        Serial.print("OTA SAFETY: target URL = ");
+        Serial.println(firmwareUrl);
+
+        logger.println("OTA SAFETY: all pumps forced OFF; dosing blocked until reboot.");
+        logger.print("OTA SAFETY: target URL = ");
+        logger.println(firmwareUrl);
+    } else {
+        doser.stopAllPumps();
+    }
+}
+
 bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
     String requiredFolder = "/devices/" + deviceID + "/";
 
@@ -1499,6 +1941,9 @@ bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
     logger.print("Starting OTA Update from: ");
     logger.println(firmwareUrl);
 
+    emergencyStopBeforeOta = emergencyStop;
+    prepareForOtaUpdate(firmwareUrl);
+
     // Save guard before any network call or reboot-risky work.
     prefs.begin("ota-guard", false);
     prefs.putBool("pending", true);
@@ -1519,10 +1964,57 @@ bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
         logger.println(writeFbdo.errorReason());
     }
 
-    delay(250);
+    // Stop the active Firebase stream before beginning the manifest and binary
+    // HTTP transactions. This prevents stream callbacks/SSL recovery from running
+    // alongside the OTA download and flash write.
+    Serial.println("OTA TRANSACTION: stopping Firebase stream before download.");
+    logger.println("OTA TRANSACTION: stopping Firebase stream before download.");
+    Firebase.endStream(streamFbdo);
+
+    // Reassert the physical safety state immediately before entering OTA.
+    doser.stopAllPumps();
+    emergencyStop = true;
+    esp_task_wdt_reset();
+    delay(100);
     yield();
-    ota.updateFirmware(firmwareUrl);
-    return true;
+
+    Serial.println("OTA TRANSACTION: exclusive OTA download/write starting now.");
+    logger.println("OTA TRANSACTION: exclusive OTA download/write starting now.");
+
+    // A successful OTA reboots inside updateFirmware() and never returns here.
+    // If this call returns, validation/download/write failed or was rejected.
+    ota.updateFirmware(firmwareUrl, deviceID, BUILD_EXPECTED_MAC, BUILD_EXPECTED_CHIP);
+
+    otaInProgress = false;
+    otaStartedMs = 0;
+    emergencyStop = emergencyStopBeforeOta;
+    doser.stopAllPumps();
+
+    // Do not leave a failed attempt marked as pending, or the next valid retry
+    // would be rejected as a stale duplicate.
+    prefs.begin("ota-guard", false);
+    prefs.putBool("pending", false);
+    prefs.remove("url");
+    prefs.remove("from_fw");
+    prefs.end();
+
+    // OTA failed/returned, so restore the Firebase command stream before normal
+    // operation resumes. A successful OTA never reaches this code.
+    String streamPath = "/devices/" + deviceID + "/commands";
+    if (Firebase.beginStream(streamFbdo, streamPath.c_str())) {
+        Firebase.setStreamCallback(streamFbdo, streamCallback, streamTimeoutCallback);
+        Serial.println("OTA FAILURE RECOVERY: Firebase stream restored.");
+        logger.println("OTA FAILURE RECOVERY: Firebase stream restored.");
+    } else {
+        Serial.print("OTA FAILURE RECOVERY: Firebase stream restore failed: ");
+        Serial.println(streamFbdo.errorReason());
+        logger.print("OTA FAILURE RECOVERY: Firebase stream restore failed: ");
+        logger.println(streamFbdo.errorReason());
+    }
+
+    Serial.println("OTA returned without reboot; OTA block cleared and normal operation restored.");
+    logger.println("OTA returned without reboot; OTA block cleared and normal operation restored.");
+    return false;
 }
 void streamCallback(StreamData data) {
     Serial.printf("Stream update: %s\n", data.dataPath().c_str());
@@ -1537,9 +2029,18 @@ void streamCallback(StreamData data) {
         FirebaseJsonData res;
 
         if (json.get(res, "ota/url") && res.stringValue.length() > 0) {
-            Serial.println("OTA found inside root stream snapshot.");
-            logger.println("OTA found inside root stream snapshot.");
-            handleOtaFirmwareUrl(res.stringValue, "root snapshot");
+            if (!pendingOtaRequested && !otaInProgress) {
+                pendingOtaUrl = res.stringValue;
+                pendingOtaUrl.trim();
+                pendingOtaSource = "root snapshot";
+                pendingOtaRequested = pendingOtaUrl.length() > 0;
+
+                Serial.println("OTA found inside root snapshot; queued for loop execution.");
+                logger.println("OTA found inside root snapshot; queued for loop execution.");
+            } else {
+                Serial.println("OTA root snapshot ignored: OTA already queued/in progress.");
+                logger.println("OTA root snapshot ignored: OTA already queued/in progress.");
+            }
         } else {
             Serial.println("Root stream snapshot received; no ota/url found.");
             logger.println("Root stream snapshot received; no ota/url found.");
@@ -1560,8 +2061,8 @@ void streamCallback(StreamData data) {
 
     if (data.dataPath() == "/ota") {
         String targetUrl = "";
-        
-        // Robust Extraction: Handle both raw URL strings and nested structural JSON objects
+
+        // Accept either {"url":"..."} or a direct string URL.
         if (data.dataType() == "json") {
             FirebaseJson &json = data.jsonObject();
             FirebaseJsonData res;
@@ -1572,14 +2073,21 @@ void streamCallback(StreamData data) {
             targetUrl = data.stringData();
         }
 
-        if (targetUrl.length() > 0) {
-            // CRITICAL FIX: Explicitly enforce a clear back-check to Firebase on the absolute target 
-            // path node before launching the partition flash sequence.
-            String otaCommandPath = "/devices/" + deviceID + "/commands/ota";
-            Firebase.deleteNode(writeFbdo, otaCommandPath.c_str());
-            
-            // Launch safety checks and flash partitions
-            handleOtaFirmwareUrl(targetUrl, "/ota stream");
+        targetUrl.trim();
+
+        if (targetUrl.length() > 0 && !pendingOtaRequested && !otaInProgress) {
+            pendingOtaUrl = targetUrl;
+            pendingOtaSource = "/ota stream";
+            pendingOtaRequested = true;
+
+            Serial.println("OTA command queued for safe execution from loop.");
+            logger.println("OTA command queued for safe execution from loop.");
+        } else if (targetUrl.length() == 0) {
+            Serial.println("OTA stream update ignored: URL missing.");
+            logger.println("OTA stream update ignored: URL missing.");
+        } else {
+            Serial.println("OTA stream update ignored: OTA already queued/in progress.");
+            logger.println("OTA stream update ignored: OTA already queued/in progress.");
         }
         return;
     }
@@ -2193,6 +2701,12 @@ void handlePostCalibration() {
 
 
 void handlePostCalibrationRun() {
+    if (otaInProgress) {
+        doser.stopAllPumps();
+        server.send(423, "application/json", "{\"ok\":false,\"error\":\"OTA in progress; calibration blocked\"}");
+        return;
+    }
+
     if (!server.hasArg("plain")) {
         server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
         return;
@@ -2221,6 +2735,11 @@ void handlePostCalibrationRun() {
     doser.startManualRun(pumpIndex);
     calibrationRunActive[pumpIndex] = true;
     calibrationRunUntilMs[pumpIndex] = millis() + (unsigned long)(seconds * 1000.0f);
+    armPumpRuntimeDeadlineMs(
+        pumpIndex,
+        (unsigned long)(seconds * 1000.0f),
+        "Calibration"
+    );
 
     Serial.printf("Calibration timed run: pump %d for %.1f seconds\n", pumpIndex + 1, seconds);
     logger.printf("Calibration timed run: pump %d for %.1f seconds\n", pumpIndex + 1, seconds);
@@ -2282,6 +2801,12 @@ void updateDailyAverages() {
 }
 
 void handlePostLiveDose() {
+    if (otaInProgress) {
+        doser.stopAllPumps();
+        server.send(423, "application/json", "{\"ok\":false,\"error\":\"OTA in progress; live dose blocked\"}");
+        return;
+    }
+
     if (!server.hasArg("plain")) {
         server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
         return;
@@ -2317,6 +2842,8 @@ void handlePostLiveDose() {
         server.send(500, "application/json", "{\"ok\":false,\"error\":\"Dose failed to start\"}");
         return;
     }
+
+    armPumpRuntimeDeadlineForMl(pumpIndex, safeMl, "LiveDose");
 
     recordChemicalDispense(pumpIndex, actualMl, "LiveDose");
     evaluateAlertState("ChemicalLevel", true);
@@ -3056,9 +3583,9 @@ void publishFirmwareVersionIfReady(bool force) {
     Firebase.setBool(writeFbdo, onlinePath.c_str(), true);
 
     fwVersionPublished = true;
-    Serial.printf("FW VERSION PUSHED: %s to %s\n", FW_VERSION, fwPath.c_str());
-    logger.printf("FW VERSION PUSHED: %s to %s\n", FW_VERSION, fwPath.c_str());
-    WebSerial.printf("FW VERSION PUSHED: %s\n", FW_VERSION);
+    Serial.printf("FW VERSION PUSHED: %s to %s\n", FW_VERSION.c_str(), fwPath.c_str());
+    logger.printf("FW VERSION PUSHED: %s to %s\n", FW_VERSION.c_str(), fwPath.c_str());
+    WebSerial.printf("FW VERSION PUSHED: %s\n", FW_VERSION.c_str());
 }
 
 void connectToFirebase() {
@@ -3205,12 +3732,37 @@ void handlePostManualTest() {
 }
 
 void setup() {
+    // FIRST EXECUTABLE SAFETY ACTION:
+    // Never allow LittleFS, logger startup, Preferences, Wi-Fi, or Firebase to
+    // run before every active-HIGH pump output has been forced LOW.
+    forcePumpPinsOffDirect();
+    delay(5);
+    forcePumpPinsOffDirect();
+
     Serial.begin(115200);
-    
-    delay(500);
-LittleFS.begin(true);
-//LittleFS.format();
+
+    // Capture the reset reason immediately, before network or logger startup.
     esp_reset_reason_t reason = esp_reset_reason();
+    uint64_t chipid = ESP.getEfuseMac();
+
+    Serial.println();
+    Serial.println("================================");
+    Serial.println("ESP32 BOOT INFORMATION");
+    Serial.printf("RESET REASON: %s (%d)\n", resetReasonToString(reason), (int)reason);
+    Serial.printf("DEVICE ID: %s\n", deviceID.c_str());
+    Serial.printf("FIRMWARE: %s\n", FW_VERSION);
+    Serial.printf("MAC Address: %s\n", WiFi.macAddress().c_str());
+    Serial.printf("Chip ID: %04X%08X\n", (uint16_t)(chipid >> 32), (uint32_t)chipid);
+    Serial.println("================================");
+
+    delay(500);
+    forcePumpPinsOffDirect();
+    if (!LittleFS.begin(true)) {
+        Serial.println("LITTLEFS ERROR: mount failed; boot history cannot be saved.");
+    } else {
+        saveBootRecordToLittleFS(reason, chipid);
+    }
+//LittleFS.format();
 /*Serial.println("FORMATTING LITTLEFS LOG STORAGE NOW...");
 WebSerial.println("FORMATTING LITTLEFS LOG STORAGE NOW...");
 LittleFS.format();
@@ -3222,7 +3774,35 @@ esp_reset_reason_t reason = esp_reset_reason();*/
 
     // Register WebSerial early so any later WebSerial prints are safe.
     WebSerial.begin(&serialServer);
+
+    // Filesystem queue enforcement happens inside logger.begin(). Reassert all
+    // pump outputs OFF immediately before entering that code.
+    forcePumpPinsOffDirect();
     logger.begin(deviceID, GOOGLE_LOG_URL);
+    forcePumpPinsOffDirect();
+
+    logger.println();
+    logger.println("================================");
+    logger.println("ESP32 BOOT INFORMATION");
+    logger.printf("RESET REASON: %s (%d)\n", resetReasonToString(reason), (int)reason);
+    logger.printf("DEVICE ID: %s\n", deviceID.c_str());
+    logger.printf("FIRMWARE: %s\n", FW_VERSION);
+    logger.printf("MAC Address: %s\n", WiFi.macAddress().c_str());
+    logger.printf("Chip ID: %04X%08X\n", (uint16_t)(chipid >> 32), (uint32_t)chipid);
+    logger.println("================================");
+
+    WebSerial.println();
+    WebSerial.println("================================");
+    WebSerial.println("ESP32 BOOT INFORMATION");
+    WebSerial.printf("RESET REASON: %s (%d)\n", resetReasonToString(reason), (int)reason);
+    WebSerial.printf("DEVICE ID: %s\n", deviceID.c_str());
+    WebSerial.printf("FIRMWARE: %s\n", FW_VERSION);
+    WebSerial.printf("MAC Address: %s\n", WiFi.macAddress().c_str());
+    WebSerial.printf("Chip ID: %04X%08X\n", (uint16_t)(chipid >> 32), (uint32_t)chipid);
+    WebSerial.println("================================");
+
+    printSavedBootHistory();
+
     Serial.println("BOOT CHECK DEVICE ID = " + deviceID);
 WebSerial.println("BOOT CHECK DEVICE ID = " + deviceID);
 logger.println("BOOT CHECK DEVICE ID = " + deviceID);
@@ -3244,17 +3824,11 @@ if (root && root.isDirectory()) {
 }*/
 ////////////////////////////
    // LittleFS.remove("/logs/queued_1778883043.log");
-    logger.println();
-logger.println("================================");
-logger.printf("RESET REASON: %s (%d)\n",
-              resetReasonToString(reason),
-              reason);
-logger.println("================================");
-logger.println();
 
-    // 120-second watchdog. Firebase SSL stream recovery can block during token/SSL reconnects.
-    // Keep watchdog protection, but give network recovery enough time to unwind safely.
-    esp_task_wdt_init(120, true);
+    // 30-second task watchdog. The old 120-second timeout could leave an
+    // energized pump running far too long during a deadlock. Network code already
+    // services the watchdog around long Firebase operations.
+    esp_task_wdt_init(30, true);
     esp_task_wdt_add(NULL);
 
     EEPROM.begin(512);
@@ -3307,6 +3881,7 @@ logger.println();
             logger.println("\nWiFi Connected!");
             logger.print("IP Address: ");
             logger.println(WiFi.localIP().toString());
+            logGoogleDriveDiagnostics("boot-wifi-connected");
 
             doser.begin();
             state.transitionTo(SystemState::IDLE);
@@ -3376,8 +3951,38 @@ logger.println();
 
     server.on("/api/logger/force-upload", HTTP_POST, []() {
         logger.println("Manual logger upload requested from local API.");
+        logGoogleDriveDiagnostics("force-upload-before");
         logger.forceUpload();
-        server.send(200, "application/json", "{\"ok\":true,\"message\":\"Logger upload attempted\"}");
+        logGoogleDriveDiagnostics("force-upload-after");
+        publishLoggerHealthToFirebase("force-upload", true);
+        server.send(200, "application/json", "{\"ok\":true,\"message\":\"Logger upload attempted; check WebSerial/serial and Firebase /loggerHealth\"}");
+    });
+
+    server.on("/api/logger/diagnostics", HTTP_GET, []() {
+        GoogleDriveLogQueueStats q = collectGoogleDriveLogQueueStats();
+        JsonDocument doc;
+        doc["ok"] = true;
+        doc["source"] = "google-drive-logger";
+        doc["uptimeSec"] = (uint32_t)(millis() / 1000UL);
+        doc["wifiStatus"] = (int)WiFi.status();
+        doc["rssi"] = WiFi.RSSI();
+        doc["ip"] = WiFi.localIP().toString();
+        doc["gateway"] = WiFi.gatewayIP().toString();
+        doc["dns"] = WiFi.dnsIP().toString();
+        doc["freeHeap"] = ESP.getFreeHeap();
+        doc["minFreeHeap"] = ESP.getMinFreeHeap();
+        doc["littleFsUsed"] = LittleFS.usedBytes();
+        doc["littleFsTotal"] = LittleFS.totalBytes();
+        doc["queuedFiles"] = q.fileCount;
+        doc["queuedBytes"] = (uint32_t)q.totalBytes;
+        doc["oldestFile"] = q.oldestPath;
+        doc["oldestBytes"] = (uint32_t)q.oldestSize;
+        doc["newestFile"] = q.newestPath;
+        doc["newestBytes"] = (uint32_t)q.newestSize;
+
+        String output;
+        serializeJson(doc, output);
+        server.send(200, "application/json", output);
     });
     server.on("/api/config/safeties", HTTP_POST, handlePostDosingSafeties);
     server.on("/api/config/ai-baseline", HTTP_POST, handlePostAiBaseline);
@@ -3480,10 +4085,60 @@ logger.println();
 }
 
 void loop() {
+    // Pump safety always runs before logger, filesystem, Firebase, UI, or AI work.
+    servicePumpRuntimeSafety();
     yield();
     esp_task_wdt_reset(); // Tell the system "I'm still alive"
+
+    // Execute OTA outside the Firebase stream callback. This prevents nested
+    // Firebase/SSL work from stalling between command receipt and manifest download.
+    if (pendingOtaRequested && !otaInProgress) {
+        String firmwareUrl = pendingOtaUrl;
+        String source = pendingOtaSource;
+
+        pendingOtaRequested = false;
+        pendingOtaUrl = "";
+        pendingOtaSource = "";
+
+        handleOtaFirmwareUrl(
+            firmwareUrl,
+            source.length() > 0 ? source.c_str() : "queued OTA"
+        );
+
+        // Successful OTA reboots before returning. A failed OTA is unblocked
+        // inside handleOtaFirmwareUrl(). Do not run normal loop work this pass.
+        return;
+    }
+
+    // Defensive gate: while the synchronous OTA download/write is active,
+    // no scheduler, logger upload, AI, or Firebase stream work may run.
+    if (otaInProgress) {
+        doser.stopAllPumps();
+        forcePumpPinsOffDirect();
+        clearPumpRuntimeDeadline();
+        return;
+    }
+
     doser.tick();
-    logger.loop();
+    servicePumpRuntimeSafety();
+
+    // logger.loop() may rotate, upload, or delete LittleFS queue files.
+    // Never perform those maintenance operations while any pump is energized.
+    // Normal logger.printf() appends are still allowed; maintenance resumes
+    // automatically as soon as all pumps are OFF.
+    if (!anyDoserPumpRunning()) {
+        logger.loop();
+    }
+
+    if (millis() - lastGoogleDriveDiagMs >= GDRIVE_DIAG_INTERVAL_MS) {
+        lastGoogleDriveDiagMs = millis();
+        logGoogleDriveDiagnostics("loop");
+    }
+
+    // Remote logger heartbeat: this tiny Firebase node keeps updating even between
+    // half-hour Google Drive log uploads, so a remote device can show the logger queue
+    // building up before Drive logs go silent.
+    publishLoggerHealthToFirebase("loop", false);
 
     // Stop calibration timed runs exactly by elapsed time.
     // This is independent of mL/min calibration and does not affect quick-dose dosing.
@@ -3492,6 +4147,8 @@ void loop() {
         if (calibrationRunActive[i] && (long)(calNow - calibrationRunUntilMs[i]) >= 0) {
             doser.stopManualRun(i);
             calibrationRunActive[i] = false;
+            clearPumpRuntimeDeadline();
+            forcePumpPinsOffDirect();
             Serial.printf("Calibration timed run complete: pump %d\n", i + 1);
             logger.printf("Calibration timed run complete: pump %d\n", i + 1);
         }
@@ -3507,6 +4164,7 @@ void loop() {
         Serial.println("Starting Firebase after dashboard grace period...");
         logger.println("Starting Firebase after dashboard grace period...");
         connectToFirebase();
+        publishLoggerHealthToFirebase("firebase-start", true);
         if (apexEnabled) {
             syncAllTruths();
         }
@@ -3727,6 +4385,14 @@ void loop() {
                              (unsigned long)((BOOT_DOSING_GRACE_MS - now) / 1000UL),
                              pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3]);
         }
+    } else if (otaInProgress) {
+        static unsigned long lastOtaBlockLogMs = 0;
+        doser.stopAllPumps();
+        if (lastOtaBlockLogMs == 0 || now - lastOtaBlockLogMs >= 10000UL) {
+            lastOtaBlockLogMs = now;
+            Serial.println("OTA SAFETY: dosing scheduler blocked while OTA is in progress.");
+            logger.println("OTA SAFETY: dosing scheduler blocked while OTA is in progress.");
+        }
     } else if (!anyPumpRunning && !emergencyStop) {
         for (int i = 0; i < 4; i++) {
             if (pumpBuckets[i] >= getPumpDoseThresholdMl(i)) {
@@ -3745,6 +4411,8 @@ void loop() {
                                   doseSlotId, i + 1, pumpBuckets[i]);
                     break;
                 }
+
+                armPumpRuntimeDeadlineForMl(i, doseAmount, "AutoDose");
 
                 recordChemicalDispense(i, actualMl, "AutoDose");
                 pumpBuckets[i] -= actualMl;
@@ -3806,6 +4474,8 @@ void loop() {
         if (!emergencyStop) {
             emergencyStop = true;
             doser.stopAllPumps();
+            forcePumpPinsOffDirect();
+            clearPumpRuntimeDeadline();
             Serial.println("SAFETY TRIPPED: Local sensors exceeded limits!");
             logger.println("SAFETY TRIPPED: Local sensors exceeded limits!");
         }

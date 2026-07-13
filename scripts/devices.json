@@ -1,0 +1,38 @@
+{
+    "reefDoser1": {
+        "customer": "Mark",
+        "label": "AIES-00001",
+        "deviceId": "reefDoser1",
+        "firmwareVersion": "P-1.1.9",
+        "chipId": "9C9E33077000",
+        "macAddress": "e0:8c:fe:c2:6e:94",
+        "board": "vintlabs-devkit-v1",
+        "otaJsonName": "reefDoser1.json",
+        "otaBinName": "reefDoser1.bin",
+        "firebasePublic": "C:/Users/mdroo/OneDrive/Firebase/aiesdoser/public"
+    },
+    "reefDoser3": {
+        "customer": "Joe Test",
+        "label": "AIES-00003",
+        "deviceId": "reefDoser3",
+        "firmwareVersion": "T-1.0.8",
+        "chipId": "9C9E33077000",
+        "macAddress": "00:70:07:33:9E:9C",
+        "board": "vintlabs-devkit-v1",
+        "otaJsonName": "reefDoser3.json",
+        "otaBinName": "reefDoser3.bin",
+        "firebasePublic": "C:/Users/mdroo/OneDrive/Firebase/aiesdoser/public"
+    },
+    "reefDoser2": {
+        "customer": "Eric Rood",
+        "label": "AIES-00002",
+        "deviceId": "reefDoser2",
+        "firmwareVersion": "P_1.1.8",
+        "chipId": "FirstTime",
+        "macAddress": "E0:8C:FE:C1:1A:94",
+        "board": "vintlabs-devkit-v1",
+        "otaJsonName": "reefDoser2.json",
+        "otaBinName": "reefDoser2.bin",
+        "firebasePublic": "C:/Users/mdroo/OneDrive/Firebase/aiesdoser/public"
+    }
+}

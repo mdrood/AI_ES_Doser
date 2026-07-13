@@ -3,6 +3,17 @@ new customer change these things.  serarch for:
 
     firebase deploy --only hosting
 
+    Automations.
+    Setup customer:  
+        C:\Users\mdroo\OneDrive\Documents\platformio\AI_ES_Doser>
+            enroll_customer.py
+    Build
+        C:\Users\mdroo\OneDrive\Documents\platformio\AI_ES_Doser>
+            build_device.py
+
+    Note:  Until all customers are on new build system have to use the 
+        first time feature in build builds fireware.bin vs reefDoser3.bin
+
 when i ota i grab wrongb reefDoser.
 light apex selection doesn't work both intern changes and goes back
 
@@ -143,4 +154,57 @@ pump runtime anomaly
 leak detector
 stuck dosing pump
 AI confidence warnings
+
+
+wow this weird firmware burn setTankVolumeGallons
+put these files in a directory i.e. /reefDoserPractic/reefDoser2:
+boot_app0.bin
+bootloader.bin
+firmware.bin for that reefDoser2 or reefDoser3...etc.
+partion.bin
+
+
+Look in folder (for example) : C:\Users\mdroo\OneDrive\Firebase\aiesdoser\public\installer\reefDoser2
+    boot_app0.bin
+    bootloader.bin
+    firmware.bin (for what ever reefDoser2 you are building).
+    index.html
+    mainifest.json (change it to match reefDoser2)
+    partitions.bin
+
+With these files in folder
+Plug chip into board!!!!
+ then open browser and to to https://aiesdoser.web.app/installer/reefDoser2/ .. or 3,etc.
+ YOU HAVE TO HOLD BUTTON ON CHIP WHEN LOADING.
+
+/////////////////////////////////////////////////////////
+Setting up new customer
+
+if firebase:
+
+reefDoser4
+    chipId:"REEFDOSER4_TEST"
+    claimCode:"TEST-7392"
+    claimed:false
+    enabled:true
+
+got to http://aiesdoser.web.app/setup.html
+  fill out page. with the about claimCode
+     name
+     email
+     pw pw
+     deviceID
+     claim code
+     room
+
+This should procure a user in firebase (athenticaliotn)
+ give them an account on firebase.
+ set deviceClaim
+    claimed = true
+    associate new user to device  reefDoser4
+        devices
+            reefDoser4
+            ownerUID  "jsdakfjksadfjaksjf"
+
+
 

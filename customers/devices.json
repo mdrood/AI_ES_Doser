@@ -1,0 +1,21 @@
+{
+{
+  "reefDoser3": {
+    "customer": "Test Bench",
+    "label": "TEST-Reef-003",
+
+    "deviceId": "reefDoser3",
+    "firmwareVersion": "10.7.1-test",
+
+    "chipId": "9C9E33077000",
+    "macAddress": "00:70:07:33:9E:9C",
+
+    "board": "vintlabs-devkit-v1",
+
+    "otaJsonName": "reefDoser3.json",
+    "otaBinName": "reefDoser3.bin",
+
+    "firebasePublic": "C:/Users/mdroo/OneDrive/Firebase/aiesdoser/public"
+  }
+}
+}
