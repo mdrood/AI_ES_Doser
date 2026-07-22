@@ -1,0 +1,10 @@
+AIDoser
+
+Device ID: reefDoser4
+Serial Label: AIES-0004
+Claim Code: J92F-CNXF
+MAC Address: 00:70:07:33:9E:9C
+Chip ID: 9C9E33077000
+
+Setup:
+https://aiesdoser.web.app/setup

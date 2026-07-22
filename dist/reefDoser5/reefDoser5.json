@@ -1,0 +1,19 @@
+{
+    "ok": true,
+    "deviceId": "reefDoser5",
+    "customer": "Kyle Rood",
+    "label": "AIES-00005",
+    "firmwareVersion": "P-1.0.2",
+    "version": "P-1.0.2",
+    "board": "vintlabs-devkit-v1",
+    "chipId": "B49D33077000",
+    "macAddress": "00:70:07:33:9D:B4",
+    "otaBinName": "reefDoser5.bin",
+    "otaJsonName": "reefDoser5.json",
+    "firmwarePath": "/devices/reefDoser5/reefDoser5.bin",
+    "firmwareUrl": "https://aiesdoser.web.app/devices/reefDoser5/reefDoser5.bin",
+    "binUrl": "https://aiesdoser.web.app/devices/reefDoser5/reefDoser5.bin",
+    "size": 1737792,
+    "sha256": "3f75acf6c25b0d19afb75ff6ac20730d9cc741825682b024bf01129f5c833b2a",
+    "builtAt": "2026-07-19T19:10:51"
+}

@@ -1,0 +1,10 @@
+AIDoser
+
+Device ID: reefDoser7
+Serial Label: AIES-00007
+Claim Code: HY6X-UDQN
+MAC Address: 00:70:07:33:9F:70
+Chip ID: 709F33077000
+
+Setup:
+https://aiesdoser.web.app/setup

@@ -1,0 +1,20 @@
+Board: vintlabs-devkit-v1
+DEVICE_ID_SET reefDoser4
+BURNIN_DURATION_FIXED durationMs=300000
+BURNIN_STARTED deviceId=reefDoser4 durationMs=300000 pumpOnMs=5000 intervalMs=60000
+BURNIN_PUMP_ON pump=1 pin=25 runMs=5000 elapsedMs=1
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=1 completedRuns=0 elapsedMs=11 remainingMs=299989 freeHeap=293776 minHeap=258380
+BURNIN_PUMP_OFF pump=1 reason=normal-end elapsedMs=5022
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=60022 remainingMs=239978 freeHeap=293776 minHeap=258380
+BURNIN_PUMP_ON pump=2 pin=26 runMs=5000 elapsedMs=65033
+BURNIN_PUMP_OFF pump=2 reason=normal-end elapsedMs=70033
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=120033 remainingMs=179967 freeHeap=293776 minHeap=258380
+BURNIN_PUMP_ON pump=3 pin=27 runMs=5000 elapsedMs=130044
+BURNIN_PUMP_OFF pump=3 reason=normal-end elapsedMs=135044
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=180044 remainingMs=119956 freeHeap=293776 minHeap=258380
+BURNIN_PUMP_ON pump=4 pin=22 runMs=5000 elapsedMs=195055
+BURNIN_PUMP_OFF pump=4 reason=normal-end elapsedMs=200055
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=240055 remainingMs=59945 freeHeap=293776 minHeap=258380
+BURNIN_PUMP_ON pump=1 pin=25 runMs=5000 elapsedMs=260066
+BURNIN_PUMP_OFF pump=1 reason=normal-end elapsedMs=265066
+BURNIN_COMPLETE result=PASS deviceId=reefDoser4 completedRuns=5 elapsedMs=300016

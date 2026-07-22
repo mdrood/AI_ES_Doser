@@ -25,6 +25,8 @@ private:
     unsigned long _connectStartMs;
     unsigned long _restartAtMs;
     bool _connectedAnnounced;
+    String _deviceName;
+    String _mdnsName;
 
     void _setupRoutes();
     void _handleRoot();

@@ -48,7 +48,7 @@ bool ApexLogEmulator::pollNow() {
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(45000);
+  http.setTimeout(30000);
   http.setReuse(false);
   http.addHeader("Accept", "application/json");
   http.addHeader("Cache-Control", "no-cache");

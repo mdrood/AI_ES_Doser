@@ -269,69 +269,18 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
             break;
     }
 
+    // Mode 7 long-term demand learning is handled by the rolling seven-day
+    // LittleFS learner in main.cpp. This two-speed layer adds temporary
+    // correction demand before the correction safety check, so it cannot bypass
+    // maxAlkRisePerDay. It decays as the seven-day baseline catches up.
+    applyAllModeTwoSpeedAlkRecovery(next, mode, consAlk, currentPh, lightsActive);
+
     // --- The "Expert" Safety Layer ---
     // First limit only the correction amount, then add known daily baseline demand.
     // This lets large reefs keep their normal consumption baseline while the AI
     // still limits how aggressively it corrects parameter errors.
     applySafetyEnforcement(next);
     addBaselineDemand(next, mode);
-
-    // Adaptive Mode-7 P4 Alk demand-learning assist.
-    // This is different from the instant correction split above. It watches the
-    // alk trend over time and learns extra daily P4 Alk demand when Eric's tank
-    // keeps falling even while the normal plan is dosing.
-    static float mode7P4AlkAssistMlDay = 0.0f;
-    static float lastMode7ConsAlk = 0.0f;
-    static bool hasMode7TrendSample = false;
-    static unsigned long lastMode7AssistAdjustMs = 0;
-
-    if (mode == 7) {
-        const unsigned long MODE7_ASSIST_INTERVAL_MS = 60UL * 60UL * 1000UL; // adjust at most hourly
-        const float MODE7_ASSIST_STEP_UP_ML_DAY = 75.0f;
-        const float MODE7_ASSIST_STEP_DOWN_ML_DAY = 150.0f;
-        const float MODE7_ASSIST_MAX_ML_DAY = 1000.0f;
-        const float MODE7_LOW_ALK_GAP_DKH = 0.60f;
-        const float MODE7_NEAR_TARGET_GAP_DKH = 0.25f;
-        const float MODE7_NOT_IMPROVING_DKH = -0.05f; // consAlk must drop by >0.05 to count as improving
-        const float MODE7_FAST_IMPROVING_DKH = -0.20f;
-
-        unsigned long nowMs = millis();
-
-        if (!hasMode7TrendSample) {
-            hasMode7TrendSample = true;
-            lastMode7ConsAlk = consAlk;
-            lastMode7AssistAdjustMs = nowMs;
-
-            // Give very low alk an initial gentle assist immediately after boot/flash
-            // instead of waiting a full hour. This is still clamped below.
-            if (consAlk >= 1.20f) {
-                mode7P4AlkAssistMlDay = 100.0f;
-            }
-        } else if (nowMs - lastMode7AssistAdjustMs >= MODE7_ASSIST_INTERVAL_MS) {
-            float deltaGap = consAlk - lastMode7ConsAlk;
-
-            if (consAlk >= MODE7_LOW_ALK_GAP_DKH && deltaGap > MODE7_NOT_IMPROVING_DKH) {
-                // Alk is still low and has not clearly improved over the last hour.
-                mode7P4AlkAssistMlDay += MODE7_ASSIST_STEP_UP_ML_DAY;
-            } else if (consAlk <= MODE7_NEAR_TARGET_GAP_DKH || deltaGap <= MODE7_FAST_IMPROVING_DKH) {
-                // Near target or improving quickly: back off faster than we ramp up.
-                mode7P4AlkAssistMlDay -= MODE7_ASSIST_STEP_DOWN_ML_DAY;
-            }
-
-            if (mode7P4AlkAssistMlDay < 0.0f) mode7P4AlkAssistMlDay = 0.0f;
-            if (mode7P4AlkAssistMlDay > MODE7_ASSIST_MAX_ML_DAY) mode7P4AlkAssistMlDay = MODE7_ASSIST_MAX_ML_DAY;
-
-            Serial.printf("MODE7 ALK LEARN: gap=%.2f prevGap=%.2f delta=%.2f assist=%.2f ml/day\n",
-                          consAlk, lastMode7ConsAlk, deltaGap, mode7P4AlkAssistMlDay);
-
-            lastMode7ConsAlk = consAlk;
-            lastMode7AssistAdjustMs = nowMs;
-        }
-
-        if (mode7P4AlkAssistMlDay > 0.0f) {
-            next.alk += mode7P4AlkAssistMlDay;
-        }
-    }
 
 
     // Adaptive Mode-6 Alk recovery assist.
@@ -433,11 +382,92 @@ void AIEngine::calculateNextPlan(int mode, float consAlk, float consCa, float co
     logPlanToPSRAM(next, mode);
 }
 
+void AIEngine::applyAllModeTwoSpeedAlkRecovery(DosingPlan &p, int mode, float alkGap, float currentPh, bool lightsActive) {
+    fastAlk.lastImmediateDkhDay = 0.0f;
+    if (!fastAlk.enabled || !isfinite(alkGap) || alkGap <= 0.0f || mode < 1 || mode > 8) return;
+
+    float immediateDkhDay = 0.0f;
+    if (alkGap >= 0.20f) {
+        if (alkGap < 0.50f) immediateDkhDay = (alkGap - 0.20f) * 0.35f;
+        else if (alkGap < 0.90f) immediateDkhDay = 0.105f + (alkGap - 0.50f) * 0.45f;
+        else immediateDkhDay = 0.285f + (alkGap - 0.90f) * 0.25f;
+    }
+    immediateDkhDay = constrain(immediateDkhDay, 0.0f, 0.40f);
+    fastAlk.lastImmediateDkhDay = immediateDkhDay;
+
+    const bool mayUpdate = fastAlk.newMeasurementAvailable;
+    fastAlk.newMeasurementAvailable = false;
+    if (mayUpdate) {
+        fastAlk.lastUpdateMs = millis();
+        if (alkGap >= 0.25f) {
+            if (fastAlk.lowSamples < 1000) fastAlk.lowSamples++;
+            fastAlk.stableSamples = 0;
+            float step = 0.0f;
+            if (fastAlk.lowSamples >= 12) step = 0.006f;
+            if (fastAlk.lowSamples >= 24) step = 0.012f;
+            if (fastAlk.lowSamples >= 48) step = 0.020f;
+            if (alkGap >= 0.75f) step *= 1.50f;
+            if (alkGap >= 1.20f) step *= 1.25f;
+            fastAlk.boostDkhDay += step;
+        } else if (alkGap <= 0.10f) {
+            fastAlk.lowSamples = 0;
+            if (fastAlk.stableSamples < 1000) fastAlk.stableSamples++;
+            if (fastAlk.stableSamples >= 6) fastAlk.boostDkhDay -= 0.010f;
+        } else {
+            if (fastAlk.lowSamples > 0) fastAlk.lowSamples--;
+            fastAlk.stableSamples = 0;
+        }
+        fastAlk.boostDkhDay = constrain(fastAlk.boostDkhDay, 0.0f, fastAlk.maxBoostDkhDay);
+    }
+
+    const float extra = immediateDkhDay + fastAlk.boostDkhDay;
+    if (extra <= 0.0f) return;
+
+    // Route learned alkalinity through the chemistry available in each mode.
+    // pH-raising NaOH is never added when the pH cutoff blocks it.
+    const bool naohAllowed = currentPh <= 0.0f || currentPh < mode7Split.naohMaxPh;
+    const char* route = "none";
+    switch (mode) {
+        case 1:
+            if (chem.dkhPerMlKalk > 0.0f) { p.kalk += extra / chem.dkhPerMlKalk; route = "Kalk"; }
+            break;
+        case 2:
+            if (chem.dkhPerMlAfr > 0.0f) { p.afr += extra / chem.dkhPerMlAfr; route = "AFR"; }
+            break;
+        case 3:
+            if (chem.dkhPerMlAfr > 0.0f) { p.afr += extra / chem.dkhPerMlAfr; route = "AFR"; }
+            else if (chem.dkhPerMlKalk > 0.0f) { p.kalk += extra / chem.dkhPerMlKalk; route = "Kalk"; }
+            break;
+        case 4:
+        case 5:
+        case 7:
+            if (chem.dkhPerMlAlk > 0.0f) { p.alk += extra / chem.dkhPerMlAlk; route = "Alk"; }
+            break;
+        case 6:
+        case 8:
+            if (naohAllowed && chem.dkhPerMlNaoh > 0.0f) {
+                p.naoh += extra / chem.dkhPerMlNaoh;
+                route = "NaOH";
+            } else {
+                // These modes have no non-pH-raising Alk pump. Hold the learned
+                // correction rather than defeating the NaOH pH cutoff.
+                route = "held-pH-safety";
+            }
+            break;
+    }
+
+    Serial.printf("MODE%d ALL-MODE ALK LEARNER: gap=%.2f immediate=%.3f fast=%.3f route=%s lowTests=%u stableTests=%u lights=%s pH=%.2f\n",
+                  mode, alkGap, immediateDkhDay, fastAlk.boostDkhDay, route,
+                  fastAlk.lowSamples, fastAlk.stableSamples,
+                  lightsActive ? "on" : "off", currentPh);
+}
+
 void AIEngine::applySafetyEnforcement(DosingPlan &p) {
     // Correction-only Delta-Max Check.
     // Baseline demand is added after this function, so known daily consumption
     // is not crushed by the correction safety layer.
-    float predictedRise = (p.kalk * chem.dkhPerMlKalk) + (p.naoh * chem.dkhPerMlNaoh) + (p.alk * chem.dkhPerMlAlk);
+    float predictedRise = (p.kalk * chem.dkhPerMlKalk) + (p.afr * chem.dkhPerMlAfr) +
+                          (p.naoh * chem.dkhPerMlNaoh) + (p.alk * chem.dkhPerMlAlk);
     if (predictedRise > limits.maxAlkRisePerDay) {
         float scale = limits.maxAlkRisePerDay / predictedRise;
         p.kalk *= scale;

@@ -99,6 +99,26 @@ public:
         }
     }
 
+    // Two-speed alkalinity recovery for Modes 1-8.
+    // Immediate catch-up reacts to the current gap. The fast learner builds a
+    // temporary 24-48 hour demand boost while Alk remains persistently low.
+    void setFastAlkLearnerState(float boostDkhDay, uint16_t lowSamples, uint16_t stableSamples) {
+        fastAlk.boostDkhDay = constrain(boostDkhDay, 0.0f, fastAlk.maxBoostDkhDay);
+        fastAlk.lowSamples = lowSamples;
+        fastAlk.stableSamples = stableSamples;
+    }
+    float getFastAlkBoostDkhDay() const { return fastAlk.boostDkhDay; }
+    uint16_t getFastAlkLowSamples() const { return fastAlk.lowSamples; }
+    uint16_t getFastAlkStableSamples() const { return fastAlk.stableSamples; }
+    float getImmediateAlkCatchupDkhDay() const { return fastAlk.lastImmediateDkhDay; }
+
+    // Mark whether the current calculation is based on a genuinely new
+    // Trident chemistry result. Repeated Apex polls still recalculate/apply the
+    // current plan, but they must not advance learner confidence counters.
+    void setFastAlkNewMeasurement(bool isNewMeasurement) {
+        fastAlk.newMeasurementAvailable = isNewMeasurement;
+    }
+
 private:
     float _tankVolumeLiters = 1135.6f;
 
@@ -112,9 +132,9 @@ private:
     // ====== RESTORED CHEMISTRY STRENGTH STAGE ======
     struct {
         // Mark (300g) Inactive
-        float dkhPerMlKalk = 0.0000085f, dkhPerMlAfr = 0.00015f, dkhPerMlAlk = 0.0050f, dkhPerMlNaoh = 0.00255f, mgPerMlMg = 0.0050f, caPerMlCacl2 = 0.42f;
+        //float dkhPerMlKalk = 0.0000085f, dkhPerMlAfr = 0.00015f, dkhPerMlAlk = 0.0050f, dkhPerMlNaoh = 0.00255f, mgPerMlMg = 0.0050f, caPerMlCacl2 = 0.42f;
         // Eric (1100g) Active
-        //float dkhPerMlKalk = 0.0000046f, dkhPerMlAfr = 0.000082f, dkhPerMlAlk = 0.00126f, dkhPerMlNaoh = 0.00139f, mgPerMlMg = 0.00273f, caPerMlCacl2 = 0.0545f;
+        float dkhPerMlKalk = 0.0000046f, dkhPerMlAfr = 0.000082f, dkhPerMlAlk = 0.00126f, dkhPerMlNaoh = 0.00139f, mgPerMlMg = 0.00273f, caPerMlCacl2 = 0.0545f;
     } chem;
 
     // ====== PER-PUMP ACCUMULATOR / DUMP THRESHOLDS ======
@@ -123,26 +143,26 @@ private:
         //   P1 = Kalk, P2 = CaCl2, P3 = NaOH, P4 = Alk
         // Each pump must accumulate to this mL amount before it dumps.
         //mark's
-        float p1DumpMl = 20.0f;
+       /* float p1DumpMl = 20.0f;
         float p2DumpMl = 20.0f;
         float p3DumpMl = 20.0f;
-        float p4DumpMl = 20.0f;
+        float p4DumpMl = 20.0f;*/
         //eric's
-    /*    float p1DumpMl = 100.0f;
+       float p1DumpMl = 100.0f;
         float p2DumpMl = 10.0f;
         float p3DumpMl = 5.0f;//needs to be 10 with smaller pumps
-        float p4DumpMl = 5.0f;//needs to be 25 with smaller pumps*/
+        float p4DumpMl = 5.0f;//needs to be 25 with smaller pumps
     } dumpThresholds;
 
     // ====== SAFETY LIMITS ======
     struct {
         // Mark (300g) Inactive
-        float maxKalkDay = 2500.0f, maxNaohDay = 100.0f, maxAlkDay = 500.0f, maxAlkRisePerDay = 1.5f;
-        float maxMgCorrectionDay = 250.0f, maxMgDay = 250.0f, mgDeadbandPpm = 25.0f;
+        //float maxKalkDay = 2500.0f, maxNaohDay = 100.0f, maxAlkDay = 500.0f, maxAlkRisePerDay = 1.5f;
+        //float maxMgCorrectionDay = 250.0f, maxMgDay = 250.0f, mgDeadbandPpm = 25.0f;
 
         // Eric large reef tuned example (Active):
-        //float maxKalkDay = 35000.0f, maxNaohDay = 1200.0f, maxAlkDay = 2500.0f, maxAlkRisePerDay = 2.0f;
-        //float maxMgCorrectionDay = 250.0f, maxMgDay = 250.0f, mgDeadbandPpm = 25.0f;
+        float maxKalkDay = 11356.23f, maxNaohDay = 1200.0f, maxAlkDay = 2500.0f, maxAlkRisePerDay = 2.0f;
+        float maxMgCorrectionDay = 250.0f, maxMgDay = 250.0f, mgDeadbandPpm = 25.0f;
     } limits;
 
 
@@ -159,8 +179,20 @@ private:
         float naohMaxPh = 8.45f;
     } mode7Split;
 
+    struct {
+        bool enabled = true;
+        float boostDkhDay = 0.0f;
+        float lastImmediateDkhDay = 0.0f;
+        uint16_t lowSamples = 0;
+        uint16_t stableSamples = 0;
+        unsigned long lastUpdateMs = 0;
+        bool newMeasurementAvailable = false;
+        float maxBoostDkhDay = 0.40f;
+    } fastAlk;
+
     HistoryEntry* aiHistory = nullptr; 
     void applySafetyEnforcement(DosingPlan &p);
+    void applyAllModeTwoSpeedAlkRecovery(DosingPlan &p, int mode, float alkGap, float currentPh, bool lightsActive);
     void addBaselineDemand(DosingPlan &p, int mode);
     void applyNaohPhCaution(DosingPlan &p, float currentPh);
     void applyAbsoluteCaps(DosingPlan &p);

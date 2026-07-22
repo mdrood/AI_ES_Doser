@@ -1,0 +1,141 @@
+Board: vintlabs-devkit-v1
+DEVICE_ID_SET reefDoser4
+BURNIN_DURATION_SET minutes=120 durationMs=7200000
+BURNIN_STARTED deviceId=reefDoser4 durationMs=7200000 pumpOnMs=10000 intervalMs=900000
+BURNIN_PUMP_ON pump=1 pin=25 runMs=10000 elapsedMs=1
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=1 completedRuns=0 elapsedMs=3261 remainingMs=7196739 freeHeap=293736 minHeap=258340
+BURNIN_PUMP_OFF pump=1 reason=normal-end elapsedMs=10022
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=63272 remainingMs=7136728 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=123283 remainingMs=7076717 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=183294 remainingMs=7016706 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=243305 remainingMs=6956695 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=303316 remainingMs=6896684 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=363327 remainingMs=6836673 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=423338 remainingMs=6776662 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=483349 remainingMs=6716651 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=543360 remainingMs=6656640 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=603371 remainingMs=6596629 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=663382 remainingMs=6536618 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=723393 remainingMs=6476607 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=783404 remainingMs=6416596 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=843415 remainingMs=6356585 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=903426 remainingMs=6296574 freeHeap=293736 minHeap=258340
+BURNIN_PUMP_ON pump=2 pin=26 runMs=10000 elapsedMs=910037
+BURNIN_PUMP_OFF pump=2 reason=normal-end elapsedMs=920037
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=963437 remainingMs=6236563 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1023448 remainingMs=6176552 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1083459 remainingMs=6116541 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1143470 remainingMs=6056530 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1203481 remainingMs=5996519 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1263492 remainingMs=5936508 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1323503 remainingMs=5876497 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1383514 remainingMs=5816486 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1443525 remainingMs=5756475 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1503536 remainingMs=5696464 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1563547 remainingMs=5636453 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1623558 remainingMs=5576442 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1683569 remainingMs=5516431 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1743580 remainingMs=5456420 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=1803591 remainingMs=5396409 freeHeap=293736 minHeap=258340
+BURNIN_PUMP_ON pump=3 pin=27 runMs=10000 elapsedMs=1820052
+BURNIN_PUMP_OFF pump=3 reason=normal-end elapsedMs=1830052
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=1863602 remainingMs=5336398 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=1923613 remainingMs=5276387 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=1983624 remainingMs=5216376 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2043635 remainingMs=5156365 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2103646 remainingMs=5096354 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2163657 remainingMs=5036343 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2223668 remainingMs=4976332 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2283679 remainingMs=4916321 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2343690 remainingMs=4856310 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2403701 remainingMs=4796299 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2463712 remainingMs=4736288 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2523723 remainingMs=4676277 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2583734 remainingMs=4616266 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2643745 remainingMs=4556255 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=3 elapsedMs=2703756 remainingMs=4496244 freeHeap=293736 minHeap=258340
+BURNIN_PUMP_ON pump=4 pin=22 runMs=10000 elapsedMs=2730067
+BURNIN_PUMP_OFF pump=4 reason=normal-end elapsedMs=2740067
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=2763767 remainingMs=4436233 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=2823778 remainingMs=4376222 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=2883789 remainingMs=4316211 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=2943800 remainingMs=4256200 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=3003811 remainingMs=4196189 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=3063822 remainingMs=4136178 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=3123833 remainingMs=4076167 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=3183844 remainingMs=4016156 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=3243855 remainingMs=3956145 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=3303866 remainingMs=3896134 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=3363877 remainingMs=3836123 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=3423888 remainingMs=3776112 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=3483899 remainingMs=3716101 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=3543910 remainingMs=3656090 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=4 elapsedMs=3603921 remainingMs=3596079 freeHeap=293736 minHeap=258340
+BURNIN_PUMP_ON pump=1 pin=25 runMs=10000 elapsedMs=3640082
+BURNIN_PUMP_OFF pump=1 reason=normal-end elapsedMs=3650082
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=3663932 remainingMs=3536068 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=3723943 remainingMs=3476057 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=3783954 remainingMs=3416046 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=3843965 remainingMs=3356035 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=3903976 remainingMs=3296024 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=3963987 remainingMs=3236013 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=4023998 remainingMs=3176002 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=4084009 remainingMs=3115991 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=4144020 remainingMs=3055980 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=4204031 remainingMs=2995969 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=4264042 remainingMs=2935958 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=4324053 remainingMs=2875947 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=4384064 remainingMs=2815936 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=4444075 remainingMs=2755925 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=5 elapsedMs=4504086 remainingMs=2695914 freeHeap=293736 minHeap=258340
+BURNIN_PUMP_ON pump=2 pin=26 runMs=10000 elapsedMs=4550097
+BURNIN_PUMP_OFF pump=2 reason=normal-end elapsedMs=4560097
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=4564097 remainingMs=2635903 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=4624108 remainingMs=2575892 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=4684119 remainingMs=2515881 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=4744130 remainingMs=2455870 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=4804141 remainingMs=2395859 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=4864152 remainingMs=2335848 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=4924163 remainingMs=2275837 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=4984174 remainingMs=2215826 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=5044185 remainingMs=2155815 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=5104196 remainingMs=2095804 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=5164207 remainingMs=2035793 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=5224218 remainingMs=1975782 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=5284229 remainingMs=1915771 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=5344240 remainingMs=1855760 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=6 elapsedMs=5404251 remainingMs=1795749 freeHeap=293736 minHeap=258340
+BURNIN_PUMP_ON pump=3 pin=27 runMs=10000 elapsedMs=5460112
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=3 completedRuns=6 elapsedMs=5464262 remainingMs=1735738 freeHeap=293736 minHeap=258340
+BURNIN_PUMP_OFF pump=3 reason=normal-end elapsedMs=5470123
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=5524273 remainingMs=1675727 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=5584284 remainingMs=1615716 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=5644295 remainingMs=1555705 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=5704306 remainingMs=1495694 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=5764317 remainingMs=1435683 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=5824328 remainingMs=1375672 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=5884339 remainingMs=1315661 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=5944350 remainingMs=1255650 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=6004361 remainingMs=1195639 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=6064372 remainingMs=1135628 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=6124383 remainingMs=1075617 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=6184394 remainingMs=1015606 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=6244405 remainingMs=955595 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=6304416 remainingMs=895584 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=7 elapsedMs=6364427 remainingMs=835573 freeHeap=293736 minHeap=258340
+BURNIN_PUMP_ON pump=4 pin=22 runMs=10000 elapsedMs=6370138
+BURNIN_PUMP_OFF pump=4 reason=normal-end elapsedMs=6380138
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=6424438 remainingMs=775562 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=6484449 remainingMs=715551 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=6544460 remainingMs=655540 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=6604471 remainingMs=595529 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=6664482 remainingMs=535518 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=6724493 remainingMs=475507 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=6784504 remainingMs=415496 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=6844515 remainingMs=355485 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=6904526 remainingMs=295474 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=6964537 remainingMs=235463 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=7024548 remainingMs=175452 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=7084559 remainingMs=115441 freeHeap=293736 minHeap=258340
+BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=8 elapsedMs=7144570 remainingMs=55430 freeHeap=293736 minHeap=258340
+BURNIN_COMPLETE result=PASS deviceId=reefDoser4 completedRuns=8 elapsedMs=7200006

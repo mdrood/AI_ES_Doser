@@ -1,0 +1,19 @@
+{
+    "ok": true,
+    "deviceId": "reefDoser4",
+    "customer": "Joe Surf Test",
+    "label": "AIES-0004",
+    "firmwareVersion": "T-1.0.1",
+    "version": "T-1.0.1",
+    "board": "vintlabs-devkit-v1",
+    "chipId": "9C9E33077000",
+    "macAddress": "00:70:07:33:9E:9C",
+    "otaBinName": "firmware.bin",
+    "otaJsonName": "firmware.json",
+    "firmwarePath": "/devices/reefDoser4/firmware.bin",
+    "firmwareUrl": "https://aiesdoser.web.app/devices/reefDoser4/firmware.bin",
+    "binUrl": "https://aiesdoser.web.app/devices/reefDoser4/firmware.bin",
+    "size": 1708624,
+    "sha256": "6de08fbc74c11a0e26f4e0333094137205c1620b93173380c1bdd995886c2c73",
+    "builtAt": "2026-07-14T19:37:02"
+}

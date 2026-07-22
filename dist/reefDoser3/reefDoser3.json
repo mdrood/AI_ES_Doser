@@ -3,8 +3,8 @@
     "deviceId": "reefDoser3",
     "customer": "Joe Test",
     "label": "AIES-00003",
-    "firmwareVersion": "T-1.0.8",
-    "version": "T-1.0.8",
+    "firmwareVersion": "T-1.0.30",
+    "version": "T-1.0.30",
     "board": "vintlabs-devkit-v1",
     "chipId": "9C9E33077000",
     "macAddress": "00:70:07:33:9E:9C",
@@ -13,7 +13,7 @@
     "firmwarePath": "/devices/reefDoser3/reefDoser3.bin",
     "firmwareUrl": "https://aiesdoser.web.app/devices/reefDoser3/reefDoser3.bin",
     "binUrl": "https://aiesdoser.web.app/devices/reefDoser3/reefDoser3.bin",
-    "size": 1703232,
-    "sha256": "86036d6f501a9b31d74e2779a7400ba449c5f377d75b9958f04aeefe392c5107",
-    "builtAt": "2026-07-09T23:39:35"
+    "size": 1744144,
+    "sha256": "82a198c79dd3a6efa0e44eab5c10d7d6252cae3b3a67167942300e17fdac72aa",
+    "builtAt": "2026-07-20T22:59:02"
 }

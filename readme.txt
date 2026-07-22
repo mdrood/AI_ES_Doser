@@ -1,6 +1,6 @@
 new customer change these things.  serarch for:
     //TODO new customer
-
+    c:\Users\mdroo\OneDrive\Firebase\aiesdoser\public
     firebase deploy --only hosting
 
     Automations.

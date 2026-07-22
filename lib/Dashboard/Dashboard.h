@@ -613,6 +613,79 @@ constexpr char kIndexHtml[] PROGMEM = R"HTML(
 </div>
 
 
+<div class="card">
+  <div class="card-title">
+    <h3>7-Day Alk Demand Learning</h3>
+    <span class="status-pill" id="alkDemandLearningPill">Recommendation Only</span>
+  </div>
+
+  <label style="display:flex;align-items:center;gap:12px;padding:14px;border:1px solid var(--border);border-radius:14px;background:rgba(2,6,23,.30);cursor:pointer;">
+    <input type="checkbox" id="alkDemandLearningEnabled"
+           onchange="saveAlkDemandLearningFromToggle()"
+           style="width:22px;height:22px;accent-color:var(--accent);">
+    <span>
+      <span style="display:block;font-weight:900;color:#f8fafc;">Enable automatic 7-day demand learning</span>
+      <span class="help">Changes save immediately. Once seven valid days exist, the controller automatically applies only the bounded P4 Alk baseline adjustment.</span>
+    </span>
+  </label>
+
+  <div class="two" style="margin-top:12px;">
+    <div>
+      <div class="help" style="margin-bottom:8px;">Learning State</div>
+      <input type="text" id="alkDemandState" value="Recommendation Only" readonly>
+    </div>
+    <div>
+      <div class="help" style="margin-bottom:8px;">Collection Status</div>
+      <input type="text" id="alkDemandDays" value="0 of 7 days" readonly>
+    </div>
+  </div>
+
+  <div class="history-summary" style="margin-top:12px;">
+    <div class="history-stat"><div class="k">Current P4 Baseline</div><div class="v" id="alkDemandCurrentP4">--</div></div>
+    <div class="history-stat"><div class="k">Recommended P4</div><div class="v" id="alkDemandRecommendedP4">--</div></div>
+    <div class="history-stat"><div class="k">Recommended Demand</div><div class="v" id="alkDemandRecommendedDkh">--</div></div>
+  </div>
+
+  <div class="footer-note">No separate Save button is needed. Turning the switch on or off saves immediately to the ESP32 and updates Firebase. Existing pump and chemistry safeties still apply.</div>
+</div>
+
+<div class="card">
+  <div class="card-title">
+    <h3>7-Day Calcium Demand Learning</h3>
+    <span class="status-pill" id="calciumDemandLearningPill">Recommendation Only</span>
+  </div>
+
+  <label style="display:flex;align-items:center;gap:12px;padding:14px;border:1px solid var(--border);border-radius:14px;background:rgba(2,6,23,.30);cursor:pointer;">
+    <input type="checkbox" id="calciumDemandLearningEnabled"
+           onchange="saveCalciumDemandLearningFromToggle()"
+           style="width:22px;height:22px;accent-color:var(--accent);">
+    <span>
+      <span style="display:block;font-weight:900;color:#f8fafc;">Enable automatic 7-day calcium demand learning</span>
+      <span class="help">Counts calcium supplied by both Kalk and P2 CaCl₂. After seven valid days, it may apply only a bounded P2 baseline change.</span>
+    </span>
+  </label>
+
+  <div class="two" style="margin-top:12px;">
+    <div>
+      <div class="help" style="margin-bottom:8px;">Learning State</div>
+      <input type="text" id="calciumDemandState" value="Recommendation Only" readonly>
+    </div>
+    <div>
+      <div class="help" style="margin-bottom:8px;">Collection Status</div>
+      <input type="text" id="calciumDemandDays" value="0 of 7 days" readonly>
+    </div>
+  </div>
+
+  <div class="history-summary" style="margin-top:12px;">
+    <div class="history-stat"><div class="k">Current P2 Baseline</div><div class="v" id="calciumDemandCurrentP2">--</div></div>
+    <div class="history-stat"><div class="k">Recommended P2</div><div class="v" id="calciumDemandRecommendedP2">--</div></div>
+    <div class="history-stat"><div class="k">Recommended Ca Demand</div><div class="v" id="calciumDemandRecommendedPpm">--</div></div>
+  </div>
+
+  <div class="footer-note">The switch saves immediately. The learner uses a fixed seven-record LittleFS file and overwrites the oldest day, so storage does not grow.</div>
+</div>
+
+
 <div class="card" style="grid-column: 1 / -1">
   <div class="card-title">
     <h3>Chemical Recipes → Strengths</h3>
@@ -994,6 +1067,22 @@ const FIREBASE_WEB_PUSH_VAPID_KEY = "BNEHGv71r2Ac8cvVOtthjvCJfPPGeYC-IUEOesBK_EF
   function isMode7SplitEditing(){
     const activeId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
     return mode7SplitDirty || activeId === 'm7SplitEnabled' || activeId === 'm7NaohMaxPh' || activeId.startsWith('m7Day') || activeId.startsWith('m7Night');
+  }
+
+  let calciumDemandLearningDirty = false;
+  function markCalciumDemandLearningDirty(){ calciumDemandLearningDirty = true; }
+  function clearCalciumDemandLearningDirty(){ calciumDemandLearningDirty = false; }
+  function isCalciumDemandLearningEditing(){
+    const activeId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
+    return calciumDemandLearningDirty || activeId === 'calciumDemandLearningEnabled';
+  }
+
+  let alkDemandLearningDirty = false;
+  function markAlkDemandLearningDirty(){ alkDemandLearningDirty = true; }
+  function clearAlkDemandLearningDirty(){ alkDemandLearningDirty = false; }
+  function isAlkDemandLearningEditing(){
+    const activeId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
+    return alkDemandLearningDirty || activeId === 'alkDemandLearningEnabled';
   }
 
   let aiBaselineDirty = false;
@@ -1479,6 +1568,55 @@ function localPlanValue(s, pump){
       if (baseMgEl) baseMgEl.value = Number(baseline.mg || 0).toFixed(0);
     }
 
+    const learning = s.alkDemandLearning || {};
+    if (!isAlkDemandLearningEditing()) {
+      const enabledEl = document.getElementById('alkDemandLearningEnabled');
+      if (enabledEl) enabledEl.checked = !!learning.enabled;
+    }
+
+    const daysCollected = Number(learning.daysCollected || 0);
+    let learningState = 'Recommendation Only';
+    if (learning.enabled && learning.ready) learningState = 'Learning Active';
+    else if (learning.enabled) learningState = `Collecting (${daysCollected}/7 days)`;
+
+    const learningPill = document.getElementById('alkDemandLearningPill');
+    if (learningPill) learningPill.textContent = learningState;
+
+    const stateEl = document.getElementById('alkDemandState');
+    if (stateEl) stateEl.value = learningState;
+
+    const daysEl = document.getElementById('alkDemandDays');
+    if (daysEl) daysEl.value = `${daysCollected} of 7 days${learning.ready ? ' • ready' : ''}`;
+
+    const curP4 = document.getElementById('alkDemandCurrentP4');
+    const recP4 = document.getElementById('alkDemandRecommendedP4');
+    const recDkh = document.getElementById('alkDemandRecommendedDkh');
+    if (curP4) curP4.textContent = `${safeNum(learning.currentP4MlDay, 1)} mL/day`;
+    if (recP4) recP4.textContent = `${safeNum(learning.recommendedP4MlDay, 1)} mL/day`;
+    if (recDkh) recDkh.textContent = `${safeNum(learning.recommendedDemandDkhDay, 3)} dKH/day`;
+
+    const caLearning = s.calciumDemandLearning || {};
+    if (!isCalciumDemandLearningEditing()) {
+      const enabledEl = document.getElementById('calciumDemandLearningEnabled');
+      if (enabledEl) enabledEl.checked = !!caLearning.enabled;
+    }
+    const caDays = Number(caLearning.daysCollected || 0);
+    let caState = 'Recommendation Only';
+    if (caLearning.enabled && caLearning.ready) caState = 'Learning Active';
+    else if (caLearning.enabled) caState = `Collecting (${caDays}/7 days)`;
+    const caPill = document.getElementById('calciumDemandLearningPill');
+    if (caPill) caPill.textContent = caState;
+    const caStateEl = document.getElementById('calciumDemandState');
+    if (caStateEl) caStateEl.value = caState;
+    const caDaysEl = document.getElementById('calciumDemandDays');
+    if (caDaysEl) caDaysEl.value = `${caDays} of 7 days${caLearning.ready ? ' • ready' : ''}`;
+    const curP2 = document.getElementById('calciumDemandCurrentP2');
+    const recP2 = document.getElementById('calciumDemandRecommendedP2');
+    const recPpm = document.getElementById('calciumDemandRecommendedPpm');
+    if (curP2) curP2.textContent = `${safeNum(caLearning.currentP2MlDay, 1)} mL/day`;
+    if (recP2) recP2.textContent = `${safeNum(caLearning.recommendedP2MlDay, 1)} mL/day`;
+    if (recPpm) recPpm.textContent = `${safeNum(caLearning.recommendedDemandPpmDay, 3)} ppm/day`;
+
     const strengths = s.chemicalStrengths || {};
     if (!isChemicalStrengthEditing()) {
       const strKalkEl = document.getElementById('strKalk');
@@ -1806,6 +1944,82 @@ async function saveLightConfig() {
   alert("Metabolic Map Updated");
 }
 
+
+
+async function saveCalciumDemandLearningFromToggle() {
+  const toggle = document.getElementById('calciumDemandLearningEnabled');
+  if (!toggle) return;
+
+  const enabled = !!toggle.checked;
+  markCalciumDemandLearningDirty();
+  toggle.disabled = true;
+
+  if (enabled) {
+    const ok = confirm(
+      'Enable automatic 7-day calcium demand learning?\n\n' +
+      'After seven valid daily records, the controller may adjust the P2 CaCl2 baseline. ' +
+      'Each adjustment is bounded and pump safeties remain active.'
+    );
+    if (!ok) {
+      toggle.checked = false;
+      toggle.disabled = false;
+      clearCalciumDemandLearningDirty();
+      return;
+    }
+  }
+
+  const res = await api('/api/config/calcium-demand-learning', 'POST', { enabled });
+  if (!res || res.ok === false) {
+    toggle.checked = !enabled;
+    toggle.disabled = false;
+    clearCalciumDemandLearningDirty();
+    alert('Calcium learning setting failed: ' + ((res && (res.error || res.raw)) || 'unknown error'));
+    return;
+  }
+
+  clearCalciumDemandLearningDirty();
+  toggle.disabled = false;
+  await loadAll();
+}
+
+async function saveAlkDemandLearningFromToggle() {
+  const toggle = document.getElementById('alkDemandLearningEnabled');
+  if (!toggle) return;
+
+  const enabled = !!toggle.checked;
+  markAlkDemandLearningDirty();
+  toggle.disabled = true;
+
+  if (enabled) {
+    const ok = confirm(
+      'Enable automatic 7-day demand learning?\n\n' +
+      'The setting will save immediately. After seven valid daily records, ' +
+      'the controller may automatically adjust the Mode 7 P4 Alk baseline. ' +
+      'Each adjustment is bounded and all pump and chemistry safeties remain active.'
+    );
+
+    if (!ok) {
+      toggle.checked = false;
+      toggle.disabled = false;
+      clearAlkDemandLearningDirty();
+      return;
+    }
+  }
+
+  const res = await api('/api/config/alk-demand-learning', 'POST', { enabled });
+
+  if (!res || res.ok === false) {
+    toggle.checked = !enabled;
+    toggle.disabled = false;
+    clearAlkDemandLearningDirty();
+    alert('7-day learning setting failed: ' + ((res && (res.error || res.raw)) || 'unknown error'));
+    return;
+  }
+
+  clearAlkDemandLearningDirty();
+  toggle.disabled = false;
+  await loadAll();
+}
 
 function estimateAiBaseline() {
   const gal = Number(currentStatus.tankGallons ?? document.getElementById('tankGal')?.value ?? 0);

@@ -1,0 +1,50 @@
+Board: vintlabs-devkit-v1
+DEVICE_ID_SET reefDoser5
+BURNIN_DURATION_FIXED durationMs=300000
+BURNIN_STARTED deviceId=reefDoser5 durationMs=300000 pumpOnMs=15000 mode=continuous
+BURNIN_PUMP_ON pump=1 pin=25 runMs=15000 elapsedMs=0
+BURNIN_STATUS deviceId=reefDoser5 running=1 complete=0 currentPump=1 completedRuns=0 elapsedMs=11 remainingMs=299989 freeHeap=294192 minHeap=259204
+BURNIN_PUMP_OFF pump=1 reason=normal-end elapsedMs=15022
+BURNIN_PUMP_ON pump=2 pin=26 runMs=15000 elapsedMs=15022
+BURNIN_PUMP_OFF pump=2 reason=normal-end elapsedMs=30022
+BURNIN_PUMP_ON pump=3 pin=27 runMs=15000 elapsedMs=30022
+BURNIN_PUMP_OFF pump=3 reason=normal-end elapsedMs=45022
+BURNIN_PUMP_ON pump=4 pin=22 runMs=15000 elapsedMs=45022
+BURNIN_PUMP_OFF pump=4 reason=normal-end elapsedMs=60022
+BURNIN_PUMP_ON pump=1 pin=25 runMs=15000 elapsedMs=60022
+BURNIN_STATUS deviceId=reefDoser5 running=1 complete=0 currentPump=1 completedRuns=4 elapsedMs=60022 remainingMs=239978 freeHeap=294192 minHeap=259204
+BURNIN_PUMP_OFF pump=1 reason=normal-end elapsedMs=75043
+BURNIN_PUMP_ON pump=2 pin=26 runMs=15000 elapsedMs=75043
+BURNIN_PUMP_OFF pump=2 reason=normal-end elapsedMs=90043
+BURNIN_PUMP_ON pump=3 pin=27 runMs=15000 elapsedMs=90043
+BURNIN_PUMP_OFF pump=3 reason=normal-end elapsedMs=105043
+BURNIN_PUMP_ON pump=4 pin=22 runMs=15000 elapsedMs=105043
+BURNIN_PUMP_OFF pump=4 reason=normal-end elapsedMs=120043
+BURNIN_PUMP_ON pump=1 pin=25 runMs=15000 elapsedMs=120043
+BURNIN_STATUS deviceId=reefDoser5 running=1 complete=0 currentPump=1 completedRuns=8 elapsedMs=120043 remainingMs=179957 freeHeap=294192 minHeap=259204
+BURNIN_PUMP_OFF pump=1 reason=normal-end elapsedMs=135064
+BURNIN_PUMP_ON pump=2 pin=26 runMs=15000 elapsedMs=135064
+BURNIN_PUMP_OFF pump=2 reason=normal-end elapsedMs=150064
+BURNIN_PUMP_ON pump=3 pin=27 runMs=15000 elapsedMs=150064
+BURNIN_PUMP_OFF pump=3 reason=normal-end elapsedMs=165064
+BURNIN_PUMP_ON pump=4 pin=22 runMs=15000 elapsedMs=165064
+BURNIN_PUMP_OFF pump=4 reason=normal-end elapsedMs=180064
+BURNIN_PUMP_ON pump=1 pin=25 runMs=15000 elapsedMs=180064
+BURNIN_STATUS deviceId=reefDoser5 running=1 complete=0 currentPump=1 completedRuns=12 elapsedMs=180064 remainingMs=119936 freeHeap=294192 minHeap=259204
+BURNIN_PUMP_OFF pump=1 reason=normal-end elapsedMs=195085
+BURNIN_PUMP_ON pump=2 pin=26 runMs=15000 elapsedMs=195085
+BURNIN_PUMP_OFF pump=2 reason=normal-end elapsedMs=210085
+BURNIN_PUMP_ON pump=3 pin=27 runMs=15000 elapsedMs=210085
+BURNIN_PUMP_OFF pump=3 reason=normal-end elapsedMs=225085
+BURNIN_PUMP_ON pump=4 pin=22 runMs=15000 elapsedMs=225085
+BURNIN_PUMP_OFF pump=4 reason=normal-end elapsedMs=240085
+BURNIN_PUMP_ON pump=1 pin=25 runMs=15000 elapsedMs=240085
+BURNIN_STATUS deviceId=reefDoser5 running=1 complete=0 currentPump=1 completedRuns=16 elapsedMs=240085 remainingMs=59915 freeHeap=294192 minHeap=259204
+BURNIN_PUMP_OFF pump=1 reason=normal-end elapsedMs=255106
+BURNIN_PUMP_ON pump=2 pin=26 runMs=15000 elapsedMs=255106
+BURNIN_PUMP_OFF pump=2 reason=normal-end elapsedMs=270106
+BURNIN_PUMP_ON pump=3 pin=27 runMs=15000 elapsedMs=270106
+BURNIN_PUMP_OFF pump=3 reason=normal-end elapsedMs=285106
+BURNIN_PUMP_ON pump=4 pin=22 runMs=15000 elapsedMs=285106
+BURNIN_PUMP_OFF pump=4 reason=complete elapsedMs=300006
+BURNIN_COMPLETE result=PASS deviceId=reefDoser5 completedRuns=19 elapsedMs=300006

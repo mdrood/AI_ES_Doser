@@ -3,6 +3,8 @@
 import hashlib
 import json
 import re
+import secrets
+import string
 import shutil
 import subprocess
 import sys
@@ -17,13 +19,11 @@ DEVICES_FILE = PROJECT_DIR / "scripts" / "devices.json"
 GENERATED_DIR = PROJECT_DIR / "generated"
 GENERATED_HEADER = GENERATED_DIR / "device_config.generated.h"
 
-# Device-specific AI Engine profiles:
-# device_ai_engines/<deviceId>/AI_Engine.h
-AI_ENGINE_PROFILES_DIR = PROJECT_DIR / "device_ai_engines"
-AI_ENGINE_FILENAME = "AI_Engine.h"
-
 PIO_EXE = r"C:\Users\mdroo\.platformio\penv\Scripts\platformio.exe"
 DEFAULT_PIO_ENV = "vintlabs-devkit-v1"
+
+SERVICE_ACCOUNT_FILE = PROJECT_DIR / "secrets" / "firebase-service-account.json"
+DEVICE_EMAIL_DOMAIN = "device.aidoser.tech"
 
 REQUIRED_FIELDS = [
     "customer",
@@ -89,6 +89,122 @@ def increment_firmware_version(version):
     return v[:start] + str(n) + v[end:]
 
 
+
+def cpp_escape(value):
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def generate_device_password(length=24):
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*-_"
+
+    while True:
+        password = "".join(secrets.choice(alphabet) for _ in range(length))
+
+        if (
+            any(c.islower() for c in password)
+            and any(c.isupper() for c in password)
+            and any(c.isdigit() for c in password)
+            and any(c in "!@#$%^&*-_" for c in password)
+        ):
+            return password
+
+
+def ensure_firebase_admin():
+    try:
+        import firebase_admin
+        from firebase_admin import auth as firebase_auth
+        from firebase_admin import credentials
+    except ImportError:
+        fail(
+            "firebase-admin is not installed.\n\n"
+            f'Run:\n"{sys.executable}" -m pip install firebase-admin'
+        )
+
+    if not SERVICE_ACCOUNT_FILE.exists():
+        fail(
+            "Firebase service-account key not found.\n\n"
+            f"Expected:\n{SERVICE_ACCOUNT_FILE}"
+        )
+
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(str(SERVICE_ACCOUNT_FILE))
+        firebase_admin.initialize_app(cred)
+
+    return firebase_auth
+
+
+def ensure_device_firebase_credentials(devices, device_name, d):
+    firebase_auth = ensure_firebase_admin()
+
+    changed = False
+    email = str(d.get("firebaseEmail", "")).strip()
+    password = str(d.get("firebasePassword", "")).strip()
+    uid = str(d.get("firebaseUid", "")).strip()
+
+    if not email:
+        email = f'{d["deviceId"]}@{DEVICE_EMAIL_DOMAIN}'
+        d["firebaseEmail"] = email
+        changed = True
+
+    if not password:
+        password = generate_device_password()
+        d["firebasePassword"] = password
+        changed = True
+
+    if len(password) < 8:
+        fail(
+            f'firebasePassword for {d["deviceId"]} must be at least 8 characters.'
+        )
+
+    try:
+        user = firebase_auth.get_user_by_email(email)
+
+        if uid and uid != user.uid:
+            fail(
+                f"Firebase UID mismatch for {email}.\n"
+                f"devices.json: {uid}\n"
+                f"Firebase Auth: {user.uid}"
+            )
+
+        if not uid:
+            d["firebaseUid"] = user.uid
+            changed = True
+
+        firebase_auth.update_user(
+            user.uid,
+            password=password,
+            disabled=False,
+        )
+
+        print("\nFirebase device Auth user verified:")
+        print(f"  email : {email}")
+        print(f"  uid   : {user.uid}")
+
+    except firebase_auth.UserNotFoundError:
+        user = firebase_auth.create_user(
+            email=email,
+            password=password,
+            email_verified=True,
+            disabled=False,
+            display_name=d["deviceId"],
+        )
+
+        d["firebaseUid"] = user.uid
+        changed = True
+
+        print("\nFirebase device Auth user created:")
+        print(f"  email : {email}")
+        print(f"  uid   : {user.uid}")
+
+    devices[device_name] = d
+
+    if changed:
+        save_devices(devices)
+        print(f"  credentials saved to: {DEVICES_FILE}")
+
+    return d
+
+
 def validate_device(d):
     missing = [k for k in REQUIRED_FIELDS if k not in d or str(d[k]).strip() == ""]
     if missing:
@@ -118,70 +234,17 @@ const String BUILD_FW_VERSION = "{d["firmwareVersion"]}";
 const String BUILD_EXPECTED_MAC = "{d["macAddress"]}";
 const String BUILD_EXPECTED_CHIP = "{d["chipId"]}";
 const String BUILD_EXPECTED_BOARD = "{d["board"]}";
+const String BUILD_FIREBASE_UID = "{cpp_escape(d["firebaseUid"])}";
+
+#define BUILD_FIREBASE_EMAIL "{cpp_escape(d["firebaseEmail"])}"
+#define BUILD_FIREBASE_PASSWORD "{cpp_escape(d["firebasePassword"])}"
+
+#define BUILD_ALK_DEMAND_BOOTSTRAP_ENABLED {1 if d.get("alkDemandBootstrapEnabled", False) else 0}
+#define BUILD_ALK_DEMAND_BOOTSTRAP_DKH_DAY {float(d.get("alkDemandBootstrapDkhDay", 0.0)):.6f}f
 '''
 
     GENERATED_HEADER.write_text(header, encoding="utf-8")
     return GENERATED_HEADER
-
-
-
-def find_active_ai_engine_header():
-    lib_dir = PROJECT_DIR / "lib"
-
-    if not lib_dir.exists():
-        fail(f"PlatformIO lib directory not found:\n{lib_dir}")
-
-    candidates = sorted(
-        path for path in lib_dir.rglob(AI_ENGINE_FILENAME)
-        if path.is_file()
-    )
-
-    if not candidates:
-        fail(f"No active AI_Engine.h found under:\n{lib_dir}")
-
-    if len(candidates) > 1:
-        files = "\n".join(f"  - {path}" for path in candidates)
-        fail(
-            "More than one AI_Engine.h was found under lib. "
-            "The builder cannot safely choose one:\n" + files
-        )
-
-    return candidates[0]
-
-
-def select_device_ai_engine(d):
-    device_id = str(d["deviceId"]).strip()
-    source = AI_ENGINE_PROFILES_DIR / device_id / AI_ENGINE_FILENAME
-    destination = find_active_ai_engine_header()
-
-    if not source.exists():
-        fail(
-            f"Device-specific AI_Engine.h is missing for {device_id}:\n"
-            f"{source}"
-        )
-
-    copy_and_verify(source, destination)
-
-    source_hash = sha256_file(source)
-    destination_hash = sha256_file(destination)
-
-    if source_hash != destination_hash:
-        fail(
-            "AI_Engine.h verification failed after copy.\n"
-            f"Source: {source}\nDestination: {destination}"
-        )
-
-    print("\nAI Engine selected:")
-    print(f"  device      : {device_id}")
-    print(f"  source      : {source}")
-    print(f"  active file : {destination}")
-    print(f"  sha256      : {source_hash}")
-
-    return {
-        "source": source,
-        "destination": destination,
-        "sha256": source_hash,
-    }
 
 
 def run_platformio(pio_env):
@@ -199,7 +262,14 @@ def ask_yes_no(prompt, default=False):
     suffix = " [Y/n]: " if default else " [y/N]: "
 
     while True:
-        answer = input(prompt + suffix).strip().lower()
+        try:
+            answer = input(prompt + suffix).strip().lower()
+        except EOFError:
+            print(
+                f"\nNo interactive input available for: {prompt}\n"
+                f"Using default: {'Yes' if default else 'No'}"
+            )
+            return default
 
         if answer == "":
             return default
@@ -211,6 +281,27 @@ def ask_yes_no(prompt, default=False):
             return False
 
         print("Please answer y or n.")
+
+
+def ask_float(prompt, default=None, minimum=0.0):
+    while True:
+        suffix = f" [{default}]: " if default is not None else ": "
+        answer = input(prompt + suffix).strip()
+
+        if answer == "" and default is not None:
+            value = float(default)
+        else:
+            try:
+                value = float(answer)
+            except ValueError:
+                print("Please enter a valid number.")
+                continue
+
+        if value < minimum:
+            print(f"Value must be at least {minimum}.")
+            continue
+
+        return value
 
 
 def make_ota_json(d, dist_bin, ota_bin_name=None, ota_json_name=None):
@@ -239,8 +330,6 @@ def make_ota_json(d, dist_bin, ota_bin_name=None, ota_json_name=None):
         "size": dist_bin.stat().st_size,
         "sha256": sha256_file(dist_bin),
         "builtAt": datetime.now().isoformat(timespec="seconds"),
-        "aiEngineProfile": d.get("_aiEngineProfile", d["deviceId"]),
-        "aiEngineSha256": d.get("_aiEngineSha256", ""),
     }
 
 
@@ -273,6 +362,7 @@ def main():
 
     d = devices[device_name]
     validate_device(d)
+    d = ensure_device_firebase_credentials(devices, device_name, d)
 
     old_fw_version = str(d["firmwareVersion"]).strip()
     bump_version = ask_yes_no(
@@ -293,11 +383,26 @@ def main():
 
     validate_device(d)
 
-    first_time_build = ask_yes_no(
-        "Is this a FIRST-TIME build for this device/customer? "
-        "If yes, I will also create firmware.bin and firmware.json",
-        default=False,
-    )
+
+    # Manufacturing builds must not stop for an Alk-bootstrap prompt.
+    # Preserve an explicitly configured seed already stored for this device.
+    # New devices default to no one-time bootstrap while still receiving
+    # normal rolling 7-day Alk and calcium learning.
+    bootstrap_enabled = bool(d.get("alkDemandBootstrapEnabled", False))
+    bootstrap_dkh_day = float(d.get("alkDemandBootstrapDkhDay", 0.0) or 0.0)
+
+    if not bootstrap_enabled:
+        bootstrap_dkh_day = 0.0
+    elif bootstrap_dkh_day <= 0.0:
+        fail(
+            "alkDemandBootstrapEnabled is true but "
+            "alkDemandBootstrapDkhDay is missing or not positive."
+        )
+
+    d["alkDemandBootstrapEnabled"] = bootstrap_enabled
+    d["alkDemandBootstrapDkhDay"] = bootstrap_dkh_day
+    devices[device_name] = d
+    save_devices(devices)
 
     pio_env = d.get("board", DEFAULT_PIO_ENV) or DEFAULT_PIO_ENV
 
@@ -314,10 +419,11 @@ def main():
     print(f'  mac      : {d["macAddress"]}')
     print(f'  chip     : {d["chipId"]}')
     print(f'  board    : {d["board"]}')
-
-    ai_engine = select_device_ai_engine(d)
-    d["_aiEngineProfile"] = d["deviceId"]
-    d["_aiEngineSha256"] = ai_engine["sha256"]
+    print(f'  auth     : {d["firebaseEmail"]}')
+    print(f'  auth UID : {d["firebaseUid"]}')
+    print(f'  alk seed : {"ENABLED" if d.get("alkDemandBootstrapEnabled", False) else "disabled"}')
+    if d.get("alkDemandBootstrapEnabled", False):
+        print(f'  seed dKH : {float(d.get("alkDemandBootstrapDkhDay", 0.0)):.3f} dKH/day')
 
     run_platformio(pio_env)
 
@@ -336,14 +442,9 @@ def main():
     dist_dir = PROJECT_DIR / "dist" / device_id
     dist_bin = dist_dir / d["otaBinName"]
     dist_json = dist_dir / d["otaJsonName"]
-    first_time_dist_bin = dist_dir / "firmware.bin"
-    first_time_dist_json = dist_dir / "firmware.json"
 
     dist_dir.mkdir(parents=True, exist_ok=True)
     copy_and_verify(build_bin, dist_bin)
-
-    dist_ai_engine = dist_dir / "AI_Engine.h"
-    copy_and_verify(ai_engine["destination"], dist_ai_engine)
 
     ota = make_ota_json(d, dist_bin)
     dist_json.write_text(json.dumps(ota, indent=4), encoding="utf-8")
@@ -351,19 +452,6 @@ def main():
     if not dist_json.exists():
         fail(f"OTA JSON was not created:\n{dist_json}")
 
-    first_time_ota = None
-    if first_time_build:
-        copy_and_verify(build_bin, first_time_dist_bin)
-        first_time_ota = make_ota_json(
-            d,
-            first_time_dist_bin,
-            ota_bin_name="firmware.bin",
-            ota_json_name="firmware.json",
-        )
-        first_time_dist_json.write_text(json.dumps(first_time_ota, indent=4), encoding="utf-8")
-
-        if not first_time_dist_json.exists():
-            fail(f"First-time OTA JSON was not created:\n{first_time_dist_json}")
 
     # Firebase public device folder:
     # C:/Users/mdroo/OneDrive/Firebase/aiesdoser/public/devices/reefDoser3/reefDoser3.bin
@@ -372,15 +460,10 @@ def main():
     firebase_device_dir = firebase_public / "devices" / device_id
     firebase_bin = firebase_device_dir / d["otaBinName"]
     firebase_json = firebase_device_dir / d["otaJsonName"]
-    first_time_firebase_bin = firebase_device_dir / "firmware.bin"
-    first_time_firebase_json = firebase_device_dir / "firmware.json"
 
     copy_and_verify(dist_bin, firebase_bin)
     copy_and_verify(dist_json, firebase_json)
 
-    if first_time_build:
-        copy_and_verify(first_time_dist_bin, first_time_firebase_bin)
-        copy_and_verify(first_time_dist_json, first_time_firebase_json)
 
     print("\nFirmware copied to:")
     print(f"  {dist_bin}")
@@ -392,30 +475,16 @@ def main():
     print(f"  {firebase_bin}")
     print(f"  {firebase_json}")
 
-    if first_time_build:
-        print("\nFirst-time firmware files also created:")
-        print(f"  {first_time_dist_bin}")
-        print(f"  {first_time_dist_json}")
-        print(f"  {first_time_firebase_bin}")
-        print(f"  {first_time_firebase_json}")
 
     print("\nOTA URL paths:")
     print(f'  JSON: /devices/{device_id}/{d["otaJsonName"]}')
     print(f'  BIN : /devices/{device_id}/{d["otaBinName"]}')
 
-    if first_time_build:
-        print("\nFirst-time OTA URL paths:")
-        print(f"  JSON: /devices/{device_id}/firmware.json")
-        print(f"  BIN : /devices/{device_id}/firmware.bin")
 
     print("\nVerification:")
     print(f'  size   : {ota["size"]}')
     print(f'  sha256 : {ota["sha256"]}')
 
-    if first_time_ota:
-        print("\nFirst-time verification:")
-        print(f'  size   : {first_time_ota["size"]}')
-        print(f'  sha256 : {first_time_ota["sha256"]}')
 
     print("\n========================================")
     print("BUILD COMPLETE - READY FOR FIREBASE DEPLOY")

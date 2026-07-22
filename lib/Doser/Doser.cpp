@@ -18,6 +18,8 @@ void Doser::begin() {
     Preferences prefs;
     prefs.begin("doser-settings", true); // Open in Read-Only mode
 
+    // Production AIDoser physical mapping. Keep this identical to main.cpp
+    // production hardware map so calculated P1/P2/P3/P4 always run the intended pump.
     _pumps[0].pin = 22;
     _pumps[1].pin = 25;
     _pumps[2].pin = 26;
@@ -39,22 +41,27 @@ void Doser::begin() {
 }
 
 float Doser::doseMl(int i, float ml) {
-    if (i < 0 || i > 3 || ml <= 0) return 0.0f;
-    if (_pumps[i].mlPerMin <= 0.0f) return 0.0f;
+    if (i < 0 || i > 3 || !isfinite(ml) || ml <= 0.0f) return 0.0f;
 
-    float requestedMl = ml;
-    float secondsToRun = (requestedMl / _pumps[i].mlPerMin) * 60.0f;
+    const float flowMlPerMin = _pumps[i].mlPerMin;
+    if (!isfinite(flowMlPerMin) || flowMlPerMin <= 0.0f) return 0.0f;
 
-    // SAFETY CAP: Never let a pump run for more than 60 seconds in a single dose.
-    // Return the actual mL that this capped runtime can deliver so daily totals,
-    // reservoir levels, and Firebase history do not over-count large requests.
-    if (secondsToRun > 60.0f) {
-        secondsToRun = 60.0f;
+    // main.cpp has a five-minute absolute runtime supervisor with a 20-second
+    // margin. Keep this driver below that same deadline instead of silently
+    // truncating every automatic dose to 60 seconds.
+    static constexpr float MAX_DRIVER_RUNTIME_SECONDS = 280.0f;
+
+    const float requestedSeconds = (ml / flowMlPerMin) * 60.0f;
+    const float secondsToRun = min(requestedSeconds, MAX_DRIVER_RUNTIME_SECONDS);
+    const float actualMl = flowMlPerMin * (secondsToRun / 60.0f);
+
+    if (!isfinite(secondsToRun) || secondsToRun <= 0.0f ||
+        !isfinite(actualMl) || actualMl <= 0.0f) {
+        return 0.0f;
     }
 
-    float actualMl = _pumps[i].mlPerMin * (secondsToRun / 60.0f);
-
-    _pumps[i].runUntil = millis() + (unsigned long)(secondsToRun * 1000.0f);
+    _pumps[i].runUntil = millis() +
+        static_cast<unsigned long>(secondsToRun * 1000.0f);
     _pumps[i].isActive = true;
     digitalWrite(_pumps[i].pin, HIGH);
 
@@ -98,8 +105,12 @@ bool Doser::isPumpRunning(int i) {
 }
 
 //TODO stop pumps
-void Doser::stopAllPumps(){
-
+void Doser::stopAllPumps() {
+    for (int i = 0; i < 4; ++i) {
+        digitalWrite(_pumps[i].pin, LOW);
+        _pumps[i].isActive = false;
+        _pumps[i].runUntil = 0;
+    }
 }
 
 float Doser::getTotalDosedToday() {

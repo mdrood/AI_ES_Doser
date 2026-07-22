@@ -1,0 +1,10 @@
+AIDoser
+
+Device ID: reefDoser6
+Serial Label: AIES-00006
+Claim Code: P3FD-JTGV
+MAC Address: 00:70:07:33:9C:F0
+Chip ID: F09C33077000
+
+Setup:
+https://aiesdoser.web.app/setup

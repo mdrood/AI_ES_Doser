@@ -6,19 +6,32 @@ Provisioner::Provisioner()
       _connectStarted(false),
       _connectStartMs(0),
       _restartAtMs(0),
-      _connectedAnnounced(false) {}
+      _connectedAnnounced(false),
+      _deviceName("AIDoser"),
+      _mdnsName("reefDoser") {}
 
 void Provisioner::startPortal(const char* apName) {
+    // Keep the branded setup AP name, but use only reefDoserX for mDNS.
+    _deviceName = (apName && apName[0] != '\0') ? String(apName) : String("AIDoser");
+
+    _mdnsName = _deviceName;
+    if (_mdnsName.startsWith("AIDoser-")) {
+        _mdnsName.remove(0, 8);
+    }
+    if (_mdnsName.length() == 0) {
+        _mdnsName = "reefDoser";
+    }
+
     // Keep setup AP alive while also allowing STA/home-WiFi connection.
     WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP(apName);
+    WiFi.softAP(_deviceName.c_str());
 
     // Captive Portal: Redirect all DNS requests to the ESP32 AP IP.
     _dnsServer.start(53, "*", WiFi.softAPIP());
 
     // Convenience only. Do not rely on mDNS for first-time setup.
-    if (MDNS.begin("aidoser")) {
-        Serial.println("mDNS responder started: http://aidoser.local");
+    if (MDNS.begin(_mdnsName.c_str())) {
+        Serial.printf("mDNS responder started: http://%s.local\n", _mdnsName.c_str());
     }
 
     _setupRoutes();
@@ -38,8 +51,8 @@ void Provisioner::handleClient() {
         Serial.println(WiFi.localIP());
 
         MDNS.end();
-        if (MDNS.begin("aidoser")) {
-            Serial.println("mDNS responder restarted on STA: http://aidoser.local");
+        if (MDNS.begin(_mdnsName.c_str())) {
+            Serial.printf("mDNS responder restarted on STA: http://%s.local\n", _mdnsName.c_str());
         }
 
         // Keep the final setup page alive for 2 minutes after IP is known.
@@ -144,10 +157,10 @@ void Provisioner::_handleSave() {
     html += "</div>";
 
     html += "<div class='note'>";
-    html += "If your phone says <b>ReefDoser-Setup has no internet</b>, choose <b>Stay Connected</b> until the IP appears.";
+    html += "If your phone says <b>" + _deviceName + " has no internet</b>, choose <b>Stay Connected</b> until the IP appears.";
     html += "</div>";
 
-    html += "<p>Backup name after restart: <span class='url'>http://aidoser.local</span></p>";
+    html += "<p>Backup name after restart: <span class='url'>http://" + _mdnsName + ".local</span></p>";
 
     html += "<script>";
     html += "async function check(){";
@@ -163,7 +176,7 @@ void Provisioner::_handleSave() {
     html += "'<h3>WebSerial</h3><p class=\"url\">http://' + j.ip + ':81/webserial</p>' +";
     html += "'<p><a href=\"http://' + j.ip + '\"><button>Try Dashboard</button></a></p>';";
     html += "}else if(j.failed){";
-    html += "s.innerHTML='<h2 class=\"bad\">WiFi connection failed</h2><p>Reconnect to ReefDoser-Setup and check SSID/password.</p>';";
+    html += "s.innerHTML='<h2 class=\"bad\">WiFi connection failed</h2><p>Reconnect to " + _deviceName + " and check SSID/password.</p>';";
     html += "}else{";
     html += "s.innerHTML='<h2>Connecting...</h2><p>Elapsed: '+j.elapsedSec+' seconds</p><p>IP: waiting...</p>';";
     html += "setTimeout(check,2000);";

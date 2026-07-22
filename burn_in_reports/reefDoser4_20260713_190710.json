@@ -1,0 +1,116 @@
+{
+    "deviceId": "reefDoser4",
+    "customer": "Joe Test",
+    "label": "AIES-0004",
+    "macAddress": "00:70:07:33:9E:9C",
+    "chipId": "9C9E33077000",
+    "board": "vintlabs-devkit-v1",
+    "startedAt": "2026-07-13T18:50:25",
+    "completedAt": "2026-07-13T19:07:10",
+    "durationMinutesRequested": 120,
+    "completedPumpRuns": 2,
+    "result": "FAIL",
+    "failureReason": "Operator cancelled",
+    "events": [
+        {
+            "time": "2026-07-13T18:50:25",
+            "line": "Board: vintlabs-devkit-v1"
+        },
+        {
+            "time": "2026-07-13T18:50:26",
+            "line": "DEVICE_ID_SET reefDoser4"
+        },
+        {
+            "time": "2026-07-13T18:50:26",
+            "line": "BURNIN_DURATION_SET minutes=120 durationMs=7200000"
+        },
+        {
+            "time": "2026-07-13T18:50:26",
+            "line": "BURNIN_STARTED deviceId=reefDoser4 durationMs=7200000 pumpOnMs=10000 intervalMs=900000"
+        },
+        {
+            "time": "2026-07-13T18:50:26",
+            "line": "BURNIN_PUMP_ON pump=1 pin=25 runMs=10000 elapsedMs=10"
+        },
+        {
+            "time": "2026-07-13T18:50:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=1 completedRuns=0 elapsedMs=11 remainingMs=7199989 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T18:50:36",
+            "line": "BURNIN_PUMP_OFF pump=1 reason=normal-end elapsedMs=10021"
+        },
+        {
+            "time": "2026-07-13T18:51:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=60021 remainingMs=7139979 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T18:52:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=120032 remainingMs=7079968 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T18:53:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=180043 remainingMs=7019957 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T18:54:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=240054 remainingMs=6959946 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T18:55:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=300065 remainingMs=6899935 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T18:56:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=360076 remainingMs=6839924 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T18:57:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=420087 remainingMs=6779913 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T18:58:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=480098 remainingMs=6719902 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T18:59:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=540109 remainingMs=6659891 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T19:00:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=600120 remainingMs=6599880 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T19:01:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=660131 remainingMs=6539869 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T19:02:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=720142 remainingMs=6479858 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T19:03:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=780153 remainingMs=6419847 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T19:04:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=840164 remainingMs=6359836 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T19:05:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=1 elapsedMs=900175 remainingMs=6299825 freeHeap=293740 minHeap=258660"
+        },
+        {
+            "time": "2026-07-13T19:05:36",
+            "line": "BURNIN_PUMP_ON pump=2 pin=26 runMs=10000 elapsedMs=910036"
+        },
+        {
+            "time": "2026-07-13T19:05:46",
+            "line": "BURNIN_PUMP_OFF pump=2 reason=normal-end elapsedMs=920036"
+        },
+        {
+            "time": "2026-07-13T19:06:26",
+            "line": "BURNIN_STATUS deviceId=reefDoser4 running=1 complete=0 currentPump=0 completedRuns=2 elapsedMs=960186 remainingMs=6239814 freeHeap=293740 minHeap=258660"
+        }
+    ]
+}

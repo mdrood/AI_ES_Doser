@@ -1,0 +1,10 @@
+AIDoser
+
+Device ID: reefDoser5
+Serial Label: AIES-00005
+Claim Code: PZH6-XM3R
+MAC Address: 00:70:07:33:9D:B4
+Chip ID: B49D33077000
+
+Setup:
+https://aiesdoser.web.app/setup

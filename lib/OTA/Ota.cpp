@@ -1,4 +1,5 @@
 #include "Ota.h"
+#include <esp_task_wdt.h>
 
 OtaManager::OtaManager() {}
 
@@ -173,64 +174,200 @@ void OtaManager::updateFirmware(String url,
                                 const String& expectedDeviceId,
                                 const String& expectedMac,
                                 const String& expectedChipId) {
-    if (url.length() == 0) return;
+    if (url.length() == 0) {
+        Serial.println("OTA BLOCKED: empty input URL.");
+        return;
+    }
 
     String manifestUrl = manifestUrlFromInputUrl(url);
     JsonDocument doc;
     String firmwareUrl;
+
+    Serial.println("========================================");
+    Serial.println("OTA TRANSFER START");
+    Serial.printf("OTA input URL   : %s\n", url.c_str());
+    Serial.printf("OTA manifest URL: %s\n", manifestUrl.c_str());
+    Serial.printf("OTA free heap   : %u\n", ESP.getFreeHeap());
+    Serial.printf("OTA free sketch : %u\n", ESP.getFreeSketchSpace());
+    Serial.println("========================================");
 
     if (!downloadManifest(manifestUrl, doc)) {
         Serial.println("OTA BLOCKED: could not download or parse manifest JSON.");
         return;
     }
 
-    if (!validateManifest(doc, expectedDeviceId, expectedMac, expectedChipId, firmwareUrl, manifestUrl)) {
+    if (!validateManifest(
+            doc,
+            expectedDeviceId,
+            expectedMac,
+            expectedChipId,
+            firmwareUrl,
+            manifestUrl)) {
         return;
     }
 
     Serial.printf("Starting OTA Update from: %s\n", firmwareUrl.c_str());
 
     HTTPClient http;
-    http.begin(firmwareUrl);
+    http.setConnectTimeout(15000);
+    http.setTimeout(15000);
+
+    if (!http.begin(firmwareUrl)) {
+        Serial.println("OTA FAILED: HTTP begin failed.");
+        return;
+    }
+
     int httpCode = http.GET();
+    Serial.printf("OTA firmware HTTP status: %d\n", httpCode);
 
-    if (httpCode == HTTP_CODE_OK) {
-        int contentLength = http.getSize();
-        if (contentLength <= 0) {
-            Serial.println("OTA BLOCKED: invalid firmware content length.");
-            http.end();
-            return;
-        }
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf(
+            "OTA FAILED: firmware HTTP error: %s\n",
+            http.errorToString(httpCode).c_str()
+        );
+        http.end();
+        return;
+    }
 
-        bool canBegin = Update.begin(contentLength);
+    int contentLength = http.getSize();
+    Serial.printf("OTA content length: %d bytes\n", contentLength);
+    Serial.printf("OTA available space: %u bytes\n", ESP.getFreeSketchSpace());
 
-        if (canBegin) {
-            Serial.println("Begin OTA. This may take a minute...");
-            WiFiClient* client = http.getStreamPtr();
-            size_t written = Update.writeStream(*client);
+    if (contentLength <= 0) {
+        Serial.println("OTA FAILED: invalid or missing firmware content length.");
+        http.end();
+        return;
+    }
 
-            if (written == (size_t)contentLength) {
-                Serial.println("Written : " + String(written) + " successfully");
-            } else {
-                Serial.println("Written only : " + String(written) + "/" + String(contentLength) + ". Retry?");
+    if (!Update.begin((size_t)contentLength, U_FLASH)) {
+        Serial.printf(
+            "OTA FAILED: Update.begin error=%u (%s)\n",
+            Update.getError(),
+            Update.errorString()
+        );
+        http.end();
+        return;
+    }
+
+    Serial.println("OTA Update.begin succeeded.");
+    Serial.println("OTA downloading and writing firmware...");
+
+    WiFiClient* stream = http.getStreamPtr();
+    if (stream == nullptr) {
+        Serial.println("OTA FAILED: HTTP stream pointer is null.");
+        Update.abort();
+        http.end();
+        return;
+    }
+
+    static constexpr size_t OTA_BUFFER_SIZE = 4096;
+    uint8_t buffer[OTA_BUFFER_SIZE];
+    size_t totalWritten = 0;
+    unsigned long lastDataMs = millis();
+    unsigned long lastProgressMs = 0;
+
+    while (http.connected() && totalWritten < (size_t)contentLength) {
+        size_t available = stream->available();
+
+        if (available > 0) {
+            size_t remaining = (size_t)contentLength - totalWritten;
+            size_t toRead = available;
+            if (toRead > OTA_BUFFER_SIZE) toRead = OTA_BUFFER_SIZE;
+            if (toRead > remaining) toRead = remaining;
+
+            int bytesRead = stream->readBytes(buffer, toRead);
+            if (bytesRead <= 0) {
+                Serial.println("OTA FAILED: stream returned no data.");
+                Update.abort();
+                http.end();
+                return;
             }
 
-            if (Update.end()) {
-                Serial.println("OTA done!");
-                if (Update.isFinished()) {
-                    Serial.println("Update successfully completed. Rebooting...");
-                    ESP.restart();
-                } else {
-                    Serial.println("Update not finished? Something went wrong.");
-                }
-            } else {
-                Serial.println("Error Occurred. Error #: " + String(Update.getError()));
+            size_t bytesWritten = Update.write(buffer, (size_t)bytesRead);
+            if (bytesWritten != (size_t)bytesRead) {
+                Serial.printf(
+                    "OTA FAILED: flash write mismatch read=%d wrote=%u error=%u (%s)\n",
+                    bytesRead,
+                    (unsigned)bytesWritten,
+                    Update.getError(),
+                    Update.errorString()
+                );
+                Update.abort();
+                http.end();
+                return;
+            }
+
+            totalWritten += bytesWritten;
+            lastDataMs = millis();
+
+            if (lastProgressMs == 0 ||
+                millis() - lastProgressMs >= 2000UL ||
+                totalWritten == (size_t)contentLength) {
+
+                float percent =
+                    (100.0f * (float)totalWritten) / (float)contentLength;
+
+                Serial.printf(
+                    "OTA progress: %u/%d bytes (%.1f%%) heap=%u\n",
+                    (unsigned)totalWritten,
+                    contentLength,
+                    percent,
+                    ESP.getFreeHeap()
+                );
+
+                lastProgressMs = millis();
             }
         } else {
-            Serial.println("Not enough space to begin OTA");
+            if (millis() - lastDataMs > 15000UL) {
+                Serial.printf(
+                    "OTA FAILED: download stalled at %u/%d bytes.\n",
+                    (unsigned)totalWritten,
+                    contentLength
+                );
+                Update.abort();
+                http.end();
+                return;
+            }
+
+            delay(1);
         }
-    } else {
-        Serial.printf("Firmware HTTP error: %s\n", http.errorToString(httpCode).c_str());
+
+        // Keep the Arduino loop task and watchdog healthy during the blocking OTA.
+        esp_task_wdt_reset();
+        yield();
     }
+
     http.end();
+
+    Serial.printf(
+        "OTA download finished: wrote %u/%d bytes.\n",
+        (unsigned)totalWritten,
+        contentLength
+    );
+
+    if (totalWritten != (size_t)contentLength) {
+        Serial.println("OTA FAILED: downloaded byte count did not match content length.");
+        Update.abort();
+        return;
+    }
+
+    if (!Update.end(true)) {
+        Serial.printf(
+            "OTA FAILED: Update.end error=%u (%s)\n",
+            Update.getError(),
+            Update.errorString()
+        );
+        return;
+    }
+
+    if (!Update.isFinished()) {
+        Serial.println("OTA FAILED: Update.end succeeded but image is not marked finished.");
+        return;
+    }
+
+    Serial.println("OTA SUCCESS: firmware fully written and verified.");
+    Serial.println("OTA SUCCESS: rebooting into the new firmware...");
+    Serial.flush();
+    delay(500);
+    ESP.restart();
 }
