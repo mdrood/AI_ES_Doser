@@ -3,7 +3,7 @@
         "customer": "Mark",
         "label": "AIES-00001",
         "deviceId": "reefDoser1",
-        "firmwareVersion": "P-1.1.22",
+        "firmwareVersion": "P-1.1.24",
         "chipId": "9C9E33077000",
         "macAddress": "e0:8c:fe:c2:6e:94",
         "board": "vintlabs-devkit-v1",
