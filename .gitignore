@@ -3,3 +3,22 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# --- Secrets & credentials ---
+secrets/
+generated/
+scripts/devices.json
+scripts/devices.json.bak
+
+# --- Customer / manufacturing data (PII + per-device secrets) ---
+customers/
+claim_inventory/
+manufacturing_reports/
+burn_in_reports/
+burn_in_firmware/
+
+# --- Build/distribution artifacts ---
+dist/
+*.bin
+firmware.elf
+firmware.map

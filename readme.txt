@@ -5,11 +5,9 @@ new customer change these things.  serarch for:
 
     Automations.
     Setup customer:  
-        C:\Users\mdroo\OneDrive\Documents\platformio\AI_ES_Doser>
-            enroll_customer.py
+        C:\Users\mdroo\OneDrive\Documents\platformio\AI_ES_Doser_V2>py scripts\enroll_customer.py
     Build
-        C:\Users\mdroo\OneDrive\Documents\platformio\AI_ES_Doser>
-            build_device.py
+        C:\Users\mdroo\OneDrive\Documents\platformio\AI_ES_Doser_V2>py scripts\build_device.py
 
     Note:  Until all customers are on new build system have to use the 
         first time feature in build builds fireware.bin vs reefDoser3.bin

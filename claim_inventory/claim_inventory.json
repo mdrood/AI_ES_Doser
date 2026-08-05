@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "updatedAt": "2026-07-16T17:51:08+00:00",
+    "updatedAt": "2026-07-30T20:23:06+00:00",
     "claims": [
         {
             "claimCode": "J92F-CNXF",
@@ -76,14 +76,15 @@
             "claimCode": "47JJ-CNYB",
             "batch": "BATCH-20260714",
             "sequence": 6,
-            "status": "UNUSED",
+            "status": "ASSIGNED",
             "createdAt": "2026-07-15T00:27:09+00:00",
-            "assignedAt": null,
-            "deviceId": null,
-            "label": null,
-            "macAddress": null,
-            "chipId": null,
-            "firebaseStatus": "NOT_ASSIGNED"
+            "assignedAt": "2026-07-30T20:23:03+00:00",
+            "deviceId": "reefDoser12",
+            "label": "AIES-00012",
+            "macAddress": "00:70:07:33:9D:40",
+            "chipId": "409D33077000",
+            "firebaseStatus": "VERIFIED",
+            "firebaseUpdatedAt": "2026-07-30T20:23:06+00:00"
         },
         {
             "claimCode": "25FJ-T82R",

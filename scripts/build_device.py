@@ -217,8 +217,14 @@ def validate_device(d):
         fail(f'otaJsonName should contain deviceId. Got: {d["otaJsonName"]}')
 
 
-def write_generated_header(d):
+def write_generated_header(d, password_override=None):
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+
+    # password_override lets a staged credential rotation build firmware with
+    # a NEW password baked in, without that password being live in Firebase
+    # Auth yet (see rotate_start/rotate_finalize). Normal builds never pass
+    # this and continue to embed the current, already-live firebasePassword.
+    password = password_override if password_override is not None else d["firebasePassword"]
 
     header = f'''#pragma once
 
@@ -237,7 +243,7 @@ const String BUILD_EXPECTED_BOARD = "{d["board"]}";
 const String BUILD_FIREBASE_UID = "{cpp_escape(d["firebaseUid"])}";
 
 #define BUILD_FIREBASE_EMAIL "{cpp_escape(d["firebaseEmail"])}"
-#define BUILD_FIREBASE_PASSWORD "{cpp_escape(d["firebasePassword"])}"
+#define BUILD_FIREBASE_PASSWORD "{cpp_escape(password)}"
 
 #define BUILD_ALK_DEMAND_BOOTSTRAP_ENABLED {1 if d.get("alkDemandBootstrapEnabled", False) else 0}
 #define BUILD_ALK_DEMAND_BOOTSTRAP_DKH_DAY {float(d.get("alkDemandBootstrapDkhDay", 0.0)):.6f}f
@@ -406,7 +412,23 @@ def main():
 
     pio_env = d.get("board", DEFAULT_PIO_ENV) or DEFAULT_PIO_ENV
 
-    header_path = write_generated_header(d)
+    build_and_package(d, pio_env)
+
+    print("\n========================================")
+    print("BUILD COMPLETE - READY FOR FIREBASE DEPLOY")
+    print("========================================")
+
+
+def build_and_package(d, pio_env, password_override=None):
+    """Compile firmware for device d and stage it for OTA deploy.
+
+    password_override, if given, embeds that password in the built firmware
+    WITHOUT changing d["firebasePassword"] or touching Firebase Auth. This is
+    what a staged credential rotation uses (see rotate_start) so the new
+    firmware can be built and OTA-pushed while the OLD password is still the
+    one Firebase Auth accepts, keeping the device reachable the whole time.
+    """
+    header_path = write_generated_header(d, password_override=password_override)
 
     print("\nGenerated:")
     print(header_path)
@@ -424,6 +446,8 @@ def main():
     print(f'  alk seed : {"ENABLED" if d.get("alkDemandBootstrapEnabled", False) else "disabled"}')
     if d.get("alkDemandBootstrapEnabled", False):
         print(f'  seed dKH : {float(d.get("alkDemandBootstrapDkhDay", 0.0)):.3f} dKH/day')
+    if password_override is not None:
+        print("  auth pw  : STAGED (pending) - Firebase Auth NOT yet updated")
 
     run_platformio(pio_env)
 
@@ -485,11 +509,175 @@ def main():
     print(f'  size   : {ota["size"]}')
     print(f'  sha256 : {ota["sha256"]}')
 
+    return dist_bin, dist_json
+
+
+def rotate_start(devices, device_name):
+    """Phase 1 of a safe credential rotation.
+
+    Generates a NEW password and builds/stages firmware with it, but does
+    NOT touch Firebase Auth. The currently-deployed device keeps using its
+    existing (still-valid) password/firmware the entire time, so it stays
+    reachable for the OTA push. Only rotate_finalize() actually changes what
+    Firebase Auth accepts.
+    """
+    if device_name not in devices:
+        fail(f"Unknown device: {device_name}")
+
+    d = devices[device_name]
+    validate_device(d)
+
+    if str(d.get("firebasePasswordPending", "")).strip():
+        fail(
+            f"A rotation is already staged for {device_name}.\n"
+            f"Finalize it (rotate-finalize) or discard it (rotate-abort) first."
+        )
+
+    if not str(d.get("firebasePassword", "")).strip():
+        fail(
+            f"{device_name} has no current firebasePassword on file.\n"
+            f"This looks like a brand-new device - use the normal build flow "
+            f"(no arguments) instead, which will provision it directly."
+        )
+
+    # Confirm we can actually reach Firebase Admin before generating anything,
+    # so a missing/broken service account fails fast instead of mid-rotation.
+    ensure_firebase_admin()
+
+    new_password = generate_device_password()
+    d["firebasePasswordPending"] = new_password
+    devices[device_name] = d
+    save_devices(devices)
+
+    old_fw_version = str(d["firmwareVersion"]).strip()
+    bump_version = ask_yes_no(
+        f'Increment firmware version for this build? {old_fw_version} -> {increment_firmware_version(old_fw_version)}',
+        default=True,
+    )
+
+    if bump_version:
+        new_fw_version = increment_firmware_version(old_fw_version)
+        d["firmwareVersion"] = new_fw_version
+        devices[device_name] = d
+        save_devices(devices)
+        print(f"\nFirmware version incremented:")
+        print(f"  {old_fw_version} -> {new_fw_version}")
+    else:
+        print(f"\nFirmware version unchanged: {old_fw_version}")
+
+    pio_env = d.get("board", DEFAULT_PIO_ENV) or DEFAULT_PIO_ENV
+
+    print(f"\nStaging new credential for {device_name}.")
+    print("Firebase Auth is NOT changed yet - the currently-deployed device")
+    print("keeps working with its existing password throughout this build.")
+
+    build_and_package(d, pio_env, password_override=new_password)
 
     print("\n========================================")
-    print("BUILD COMPLETE - READY FOR FIREBASE DEPLOY")
+    print("ROTATION STAGED - Firebase Auth unchanged")
     print("========================================")
+    print(f"\nNext steps for {device_name}:")
+    print("  1. Trigger the OTA update for this device as usual.")
+    print("  2. Confirm it actually rebooted onto the new build - watch for")
+    print("     the new firmware version being pushed to Firebase, or")
+    print("     'Firebase token ready.' in the serial monitor after reboot.")
+    print("  3. Only once you've confirmed that, run:")
+    print(f"       python build_device.py rotate-finalize {device_name}")
+    print("     This is the step that actually changes the password Firebase")
+    print("     Auth requires. Doing it before step 2 is confirmed is what")
+    print("     causes a device lockout.")
+
+
+def rotate_finalize(devices, device_name):
+    """Phase 2 of a safe credential rotation.
+
+    Pushes the already-staged password live to Firebase Auth. Only run this
+    after confirming the device is already running firmware built with that
+    same staged password (see rotate_start).
+    """
+    if device_name not in devices:
+        fail(f"Unknown device: {device_name}")
+
+    d = devices[device_name]
+    pending = str(d.get("firebasePasswordPending", "")).strip()
+
+    if not pending:
+        fail(
+            f"No staged rotation found for {device_name}.\n"
+            f"Run 'python build_device.py rotate-start {device_name}' first."
+        )
+
+    confirmed = ask_yes_no(
+        f"Have you CONFIRMED {device_name} is already running firmware "
+        f"built with the staged password (rebooted + reconnected to "
+        f"Firebase successfully)?",
+        default=False,
+    )
+
+    if not confirmed:
+        print(
+            "\nStopping. Finalize only after the device has confirmed it's "
+            "running the new build - otherwise this will lock it out, the "
+            "same way the previous incident happened."
+        )
+        return
+
+    firebase_auth = ensure_firebase_admin()
+    email = d["firebaseEmail"]
+    user = firebase_auth.get_user_by_email(email)
+
+    uid = str(d.get("firebaseUid", "")).strip()
+    if uid and uid != user.uid:
+        fail(
+            f"Firebase UID mismatch for {email}.\n"
+            f"devices.json: {uid}\n"
+            f"Firebase Auth: {user.uid}"
+        )
+
+    firebase_auth.update_user(user.uid, password=pending, disabled=False)
+
+    d["firebasePassword"] = pending
+    d["firebasePasswordPending"] = ""
+    devices[device_name] = d
+    save_devices(devices)
+
+    print(f"\nRotation finalized for {device_name}.")
+    print("Firebase Auth now requires the new password - this should already")
+    print("match what the device is running, so it will keep working with no")
+    print("further action needed.")
+
+
+def rotate_abort(devices, device_name):
+    """Discard a staged (not-yet-finalized) rotation. Firebase Auth and the
+    currently-deployed device are untouched either way."""
+    if device_name not in devices:
+        fail(f"Unknown device: {device_name}")
+
+    d = devices[device_name]
+
+    if not str(d.get("firebasePasswordPending", "")).strip():
+        fail(f"No staged rotation to abort for {device_name}.")
+
+    d["firebasePasswordPending"] = ""
+    devices[device_name] = d
+    save_devices(devices)
+
+    print(f"\nStaged rotation for {device_name} discarded.")
+    print("Firebase Auth and the currently-deployed firmware are unaffected.")
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] in ("rotate-start", "rotate-finalize", "rotate-abort"):
+        command = sys.argv[1]
+        devices = load_devices()
+
+        device_name = sys.argv[2] if len(sys.argv) > 2 else input("Device: ").strip()
+
+        if command == "rotate-start":
+            rotate_start(devices, device_name)
+        elif command == "rotate-finalize":
+            rotate_finalize(devices, device_name)
+        elif command == "rotate-abort":
+            rotate_abort(devices, device_name)
+    else:
+        main()

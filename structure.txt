@@ -1,0 +1,2515 @@
+Folder PATH listing for volume OS
+Volume serial number is 00000016 B039:9168
+C:.
+|   .gitignore
+|   AIDoser_full_install.bin
+|   live-plain-reefDoser1.bin
+|   live-reefDoser1.bin
+|   partitions_8M.csv
+|   platformio.ini
+|   readme.txt
+|   SECRETS_SETUP.md
+|   structure.txt
+|   test.html
+|   
++---.pio
+|   +---build
+|   |   |   project.checksum
+|   |   |   
+|   |   \---vintlabs-devkit-v1
+|   |       |   .sconsign311.dblite
+|   |       |   bootloader.bin
+|   |       |   firmware.bin
+|   |       |   firmware.elf
+|   |       |   firmware.map
+|   |       |   idedata.json
+|   |       |   libFrameworkArduino.a
+|   |       |   longcmd-24425a53ecef6b8bd645fe47ee0e6550
+|   |       |   partitions.bin
+|   |       |   tmpaxinlw4w.tmp
+|   |       |   tmpjv5t6wjx.tmp
+|   |       |   
+|   |       +---FrameworkArduino
+|   |       |   |   base64.cpp.d
+|   |       |   |   base64.cpp.o
+|   |       |   |   cbuf.cpp.d
+|   |       |   |   cbuf.cpp.o
+|   |       |   |   Esp.cpp.d
+|   |       |   |   Esp.cpp.o
+|   |       |   |   esp32-hal-adc.c.d
+|   |       |   |   esp32-hal-adc.c.o
+|   |       |   |   esp32-hal-bt.c.d
+|   |       |   |   esp32-hal-bt.c.o
+|   |       |   |   esp32-hal-cpu.c.d
+|   |       |   |   esp32-hal-cpu.c.o
+|   |       |   |   esp32-hal-dac.c.d
+|   |       |   |   esp32-hal-dac.c.o
+|   |       |   |   esp32-hal-gpio.c.d
+|   |       |   |   esp32-hal-gpio.c.o
+|   |       |   |   esp32-hal-i2c-slave.c.d
+|   |       |   |   esp32-hal-i2c-slave.c.o
+|   |       |   |   esp32-hal-i2c.c.d
+|   |       |   |   esp32-hal-i2c.c.o
+|   |       |   |   esp32-hal-ledc.c.d
+|   |       |   |   esp32-hal-ledc.c.o
+|   |       |   |   esp32-hal-matrix.c.d
+|   |       |   |   esp32-hal-matrix.c.o
+|   |       |   |   esp32-hal-misc.c.d
+|   |       |   |   esp32-hal-misc.c.o
+|   |       |   |   esp32-hal-psram.c.d
+|   |       |   |   esp32-hal-psram.c.o
+|   |       |   |   esp32-hal-rgb-led.c.d
+|   |       |   |   esp32-hal-rgb-led.c.o
+|   |       |   |   esp32-hal-rmt.c.d
+|   |       |   |   esp32-hal-rmt.c.o
+|   |       |   |   esp32-hal-sigmadelta.c.d
+|   |       |   |   esp32-hal-sigmadelta.c.o
+|   |       |   |   esp32-hal-spi.c.d
+|   |       |   |   esp32-hal-spi.c.o
+|   |       |   |   esp32-hal-time.c.d
+|   |       |   |   esp32-hal-time.c.o
+|   |       |   |   esp32-hal-timer.c.d
+|   |       |   |   esp32-hal-timer.c.o
+|   |       |   |   esp32-hal-tinyusb.c.d
+|   |       |   |   esp32-hal-tinyusb.c.o
+|   |       |   |   esp32-hal-touch.c.d
+|   |       |   |   esp32-hal-touch.c.o
+|   |       |   |   esp32-hal-uart.c.d
+|   |       |   |   esp32-hal-uart.c.o
+|   |       |   |   FirmwareMSC.cpp.d
+|   |       |   |   FirmwareMSC.cpp.o
+|   |       |   |   firmware_msc_fat.c.d
+|   |       |   |   firmware_msc_fat.c.o
+|   |       |   |   FunctionalInterrupt.cpp.d
+|   |       |   |   FunctionalInterrupt.cpp.o
+|   |       |   |   HardwareSerial.cpp.d
+|   |       |   |   HardwareSerial.cpp.o
+|   |       |   |   HWCDC.cpp.d
+|   |       |   |   HWCDC.cpp.o
+|   |       |   |   IPAddress.cpp.d
+|   |       |   |   IPAddress.cpp.o
+|   |       |   |   IPv6Address.cpp.d
+|   |       |   |   IPv6Address.cpp.o
+|   |       |   |   main.cpp.d
+|   |       |   |   main.cpp.o
+|   |       |   |   MD5Builder.cpp.d
+|   |       |   |   MD5Builder.cpp.o
+|   |       |   |   Print.cpp.d
+|   |       |   |   Print.cpp.o
+|   |       |   |   stdlib_noniso.c.d
+|   |       |   |   stdlib_noniso.c.o
+|   |       |   |   Stream.cpp.d
+|   |       |   |   Stream.cpp.o
+|   |       |   |   StreamString.cpp.d
+|   |       |   |   StreamString.cpp.o
+|   |       |   |   Tone.cpp.d
+|   |       |   |   Tone.cpp.o
+|   |       |   |   USB.cpp.d
+|   |       |   |   USB.cpp.o
+|   |       |   |   USBCDC.cpp.d
+|   |       |   |   USBCDC.cpp.o
+|   |       |   |   USBMSC.cpp.d
+|   |       |   |   USBMSC.cpp.o
+|   |       |   |   wiring_pulse.c.d
+|   |       |   |   wiring_pulse.c.o
+|   |       |   |   wiring_shift.c.d
+|   |       |   |   wiring_shift.c.o
+|   |       |   |   WMath.cpp.d
+|   |       |   |   WMath.cpp.o
+|   |       |   |   WString.cpp.d
+|   |       |   |   WString.cpp.o
+|   |       |   |   
+|   |       |   \---libb64
+|   |       |           cdecode.c.d
+|   |       |           cdecode.c.o
+|   |       |           cencode.c.d
+|   |       |           cencode.c.o
+|   |       |           
+|   |       +---lib00a
+|   |       |   |   libSPI.a
+|   |       |   |   
+|   |       |   \---SPI
+|   |       |           SPI.cpp.d
+|   |       |           SPI.cpp.o
+|   |       |           
+|   |       +---lib0be
+|   |       |   |   libEthernet.a
+|   |       |   |   
+|   |       |   \---Ethernet
+|   |       |           ETH.cpp.d
+|   |       |           ETH.cpp.o
+|   |       |           
+|   |       +---lib101
+|   |       |   |   libProvisioner.a
+|   |       |   |   
+|   |       |   \---Provisioner
+|   |       |           Provisioner.cpp.d
+|   |       |           Provisioner.cpp.o
+|   |       |           
+|   |       +---lib112
+|   |       |   |   libESPmDNS.a
+|   |       |   |   
+|   |       |   \---ESPmDNS
+|   |       |           ESPmDNS.cpp.d
+|   |       |           ESPmDNS.cpp.o
+|   |       |           
+|   |       +---lib15e
+|   |       |   |   libLittleFS.a
+|   |       |   |   
+|   |       |   \---LittleFS
+|   |       |           LittleFS.cpp.d
+|   |       |           LittleFS.cpp.o
+|   |       |           
+|   |       +---lib18e
+|   |       |   |   libWebServer.a
+|   |       |   |   
+|   |       |   \---WebServer
+|   |       |       |   Parsing.cpp.d
+|   |       |       |   Parsing.cpp.o
+|   |       |       |   WebServer.cpp.d
+|   |       |       |   WebServer.cpp.o
+|   |       |       |   
+|   |       |       \---detail
+|   |       |               mimetable.cpp.d
+|   |       |               mimetable.cpp.o
+|   |       |               
+|   |       +---lib1bb
+|   |       |   |   libDoser.a
+|   |       |   |   
+|   |       |   \---Doser
+|   |       |           Doser.cpp.d
+|   |       |           Doser.cpp.o
+|   |       |           
+|   |       +---lib1e2
+|   |       |   |   libPreferences.a
+|   |       |   |   
+|   |       |   \---Preferences
+|   |       |           Preferences.cpp.d
+|   |       |           Preferences.cpp.o
+|   |       |           
+|   |       +---lib299
+|   |       |   |   libWebRoutes.a
+|   |       |   |   
+|   |       |   \---WebRoutes
+|   |       |           WebRoutes.cpp.d
+|   |       |           WebRoutes.cpp.o
+|   |       |           
+|   |       +---lib2ce
+|   |       |   |   libHTTPClient.a
+|   |       |   |   
+|   |       |   \---HTTPClient
+|   |       |           HTTPClient.cpp.d
+|   |       |           HTTPClient.cpp.o
+|   |       |           
+|   |       +---lib3ac
+|   |       |   |   libCalibratrion.a
+|   |       |   |   
+|   |       |   \---Calibratrion
+|   |       |           Calibration.cpp.d
+|   |       |           Calibration.cpp.o
+|   |       |           
+|   |       +---lib452
+|   |       |   |   libWiFiClientSecure.a
+|   |       |   |   
+|   |       |   \---WiFiClientSecure
+|   |       |           esp_crt_bundle.c.d
+|   |       |           esp_crt_bundle.c.o
+|   |       |           ssl_client.cpp.d
+|   |       |           ssl_client.cpp.o
+|   |       |           WiFiClientSecure.cpp.d
+|   |       |           WiFiClientSecure.cpp.o
+|   |       |           
+|   |       +---lib535
+|   |       |   |   libOTA.a
+|   |       |   |   
+|   |       |   \---OTA
+|   |       |           Ota.cpp.d
+|   |       |           Ota.cpp.o
+|   |       |           
+|   |       +---lib631
+|   |       |   |   libUpdate.a
+|   |       |   |   
+|   |       |   \---Update
+|   |       |           HttpsOTAUpdate.cpp.d
+|   |       |           HttpsOTAUpdate.cpp.o
+|   |       |           Updater.cpp.d
+|   |       |           Updater.cpp.o
+|   |       |           
+|   |       +---lib690
+|   |       |   |   libStateMachine.a
+|   |       |   |   
+|   |       |   \---StateMachine
+|   |       |           StateMachine.cpp.d
+|   |       |           StateMachine.cpp.o
+|   |       |           
+|   |       +---lib6d2
+|   |       |   |   libSD.a
+|   |       |   |   
+|   |       |   \---SD
+|   |       |           SD.cpp.d
+|   |       |           SD.cpp.o
+|   |       |           sd_diskio.cpp.d
+|   |       |           sd_diskio.cpp.o
+|   |       |           sd_diskio_crc.c.d
+|   |       |           sd_diskio_crc.c.o
+|   |       |           
+|   |       +---lib709
+|   |       |   |   libDNSServer.a
+|   |       |   |   
+|   |       |   \---DNSServer
+|   |       |           DNSServer.cpp.d
+|   |       |           DNSServer.cpp.o
+|   |       |           
+|   |       +---lib7b3
+|   |       |   |   libAsyncTCP.a
+|   |       |   |   
+|   |       |   \---AsyncTCP
+|   |       |           AsyncTCP.cpp.d
+|   |       |           AsyncTCP.cpp.o
+|   |       |           
+|   |       +---lib8c0
+|   |       |   |   libEEPROM.a
+|   |       |   |   
+|   |       |   \---EEPROM
+|   |       |           EEPROM.cpp.d
+|   |       |           EEPROM.cpp.o
+|   |       |           
+|   |       +---lib985
+|   |       |   |   libLogger.a
+|   |       |   |   
+|   |       |   \---Logger
+|   |       |           logger.cpp.d
+|   |       |           logger.cpp.o
+|   |       |           
+|   |       +---libac6
+|   |       |   |   libApexApi.a
+|   |       |   |   
+|   |       |   \---ApexApi
+|   |       |           apexapi.cpp.d
+|   |       |           apexapi.cpp.o
+|   |       |           
+|   |       +---libb88
+|   |       |   |   libAI_Engine.a
+|   |       |   |   
+|   |       |   \---AI_Engine
+|   |       |           AI_Engine.cpp.d
+|   |       |           AI_Engine.cpp.o
+|   |       |           
+|   |       +---libba5
+|   |       |   |   libSPIFFS.a
+|   |       |   |   
+|   |       |   \---SPIFFS
+|   |       |           SPIFFS.cpp.d
+|   |       |           SPIFFS.cpp.o
+|   |       |           
+|   |       +---libc4a
+|   |       |   |   libApexLogEmulator.a
+|   |       |   |   
+|   |       |   \---ApexLogEmulator
+|   |       |           ApexLogEmulator.cpp.d
+|   |       |           ApexLogEmulator.cpp.o
+|   |       |           
+|   |       +---libc93
+|   |       |   |   libFS.a
+|   |       |   |   
+|   |       |   \---FS
+|   |       |           FS.cpp.d
+|   |       |           FS.cpp.o
+|   |       |           vfs_api.cpp.d
+|   |       |           vfs_api.cpp.o
+|   |       |           
+|   |       +---libda6
+|   |       |   |   libFirebase ESP32 Client.a
+|   |       |   |   
+|   |       |   \---Firebase ESP32 Client
+|   |       |       |   Firebase.cpp.d
+|   |       |       |   Firebase.cpp.o
+|   |       |       |   
+|   |       |       +---client
+|   |       |       |   \---SSLClient
+|   |       |       |       +---bssl
+|   |       |       |       |       aesctr_drbg.c.d
+|   |       |       |       |       aesctr_drbg.c.o
+|   |       |       |       |       aes_big_cbcdec.c.d
+|   |       |       |       |       aes_big_cbcdec.c.o
+|   |       |       |       |       aes_big_cbcenc.c.d
+|   |       |       |       |       aes_big_cbcenc.c.o
+|   |       |       |       |       aes_big_ctr.c.d
+|   |       |       |       |       aes_big_ctr.c.o
+|   |       |       |       |       aes_big_ctrcbc.c.d
+|   |       |       |       |       aes_big_ctrcbc.c.o
+|   |       |       |       |       aes_big_dec.c.d
+|   |       |       |       |       aes_big_dec.c.o
+|   |       |       |       |       aes_big_enc.c.d
+|   |       |       |       |       aes_big_enc.c.o
+|   |       |       |       |       aes_common.c.d
+|   |       |       |       |       aes_common.c.o
+|   |       |       |       |       aes_ct.c.d
+|   |       |       |       |       aes_ct.c.o
+|   |       |       |       |       aes_ct64.c.d
+|   |       |       |       |       aes_ct64.c.o
+|   |       |       |       |       aes_ct64_cbcdec.c.d
+|   |       |       |       |       aes_ct64_cbcdec.c.o
+|   |       |       |       |       aes_ct64_cbcenc.c.d
+|   |       |       |       |       aes_ct64_cbcenc.c.o
+|   |       |       |       |       aes_ct64_ctr.c.d
+|   |       |       |       |       aes_ct64_ctr.c.o
+|   |       |       |       |       aes_ct64_ctrcbc.c.d
+|   |       |       |       |       aes_ct64_ctrcbc.c.o
+|   |       |       |       |       aes_ct64_dec.c.d
+|   |       |       |       |       aes_ct64_dec.c.o
+|   |       |       |       |       aes_ct64_enc.c.d
+|   |       |       |       |       aes_ct64_enc.c.o
+|   |       |       |       |       aes_ct_cbcdec.c.d
+|   |       |       |       |       aes_ct_cbcdec.c.o
+|   |       |       |       |       aes_ct_cbcenc.c.d
+|   |       |       |       |       aes_ct_cbcenc.c.o
+|   |       |       |       |       aes_ct_ctr.c.d
+|   |       |       |       |       aes_ct_ctr.c.o
+|   |       |       |       |       aes_ct_ctrcbc.c.d
+|   |       |       |       |       aes_ct_ctrcbc.c.o
+|   |       |       |       |       aes_ct_dec.c.d
+|   |       |       |       |       aes_ct_dec.c.o
+|   |       |       |       |       aes_ct_enc.c.d
+|   |       |       |       |       aes_ct_enc.c.o
+|   |       |       |       |       aes_pwr8.c.d
+|   |       |       |       |       aes_pwr8.c.o
+|   |       |       |       |       aes_pwr8_cbcdec.c.d
+|   |       |       |       |       aes_pwr8_cbcdec.c.o
+|   |       |       |       |       aes_pwr8_cbcenc.c.d
+|   |       |       |       |       aes_pwr8_cbcenc.c.o
+|   |       |       |       |       aes_pwr8_ctr.c.d
+|   |       |       |       |       aes_pwr8_ctr.c.o
+|   |       |       |       |       aes_pwr8_ctrcbc.c.d
+|   |       |       |       |       aes_pwr8_ctrcbc.c.o
+|   |       |       |       |       aes_small_cbcdec.c.d
+|   |       |       |       |       aes_small_cbcdec.c.o
+|   |       |       |       |       aes_small_cbcenc.c.d
+|   |       |       |       |       aes_small_cbcenc.c.o
+|   |       |       |       |       aes_small_ctr.c.d
+|   |       |       |       |       aes_small_ctr.c.o
+|   |       |       |       |       aes_small_ctrcbc.c.d
+|   |       |       |       |       aes_small_ctrcbc.c.o
+|   |       |       |       |       aes_small_dec.c.d
+|   |       |       |       |       aes_small_dec.c.o
+|   |       |       |       |       aes_small_enc.c.d
+|   |       |       |       |       aes_small_enc.c.o
+|   |       |       |       |       aes_x86ni.c.d
+|   |       |       |       |       aes_x86ni.c.o
+|   |       |       |       |       aes_x86ni_cbcdec.c.d
+|   |       |       |       |       aes_x86ni_cbcdec.c.o
+|   |       |       |       |       aes_x86ni_cbcenc.c.d
+|   |       |       |       |       aes_x86ni_cbcenc.c.o
+|   |       |       |       |       aes_x86ni_ctr.c.d
+|   |       |       |       |       aes_x86ni_ctr.c.o
+|   |       |       |       |       aes_x86ni_ctrcbc.c.d
+|   |       |       |       |       aes_x86ni_ctrcbc.c.o
+|   |       |       |       |       asn1enc.c.d
+|   |       |       |       |       asn1enc.c.o
+|   |       |       |       |       ccm.c.d
+|   |       |       |       |       ccm.c.o
+|   |       |       |       |       ccopy.c.d
+|   |       |       |       |       ccopy.c.o
+|   |       |       |       |       chacha20_ct.c.d
+|   |       |       |       |       chacha20_ct.c.o
+|   |       |       |       |       chacha20_sse2.c.d
+|   |       |       |       |       chacha20_sse2.c.o
+|   |       |       |       |       dec16be.c.d
+|   |       |       |       |       dec16be.c.o
+|   |       |       |       |       dec16le.c.d
+|   |       |       |       |       dec16le.c.o
+|   |       |       |       |       dec32be.c.d
+|   |       |       |       |       dec32be.c.o
+|   |       |       |       |       dec32le.c.d
+|   |       |       |       |       dec32le.c.o
+|   |       |       |       |       dec64be.c.d
+|   |       |       |       |       dec64be.c.o
+|   |       |       |       |       dec64le.c.d
+|   |       |       |       |       dec64le.c.o
+|   |       |       |       |       des_ct.c.d
+|   |       |       |       |       des_ct.c.o
+|   |       |       |       |       des_ct_cbcdec.c.d
+|   |       |       |       |       des_ct_cbcdec.c.o
+|   |       |       |       |       des_ct_cbcenc.c.d
+|   |       |       |       |       des_ct_cbcenc.c.o
+|   |       |       |       |       des_support.c.d
+|   |       |       |       |       des_support.c.o
+|   |       |       |       |       des_tab.c.d
+|   |       |       |       |       des_tab.c.o
+|   |       |       |       |       des_tab_cbcdec.c.d
+|   |       |       |       |       des_tab_cbcdec.c.o
+|   |       |       |       |       des_tab_cbcenc.c.d
+|   |       |       |       |       des_tab_cbcenc.c.o
+|   |       |       |       |       dig_oid.c.d
+|   |       |       |       |       dig_oid.c.o
+|   |       |       |       |       dig_size.c.d
+|   |       |       |       |       dig_size.c.o
+|   |       |       |       |       eax.c.d
+|   |       |       |       |       eax.c.o
+|   |       |       |       |       ecdsa_atr.c.d
+|   |       |       |       |       ecdsa_atr.c.o
+|   |       |       |       |       ecdsa_default_sign_asn1.c.d
+|   |       |       |       |       ecdsa_default_sign_asn1.c.o
+|   |       |       |       |       ecdsa_default_sign_raw.c.d
+|   |       |       |       |       ecdsa_default_sign_raw.c.o
+|   |       |       |       |       ecdsa_default_vrfy_asn1.c.d
+|   |       |       |       |       ecdsa_default_vrfy_asn1.c.o
+|   |       |       |       |       ecdsa_default_vrfy_raw.c.d
+|   |       |       |       |       ecdsa_default_vrfy_raw.c.o
+|   |       |       |       |       ecdsa_i15_bits.c.d
+|   |       |       |       |       ecdsa_i15_bits.c.o
+|   |       |       |       |       ecdsa_i15_sign_asn1.c.d
+|   |       |       |       |       ecdsa_i15_sign_asn1.c.o
+|   |       |       |       |       ecdsa_i15_sign_raw.c.d
+|   |       |       |       |       ecdsa_i15_sign_raw.c.o
+|   |       |       |       |       ecdsa_i15_vrfy_asn1.c.d
+|   |       |       |       |       ecdsa_i15_vrfy_asn1.c.o
+|   |       |       |       |       ecdsa_i15_vrfy_raw.c.d
+|   |       |       |       |       ecdsa_i15_vrfy_raw.c.o
+|   |       |       |       |       ecdsa_i31_bits.c.d
+|   |       |       |       |       ecdsa_i31_bits.c.o
+|   |       |       |       |       ecdsa_i31_sign_asn1.c.d
+|   |       |       |       |       ecdsa_i31_sign_asn1.c.o
+|   |       |       |       |       ecdsa_i31_sign_raw.c.d
+|   |       |       |       |       ecdsa_i31_sign_raw.c.o
+|   |       |       |       |       ecdsa_i31_vrfy_asn1.c.d
+|   |       |       |       |       ecdsa_i31_vrfy_asn1.c.o
+|   |       |       |       |       ecdsa_i31_vrfy_raw.c.d
+|   |       |       |       |       ecdsa_i31_vrfy_raw.c.o
+|   |       |       |       |       ecdsa_rta.c.d
+|   |       |       |       |       ecdsa_rta.c.o
+|   |       |       |       |       ec_all_m15.c.d
+|   |       |       |       |       ec_all_m15.c.o
+|   |       |       |       |       ec_all_m31.c.d
+|   |       |       |       |       ec_all_m31.c.o
+|   |       |       |       |       ec_c25519_i15.c.d
+|   |       |       |       |       ec_c25519_i15.c.o
+|   |       |       |       |       ec_c25519_i31.c.d
+|   |       |       |       |       ec_c25519_i31.c.o
+|   |       |       |       |       ec_c25519_m15.c.d
+|   |       |       |       |       ec_c25519_m15.c.o
+|   |       |       |       |       ec_c25519_m31.c.d
+|   |       |       |       |       ec_c25519_m31.c.o
+|   |       |       |       |       ec_c25519_m62.c.d
+|   |       |       |       |       ec_c25519_m62.c.o
+|   |       |       |       |       ec_c25519_m64.c.d
+|   |       |       |       |       ec_c25519_m64.c.o
+|   |       |       |       |       ec_curve25519.c.d
+|   |       |       |       |       ec_curve25519.c.o
+|   |       |       |       |       ec_default.c.d
+|   |       |       |       |       ec_default.c.o
+|   |       |       |       |       ec_keygen.c.d
+|   |       |       |       |       ec_keygen.c.o
+|   |       |       |       |       ec_p256_m15.c.d
+|   |       |       |       |       ec_p256_m15.c.o
+|   |       |       |       |       ec_p256_m31.c.d
+|   |       |       |       |       ec_p256_m31.c.o
+|   |       |       |       |       ec_p256_m62.c.d
+|   |       |       |       |       ec_p256_m62.c.o
+|   |       |       |       |       ec_p256_m64.c.d
+|   |       |       |       |       ec_p256_m64.c.o
+|   |       |       |       |       ec_prime_i15.c.d
+|   |       |       |       |       ec_prime_i15.c.o
+|   |       |       |       |       ec_prime_i31.c.d
+|   |       |       |       |       ec_prime_i31.c.o
+|   |       |       |       |       ec_pubkey.c.d
+|   |       |       |       |       ec_pubkey.c.o
+|   |       |       |       |       ec_secp256r1.c.d
+|   |       |       |       |       ec_secp256r1.c.o
+|   |       |       |       |       ec_secp384r1.c.d
+|   |       |       |       |       ec_secp384r1.c.o
+|   |       |       |       |       ec_secp521r1.c.d
+|   |       |       |       |       ec_secp521r1.c.o
+|   |       |       |       |       enc16be.c.d
+|   |       |       |       |       enc16be.c.o
+|   |       |       |       |       enc16le.c.d
+|   |       |       |       |       enc16le.c.o
+|   |       |       |       |       enc32be.c.d
+|   |       |       |       |       enc32be.c.o
+|   |       |       |       |       enc32le.c.d
+|   |       |       |       |       enc32le.c.o
+|   |       |       |       |       enc64be.c.d
+|   |       |       |       |       enc64be.c.o
+|   |       |       |       |       enc64le.c.d
+|   |       |       |       |       enc64le.c.o
+|   |       |       |       |       encode_ec_pk8der.c.d
+|   |       |       |       |       encode_ec_pk8der.c.o
+|   |       |       |       |       encode_ec_rawder.c.d
+|   |       |       |       |       encode_ec_rawder.c.o
+|   |       |       |       |       encode_rsa_pk8der.c.d
+|   |       |       |       |       encode_rsa_pk8der.c.o
+|   |       |       |       |       encode_rsa_rawder.c.d
+|   |       |       |       |       encode_rsa_rawder.c.o
+|   |       |       |       |       gcm.c.d
+|   |       |       |       |       gcm.c.o
+|   |       |       |       |       ghash_ctmul.c.d
+|   |       |       |       |       ghash_ctmul.c.o
+|   |       |       |       |       ghash_ctmul32.c.d
+|   |       |       |       |       ghash_ctmul32.c.o
+|   |       |       |       |       ghash_ctmul64.c.d
+|   |       |       |       |       ghash_ctmul64.c.o
+|   |       |       |       |       ghash_pclmul.c.d
+|   |       |       |       |       ghash_pclmul.c.o
+|   |       |       |       |       ghash_pwr8.c.d
+|   |       |       |       |       ghash_pwr8.c.o
+|   |       |       |       |       hkdf.c.d
+|   |       |       |       |       hkdf.c.o
+|   |       |       |       |       hmac.c.d
+|   |       |       |       |       hmac.c.o
+|   |       |       |       |       hmac_ct.c.d
+|   |       |       |       |       hmac_ct.c.o
+|   |       |       |       |       hmac_drbg.c.d
+|   |       |       |       |       hmac_drbg.c.o
+|   |       |       |       |       i15_add.c.d
+|   |       |       |       |       i15_add.c.o
+|   |       |       |       |       i15_bitlen.c.d
+|   |       |       |       |       i15_bitlen.c.o
+|   |       |       |       |       i15_decmod.c.d
+|   |       |       |       |       i15_decmod.c.o
+|   |       |       |       |       i15_decode.c.d
+|   |       |       |       |       i15_decode.c.o
+|   |       |       |       |       i15_decred.c.d
+|   |       |       |       |       i15_decred.c.o
+|   |       |       |       |       i15_encode.c.d
+|   |       |       |       |       i15_encode.c.o
+|   |       |       |       |       i15_fmont.c.d
+|   |       |       |       |       i15_fmont.c.o
+|   |       |       |       |       i15_iszero.c.d
+|   |       |       |       |       i15_iszero.c.o
+|   |       |       |       |       i15_moddiv.c.d
+|   |       |       |       |       i15_moddiv.c.o
+|   |       |       |       |       i15_modpow.c.d
+|   |       |       |       |       i15_modpow.c.o
+|   |       |       |       |       i15_modpow2.c.d
+|   |       |       |       |       i15_modpow2.c.o
+|   |       |       |       |       i15_montmul.c.d
+|   |       |       |       |       i15_montmul.c.o
+|   |       |       |       |       i15_mulacc.c.d
+|   |       |       |       |       i15_mulacc.c.o
+|   |       |       |       |       i15_muladd.c.d
+|   |       |       |       |       i15_muladd.c.o
+|   |       |       |       |       i15_ninv15.c.d
+|   |       |       |       |       i15_ninv15.c.o
+|   |       |       |       |       i15_reduce.c.d
+|   |       |       |       |       i15_reduce.c.o
+|   |       |       |       |       i15_rshift.c.d
+|   |       |       |       |       i15_rshift.c.o
+|   |       |       |       |       i15_sub.c.d
+|   |       |       |       |       i15_sub.c.o
+|   |       |       |       |       i15_tmont.c.d
+|   |       |       |       |       i15_tmont.c.o
+|   |       |       |       |       i31_add.c.d
+|   |       |       |       |       i31_add.c.o
+|   |       |       |       |       i31_bitlen.c.d
+|   |       |       |       |       i31_bitlen.c.o
+|   |       |       |       |       i31_decmod.c.d
+|   |       |       |       |       i31_decmod.c.o
+|   |       |       |       |       i31_decode.c.d
+|   |       |       |       |       i31_decode.c.o
+|   |       |       |       |       i31_decred.c.d
+|   |       |       |       |       i31_decred.c.o
+|   |       |       |       |       i31_encode.c.d
+|   |       |       |       |       i31_encode.c.o
+|   |       |       |       |       i31_fmont.c.d
+|   |       |       |       |       i31_fmont.c.o
+|   |       |       |       |       i31_iszero.c.d
+|   |       |       |       |       i31_iszero.c.o
+|   |       |       |       |       i31_moddiv.c.d
+|   |       |       |       |       i31_moddiv.c.o
+|   |       |       |       |       i31_modpow.c.d
+|   |       |       |       |       i31_modpow.c.o
+|   |       |       |       |       i31_modpow2.c.d
+|   |       |       |       |       i31_modpow2.c.o
+|   |       |       |       |       i31_montmul.c.d
+|   |       |       |       |       i31_montmul.c.o
+|   |       |       |       |       i31_mulacc.c.d
+|   |       |       |       |       i31_mulacc.c.o
+|   |       |       |       |       i31_muladd.c.d
+|   |       |       |       |       i31_muladd.c.o
+|   |       |       |       |       i31_ninv31.c.d
+|   |       |       |       |       i31_ninv31.c.o
+|   |       |       |       |       i31_reduce.c.d
+|   |       |       |       |       i31_reduce.c.o
+|   |       |       |       |       i31_rshift.c.d
+|   |       |       |       |       i31_rshift.c.o
+|   |       |       |       |       i31_sub.c.d
+|   |       |       |       |       i31_sub.c.o
+|   |       |       |       |       i31_tmont.c.d
+|   |       |       |       |       i31_tmont.c.o
+|   |       |       |       |       i32_add.c.d
+|   |       |       |       |       i32_add.c.o
+|   |       |       |       |       i32_bitlen.c.d
+|   |       |       |       |       i32_bitlen.c.o
+|   |       |       |       |       i32_decmod.c.d
+|   |       |       |       |       i32_decmod.c.o
+|   |       |       |       |       i32_decode.c.d
+|   |       |       |       |       i32_decode.c.o
+|   |       |       |       |       i32_decred.c.d
+|   |       |       |       |       i32_decred.c.o
+|   |       |       |       |       i32_div32.c.d
+|   |       |       |       |       i32_div32.c.o
+|   |       |       |       |       i32_encode.c.d
+|   |       |       |       |       i32_encode.c.o
+|   |       |       |       |       i32_fmont.c.d
+|   |       |       |       |       i32_fmont.c.o
+|   |       |       |       |       i32_iszero.c.d
+|   |       |       |       |       i32_iszero.c.o
+|   |       |       |       |       i32_modpow.c.d
+|   |       |       |       |       i32_modpow.c.o
+|   |       |       |       |       i32_montmul.c.d
+|   |       |       |       |       i32_montmul.c.o
+|   |       |       |       |       i32_mulacc.c.d
+|   |       |       |       |       i32_mulacc.c.o
+|   |       |       |       |       i32_muladd.c.d
+|   |       |       |       |       i32_muladd.c.o
+|   |       |       |       |       i32_ninv32.c.d
+|   |       |       |       |       i32_ninv32.c.o
+|   |       |       |       |       i32_reduce.c.d
+|   |       |       |       |       i32_reduce.c.o
+|   |       |       |       |       i32_sub.c.d
+|   |       |       |       |       i32_sub.c.o
+|   |       |       |       |       i32_tmont.c.d
+|   |       |       |       |       i32_tmont.c.o
+|   |       |       |       |       i62_modpow2.c.d
+|   |       |       |       |       i62_modpow2.c.o
+|   |       |       |       |       md5.c.d
+|   |       |       |       |       md5.c.o
+|   |       |       |       |       md5sha1.c.d
+|   |       |       |       |       md5sha1.c.o
+|   |       |       |       |       mgf1.c.d
+|   |       |       |       |       mgf1.c.o
+|   |       |       |       |       multihash.c.d
+|   |       |       |       |       multihash.c.o
+|   |       |       |       |       pemdec.c.d
+|   |       |       |       |       pemdec.c.o
+|   |       |       |       |       pemenc.c.d
+|   |       |       |       |       pemenc.c.o
+|   |       |       |       |       pkey_decoder.c.d
+|   |       |       |       |       pkey_decoder.c.o
+|   |       |       |       |       poly1305_ctmul.c.d
+|   |       |       |       |       poly1305_ctmul.c.o
+|   |       |       |       |       poly1305_ctmul32.c.d
+|   |       |       |       |       poly1305_ctmul32.c.o
+|   |       |       |       |       poly1305_ctmulq.c.d
+|   |       |       |       |       poly1305_ctmulq.c.o
+|   |       |       |       |       poly1305_i15.c.d
+|   |       |       |       |       poly1305_i15.c.o
+|   |       |       |       |       prf.c.d
+|   |       |       |       |       prf.c.o
+|   |       |       |       |       prf_md5sha1.c.d
+|   |       |       |       |       prf_md5sha1.c.o
+|   |       |       |       |       prf_sha256.c.d
+|   |       |       |       |       prf_sha256.c.o
+|   |       |       |       |       prf_sha384.c.d
+|   |       |       |       |       prf_sha384.c.o
+|   |       |       |       |       rsa_default_keygen.c.d
+|   |       |       |       |       rsa_default_keygen.c.o
+|   |       |       |       |       rsa_default_modulus.c.d
+|   |       |       |       |       rsa_default_modulus.c.o
+|   |       |       |       |       rsa_default_oaep_decrypt.c.d
+|   |       |       |       |       rsa_default_oaep_decrypt.c.o
+|   |       |       |       |       rsa_default_oaep_encrypt.c.d
+|   |       |       |       |       rsa_default_oaep_encrypt.c.o
+|   |       |       |       |       rsa_default_pkcs1_sign.c.d
+|   |       |       |       |       rsa_default_pkcs1_sign.c.o
+|   |       |       |       |       rsa_default_pkcs1_vrfy.c.d
+|   |       |       |       |       rsa_default_pkcs1_vrfy.c.o
+|   |       |       |       |       rsa_default_priv.c.d
+|   |       |       |       |       rsa_default_priv.c.o
+|   |       |       |       |       rsa_default_privexp.c.d
+|   |       |       |       |       rsa_default_privexp.c.o
+|   |       |       |       |       rsa_default_pss_sign.c.d
+|   |       |       |       |       rsa_default_pss_sign.c.o
+|   |       |       |       |       rsa_default_pss_vrfy.c.d
+|   |       |       |       |       rsa_default_pss_vrfy.c.o
+|   |       |       |       |       rsa_default_pub.c.d
+|   |       |       |       |       rsa_default_pub.c.o
+|   |       |       |       |       rsa_default_pubexp.c.d
+|   |       |       |       |       rsa_default_pubexp.c.o
+|   |       |       |       |       rsa_i15_keygen.c.d
+|   |       |       |       |       rsa_i15_keygen.c.o
+|   |       |       |       |       rsa_i15_modulus.c.d
+|   |       |       |       |       rsa_i15_modulus.c.o
+|   |       |       |       |       rsa_i15_oaep_decrypt.c.d
+|   |       |       |       |       rsa_i15_oaep_decrypt.c.o
+|   |       |       |       |       rsa_i15_oaep_encrypt.c.d
+|   |       |       |       |       rsa_i15_oaep_encrypt.c.o
+|   |       |       |       |       rsa_i15_pkcs1_sign.c.d
+|   |       |       |       |       rsa_i15_pkcs1_sign.c.o
+|   |       |       |       |       rsa_i15_pkcs1_vrfy.c.d
+|   |       |       |       |       rsa_i15_pkcs1_vrfy.c.o
+|   |       |       |       |       rsa_i15_priv.c.d
+|   |       |       |       |       rsa_i15_priv.c.o
+|   |       |       |       |       rsa_i15_privexp.c.d
+|   |       |       |       |       rsa_i15_privexp.c.o
+|   |       |       |       |       rsa_i15_pss_sign.c.d
+|   |       |       |       |       rsa_i15_pss_sign.c.o
+|   |       |       |       |       rsa_i15_pss_vrfy.c.d
+|   |       |       |       |       rsa_i15_pss_vrfy.c.o
+|   |       |       |       |       rsa_i15_pub.c.d
+|   |       |       |       |       rsa_i15_pub.c.o
+|   |       |       |       |       rsa_i15_pubexp.c.d
+|   |       |       |       |       rsa_i15_pubexp.c.o
+|   |       |       |       |       rsa_i31_keygen.c.d
+|   |       |       |       |       rsa_i31_keygen.c.o
+|   |       |       |       |       rsa_i31_keygen_inner.c.d
+|   |       |       |       |       rsa_i31_keygen_inner.c.o
+|   |       |       |       |       rsa_i31_modulus.c.d
+|   |       |       |       |       rsa_i31_modulus.c.o
+|   |       |       |       |       rsa_i31_oaep_decrypt.c.d
+|   |       |       |       |       rsa_i31_oaep_decrypt.c.o
+|   |       |       |       |       rsa_i31_oaep_encrypt.c.d
+|   |       |       |       |       rsa_i31_oaep_encrypt.c.o
+|   |       |       |       |       rsa_i31_pkcs1_sign.c.d
+|   |       |       |       |       rsa_i31_pkcs1_sign.c.o
+|   |       |       |       |       rsa_i31_pkcs1_vrfy.c.d
+|   |       |       |       |       rsa_i31_pkcs1_vrfy.c.o
+|   |       |       |       |       rsa_i31_priv.c.d
+|   |       |       |       |       rsa_i31_priv.c.o
+|   |       |       |       |       rsa_i31_privexp.c.d
+|   |       |       |       |       rsa_i31_privexp.c.o
+|   |       |       |       |       rsa_i31_pss_sign.c.d
+|   |       |       |       |       rsa_i31_pss_sign.c.o
+|   |       |       |       |       rsa_i31_pss_vrfy.c.d
+|   |       |       |       |       rsa_i31_pss_vrfy.c.o
+|   |       |       |       |       rsa_i31_pub.c.d
+|   |       |       |       |       rsa_i31_pub.c.o
+|   |       |       |       |       rsa_i31_pubexp.c.d
+|   |       |       |       |       rsa_i31_pubexp.c.o
+|   |       |       |       |       rsa_i32_oaep_decrypt.c.d
+|   |       |       |       |       rsa_i32_oaep_decrypt.c.o
+|   |       |       |       |       rsa_i32_oaep_encrypt.c.d
+|   |       |       |       |       rsa_i32_oaep_encrypt.c.o
+|   |       |       |       |       rsa_i32_pkcs1_sign.c.d
+|   |       |       |       |       rsa_i32_pkcs1_sign.c.o
+|   |       |       |       |       rsa_i32_pkcs1_vrfy.c.d
+|   |       |       |       |       rsa_i32_pkcs1_vrfy.c.o
+|   |       |       |       |       rsa_i32_priv.c.d
+|   |       |       |       |       rsa_i32_priv.c.o
+|   |       |       |       |       rsa_i32_pss_sign.c.d
+|   |       |       |       |       rsa_i32_pss_sign.c.o
+|   |       |       |       |       rsa_i32_pss_vrfy.c.d
+|   |       |       |       |       rsa_i32_pss_vrfy.c.o
+|   |       |       |       |       rsa_i32_pub.c.d
+|   |       |       |       |       rsa_i32_pub.c.o
+|   |       |       |       |       rsa_i62_keygen.c.d
+|   |       |       |       |       rsa_i62_keygen.c.o
+|   |       |       |       |       rsa_i62_oaep_decrypt.c.d
+|   |       |       |       |       rsa_i62_oaep_decrypt.c.o
+|   |       |       |       |       rsa_i62_oaep_encrypt.c.d
+|   |       |       |       |       rsa_i62_oaep_encrypt.c.o
+|   |       |       |       |       rsa_i62_pkcs1_sign.c.d
+|   |       |       |       |       rsa_i62_pkcs1_sign.c.o
+|   |       |       |       |       rsa_i62_pkcs1_vrfy.c.d
+|   |       |       |       |       rsa_i62_pkcs1_vrfy.c.o
+|   |       |       |       |       rsa_i62_priv.c.d
+|   |       |       |       |       rsa_i62_priv.c.o
+|   |       |       |       |       rsa_i62_pss_sign.c.d
+|   |       |       |       |       rsa_i62_pss_sign.c.o
+|   |       |       |       |       rsa_i62_pss_vrfy.c.d
+|   |       |       |       |       rsa_i62_pss_vrfy.c.o
+|   |       |       |       |       rsa_i62_pub.c.d
+|   |       |       |       |       rsa_i62_pub.c.o
+|   |       |       |       |       rsa_oaep_pad.c.d
+|   |       |       |       |       rsa_oaep_pad.c.o
+|   |       |       |       |       rsa_oaep_unpad.c.d
+|   |       |       |       |       rsa_oaep_unpad.c.o
+|   |       |       |       |       rsa_pkcs1_sig_pad.c.d
+|   |       |       |       |       rsa_pkcs1_sig_pad.c.o
+|   |       |       |       |       rsa_pkcs1_sig_unpad.c.d
+|   |       |       |       |       rsa_pkcs1_sig_unpad.c.o
+|   |       |       |       |       rsa_pss_sig_pad.c.d
+|   |       |       |       |       rsa_pss_sig_pad.c.o
+|   |       |       |       |       rsa_pss_sig_unpad.c.d
+|   |       |       |       |       rsa_pss_sig_unpad.c.o
+|   |       |       |       |       rsa_ssl_decrypt.c.d
+|   |       |       |       |       rsa_ssl_decrypt.c.o
+|   |       |       |       |       settings.c.d
+|   |       |       |       |       settings.c.o
+|   |       |       |       |       sha1.c.d
+|   |       |       |       |       sha1.c.o
+|   |       |       |       |       sha2big.c.d
+|   |       |       |       |       sha2big.c.o
+|   |       |       |       |       sha2small.c.d
+|   |       |       |       |       sha2small.c.o
+|   |       |       |       |       shake.c.d
+|   |       |       |       |       shake.c.o
+|   |       |       |       |       skey_decoder.c.d
+|   |       |       |       |       skey_decoder.c.o
+|   |       |       |       |       ssl_ccert_single_ec.c.d
+|   |       |       |       |       ssl_ccert_single_ec.c.o
+|   |       |       |       |       ssl_ccert_single_rsa.c.d
+|   |       |       |       |       ssl_ccert_single_rsa.c.o
+|   |       |       |       |       ssl_client.c.d
+|   |       |       |       |       ssl_client.c.o
+|   |       |       |       |       ssl_client_default_rsapub.c.d
+|   |       |       |       |       ssl_client_default_rsapub.c.o
+|   |       |       |       |       ssl_client_full.c.d
+|   |       |       |       |       ssl_client_full.c.o
+|   |       |       |       |       ssl_engine.c.d
+|   |       |       |       |       ssl_engine.c.o
+|   |       |       |       |       ssl_engine_default_aescbc.c.d
+|   |       |       |       |       ssl_engine_default_aescbc.c.o
+|   |       |       |       |       ssl_engine_default_aesccm.c.d
+|   |       |       |       |       ssl_engine_default_aesccm.c.o
+|   |       |       |       |       ssl_engine_default_aesgcm.c.d
+|   |       |       |       |       ssl_engine_default_aesgcm.c.o
+|   |       |       |       |       ssl_engine_default_chapol.c.d
+|   |       |       |       |       ssl_engine_default_chapol.c.o
+|   |       |       |       |       ssl_engine_default_descbc.c.d
+|   |       |       |       |       ssl_engine_default_descbc.c.o
+|   |       |       |       |       ssl_engine_default_ec.c.d
+|   |       |       |       |       ssl_engine_default_ec.c.o
+|   |       |       |       |       ssl_engine_default_ecdsa.c.d
+|   |       |       |       |       ssl_engine_default_ecdsa.c.o
+|   |       |       |       |       ssl_engine_default_rsavrfy.c.d
+|   |       |       |       |       ssl_engine_default_rsavrfy.c.o
+|   |       |       |       |       ssl_hashes.c.d
+|   |       |       |       |       ssl_hashes.c.o
+|   |       |       |       |       ssl_hs_client.c.d
+|   |       |       |       |       ssl_hs_client.c.o
+|   |       |       |       |       ssl_hs_server.c.d
+|   |       |       |       |       ssl_hs_server.c.o
+|   |       |       |       |       ssl_io.c.d
+|   |       |       |       |       ssl_io.c.o
+|   |       |       |       |       ssl_keyexport.c.d
+|   |       |       |       |       ssl_keyexport.c.o
+|   |       |       |       |       ssl_lru.c.d
+|   |       |       |       |       ssl_lru.c.o
+|   |       |       |       |       ssl_rec_cbc.c.d
+|   |       |       |       |       ssl_rec_cbc.c.o
+|   |       |       |       |       ssl_rec_ccm.c.d
+|   |       |       |       |       ssl_rec_ccm.c.o
+|   |       |       |       |       ssl_rec_chapol.c.d
+|   |       |       |       |       ssl_rec_chapol.c.o
+|   |       |       |       |       ssl_rec_gcm.c.d
+|   |       |       |       |       ssl_rec_gcm.c.o
+|   |       |       |       |       ssl_scert_single_ec.c.d
+|   |       |       |       |       ssl_scert_single_ec.c.o
+|   |       |       |       |       ssl_scert_single_rsa.c.d
+|   |       |       |       |       ssl_scert_single_rsa.c.o
+|   |       |       |       |       ssl_server.c.d
+|   |       |       |       |       ssl_server.c.o
+|   |       |       |       |       ssl_server_full_ec.c.d
+|   |       |       |       |       ssl_server_full_ec.c.o
+|   |       |       |       |       ssl_server_full_rsa.c.d
+|   |       |       |       |       ssl_server_full_rsa.c.o
+|   |       |       |       |       ssl_server_mine2c.c.d
+|   |       |       |       |       ssl_server_mine2c.c.o
+|   |       |       |       |       ssl_server_mine2g.c.d
+|   |       |       |       |       ssl_server_mine2g.c.o
+|   |       |       |       |       ssl_server_minf2c.c.d
+|   |       |       |       |       ssl_server_minf2c.c.o
+|   |       |       |       |       ssl_server_minf2g.c.d
+|   |       |       |       |       ssl_server_minf2g.c.o
+|   |       |       |       |       ssl_server_minr2g.c.d
+|   |       |       |       |       ssl_server_minr2g.c.o
+|   |       |       |       |       ssl_server_minu2g.c.d
+|   |       |       |       |       ssl_server_minu2g.c.o
+|   |       |       |       |       ssl_server_minv2g.c.d
+|   |       |       |       |       ssl_server_minv2g.c.o
+|   |       |       |       |       sysrng.c.d
+|   |       |       |       |       sysrng.c.o
+|   |       |       |       |       x509_decoder.c.d
+|   |       |       |       |       x509_decoder.c.o
+|   |       |       |       |       x509_knownkey.c.d
+|   |       |       |       |       x509_knownkey.c.o
+|   |       |       |       |       x509_minimal.c.d
+|   |       |       |       |       x509_minimal.c.o
+|   |       |       |       |       x509_minimal_full.c.d
+|   |       |       |       |       x509_minimal_full.c.o
+|   |       |       |       |       
+|   |       |       |       \---client
+|   |       |       |               BSSL_CertStore.cpp.d
+|   |       |       |               BSSL_CertStore.cpp.o
+|   |       |       |               BSSL_Helper.cpp.d
+|   |       |       |               BSSL_Helper.cpp.o
+|   |       |       |               BSSL_SSL_Client.cpp.d
+|   |       |       |               BSSL_SSL_Client.cpp.o
+|   |       |       |               BSSL_TCP_Client.cpp.d
+|   |       |       |               BSSL_TCP_Client.cpp.o
+|   |       |       |               stm32_time_fix.c.d
+|   |       |       |               stm32_time_fix.c.o
+|   |       |       |               
+|   |       |       +---core
+|   |       |       |       FirebaseCore.cpp.d
+|   |       |       |       FirebaseCore.cpp.o
+|   |       |       |       
+|   |       |       +---json
+|   |       |       |   |   FirebaseJson.cpp.d
+|   |       |       |   |   FirebaseJson.cpp.o
+|   |       |       |   |   
+|   |       |       |   +---extras
+|   |       |       |   |   \---print
+|   |       |       |   |           fb_json_print.c.d
+|   |       |       |   |           fb_json_print.c.o
+|   |       |       |   |           
+|   |       |       |   \---MB_JSON
+|   |       |       |           MB_JSON.c.d
+|   |       |       |           MB_JSON.c.o
+|   |       |       |           
+|   |       |       +---message
+|   |       |       |       FCM.cpp.d
+|   |       |       |       FCM.cpp.o
+|   |       |       |       
+|   |       |       +---rtdb
+|   |       |       |   |   FB_RTDB.cpp.d
+|   |       |       |   |   FB_RTDB.cpp.o
+|   |       |       |   |   QueryFilter.cpp.d
+|   |       |       |   |   QueryFilter.cpp.o
+|   |       |       |   |   QueueInfo.cpp.d
+|   |       |       |   |   QueueInfo.cpp.o
+|   |       |       |   |   QueueManager.cpp.d
+|   |       |       |   |   QueueManager.cpp.o
+|   |       |       |   |   
+|   |       |       |   \---stream
+|   |       |       |           FB_MP_Stream.cpp.d
+|   |       |       |           FB_MP_Stream.cpp.o
+|   |       |       |           FB_Stream.cpp.d
+|   |       |       |           FB_Stream.cpp.o
+|   |       |       |           
+|   |       |       \---session
+|   |       |               FB_Session.cpp.d
+|   |       |               FB_Session.cpp.o
+|   |       |               
+|   |       +---libe04
+|   |       |   |   libESPAsyncWebServer.a
+|   |       |   |   
+|   |       |   \---ESPAsyncWebServer
+|   |       |           AsyncEventSource.cpp.d
+|   |       |           AsyncEventSource.cpp.o
+|   |       |           AsyncJson.cpp.d
+|   |       |           AsyncJson.cpp.o
+|   |       |           AsyncWebHeader.cpp.d
+|   |       |           AsyncWebHeader.cpp.o
+|   |       |           AsyncWebServerRequest.cpp.d
+|   |       |           AsyncWebServerRequest.cpp.o
+|   |       |           AsyncWebSocket.cpp.d
+|   |       |           AsyncWebSocket.cpp.o
+|   |       |           BackPort_SHA1Builder.cpp.d
+|   |       |           BackPort_SHA1Builder.cpp.o
+|   |       |           ChunkPrint.cpp.d
+|   |       |           ChunkPrint.cpp.o
+|   |       |           Middleware.cpp.d
+|   |       |           Middleware.cpp.o
+|   |       |           WebAuthentication.cpp.d
+|   |       |           WebAuthentication.cpp.o
+|   |       |           WebHandlers.cpp.d
+|   |       |           WebHandlers.cpp.o
+|   |       |           WebRequest.cpp.d
+|   |       |           WebRequest.cpp.o
+|   |       |           WebResponses.cpp.d
+|   |       |           WebResponses.cpp.o
+|   |       |           WebServer.cpp.d
+|   |       |           WebServer.cpp.o
+|   |       |           
+|   |       +---libe46
+|   |       |   |   libWiFi.a
+|   |       |   |   
+|   |       |   \---WiFi
+|   |       |           WiFi.cpp.d
+|   |       |           WiFi.cpp.o
+|   |       |           WiFiAP.cpp.d
+|   |       |           WiFiAP.cpp.o
+|   |       |           WiFiClient.cpp.d
+|   |       |           WiFiClient.cpp.o
+|   |       |           WiFiGeneric.cpp.d
+|   |       |           WiFiGeneric.cpp.o
+|   |       |           WiFiMulti.cpp.d
+|   |       |           WiFiMulti.cpp.o
+|   |       |           WiFiScan.cpp.d
+|   |       |           WiFiScan.cpp.o
+|   |       |           WiFiServer.cpp.d
+|   |       |           WiFiServer.cpp.o
+|   |       |           WiFiSTA.cpp.d
+|   |       |           WiFiSTA.cpp.o
+|   |       |           WiFiUdp.cpp.d
+|   |       |           WiFiUdp.cpp.o
+|   |       |           
+|   |       +---libe63
+|   |       |   |   libWebSerial.a
+|   |       |   |   
+|   |       |   \---WebSerial
+|   |       |           WebSerial.cpp.d
+|   |       |           WebSerial.cpp.o
+|   |       |           wslp.cpp.d
+|   |       |           wslp.cpp.o
+|   |       |           
+|   |       +---libff2
+|   |       |   |   libDemandLearning.a
+|   |       |   |   
+|   |       |   \---DemandLearning
+|   |       |           DemandLearning.cpp.d
+|   |       |           DemandLearning.cpp.o
+|   |       |           
+|   |       \---src
+|   |               main.cpp.d
+|   |               main.cpp.o
+|   |               
+|   \---libdeps
+|       \---vintlabs-devkit-v1
+|           |   integrity.dat
+|           |   
+|           +---ArduinoJson
+|           |   |   .piopm
+|           |   |   ArduinoJson.h
+|           |   |   library.json
+|           |   |   library.properties
+|           |   |   LICENSE.txt
+|           |   |   README.md
+|           |   |   
+|           |   +---examples
+|           |   |   +---JsonConfigFile
+|           |   |   |       JsonConfigFile.ino
+|           |   |   |       
+|           |   |   +---JsonFilterExample
+|           |   |   |       JsonFilterExample.ino
+|           |   |   |       
+|           |   |   +---JsonGeneratorExample
+|           |   |   |       JsonGeneratorExample.ino
+|           |   |   |       
+|           |   |   +---JsonHttpClient
+|           |   |   |       JsonHttpClient.ino
+|           |   |   |       
+|           |   |   +---JsonParserExample
+|           |   |   |       JsonParserExample.ino
+|           |   |   |       
+|           |   |   +---JsonServer
+|           |   |   |       JsonServer.ino
+|           |   |   |       
+|           |   |   +---JsonUdpBeacon
+|           |   |   |       JsonUdpBeacon.ino
+|           |   |   |       
+|           |   |   +---MsgPackParser
+|           |   |   |       MsgPackParser.ino
+|           |   |   |       
+|           |   |   +---ProgmemExample
+|           |   |   |       ProgmemExample.ino
+|           |   |   |       
+|           |   |   \---StringExample
+|           |   |           StringExample.ino
+|           |   |           
+|           |   \---src
+|           |       |   ArduinoJson.h
+|           |       |   ArduinoJson.hpp
+|           |       |   CMakeLists.txt
+|           |       |   
+|           |       \---ArduinoJson
+|           |           |   compatibility.hpp
+|           |           |   Configuration.hpp
+|           |           |   Namespace.hpp
+|           |           |   version.hpp
+|           |           |   
+|           |           +---Array
+|           |           |       ArrayData.hpp
+|           |           |       ArrayImpl.hpp
+|           |           |       ElementProxy.hpp
+|           |           |       JsonArray.hpp
+|           |           |       JsonArrayConst.hpp
+|           |           |       JsonArrayIterator.hpp
+|           |           |       Utilities.hpp
+|           |           |       
+|           |           +---Collection
+|           |           |       CollectionData.hpp
+|           |           |       CollectionImpl.hpp
+|           |           |       
+|           |           +---Deserialization
+|           |           |   |   DeserializationError.hpp
+|           |           |   |   DeserializationOptions.hpp
+|           |           |   |   deserialize.hpp
+|           |           |   |   Filter.hpp
+|           |           |   |   NestingLimit.hpp
+|           |           |   |   Reader.hpp
+|           |           |   |   
+|           |           |   \---Readers
+|           |           |           ArduinoStreamReader.hpp
+|           |           |           ArduinoStringReader.hpp
+|           |           |           FlashReader.hpp
+|           |           |           IteratorReader.hpp
+|           |           |           RamReader.hpp
+|           |           |           StdStreamReader.hpp
+|           |           |           VariantReader.hpp
+|           |           |           
+|           |           +---Document
+|           |           |       JsonDocument.hpp
+|           |           |       
+|           |           +---Json
+|           |           |       EscapeSequence.hpp
+|           |           |       JsonDeserializer.hpp
+|           |           |       JsonSerializer.hpp
+|           |           |       Latch.hpp
+|           |           |       PrettyJsonSerializer.hpp
+|           |           |       TextFormatter.hpp
+|           |           |       Utf16.hpp
+|           |           |       Utf8.hpp
+|           |           |       
+|           |           +---Memory
+|           |           |       Alignment.hpp
+|           |           |       Allocator.hpp
+|           |           |       MemoryPool.hpp
+|           |           |       MemoryPoolList.hpp
+|           |           |       ResourceManager.hpp
+|           |           |       ResourceManagerImpl.hpp
+|           |           |       StringBuffer.hpp
+|           |           |       StringBuilder.hpp
+|           |           |       StringNode.hpp
+|           |           |       StringPool.hpp
+|           |           |       
+|           |           +---Misc
+|           |           |       SerializedValue.hpp
+|           |           |       
+|           |           +---MsgPack
+|           |           |       endianness.hpp
+|           |           |       ieee754.hpp
+|           |           |       MsgPackBinary.hpp
+|           |           |       MsgPackDeserializer.hpp
+|           |           |       MsgPackExtension.hpp
+|           |           |       MsgPackSerializer.hpp
+|           |           |       
+|           |           +---Numbers
+|           |           |       arithmeticCompare.hpp
+|           |           |       convertNumber.hpp
+|           |           |       FloatParts.hpp
+|           |           |       FloatTraits.hpp
+|           |           |       JsonFloat.hpp
+|           |           |       JsonInteger.hpp
+|           |           |       parseNumber.hpp
+|           |           |       
+|           |           +---Object
+|           |           |       JsonObject.hpp
+|           |           |       JsonObjectConst.hpp
+|           |           |       JsonObjectIterator.hpp
+|           |           |       JsonPair.hpp
+|           |           |       MemberProxy.hpp
+|           |           |       ObjectData.hpp
+|           |           |       ObjectImpl.hpp
+|           |           |       
+|           |           +---Polyfills
+|           |           |   |   alias_cast.hpp
+|           |           |   |   assert.hpp
+|           |           |   |   attributes.hpp
+|           |           |   |   ctype.hpp
+|           |           |   |   integer.hpp
+|           |           |   |   limits.hpp
+|           |           |   |   math.hpp
+|           |           |   |   pgmspace.hpp
+|           |           |   |   pgmspace_generic.hpp
+|           |           |   |   preprocessor.hpp
+|           |           |   |   type_traits.hpp
+|           |           |   |   utility.hpp
+|           |           |   |   
+|           |           |   +---mpl
+|           |           |   |       max.hpp
+|           |           |   |       
+|           |           |   \---type_traits
+|           |           |           conditional.hpp
+|           |           |           decay.hpp
+|           |           |           declval.hpp
+|           |           |           enable_if.hpp
+|           |           |           function_traits.hpp
+|           |           |           integral_constant.hpp
+|           |           |           is_array.hpp
+|           |           |           is_base_of.hpp
+|           |           |           is_class.hpp
+|           |           |           is_const.hpp
+|           |           |           is_convertible.hpp
+|           |           |           is_enum.hpp
+|           |           |           is_floating_point.hpp
+|           |           |           is_integral.hpp
+|           |           |           is_pointer.hpp
+|           |           |           is_same.hpp
+|           |           |           is_signed.hpp
+|           |           |           is_unsigned.hpp
+|           |           |           make_unsigned.hpp
+|           |           |           remove_const.hpp
+|           |           |           remove_cv.hpp
+|           |           |           remove_reference.hpp
+|           |           |           type_identity.hpp
+|           |           |           void_t.hpp
+|           |           |           
+|           |           +---Serialization
+|           |           |   |   CountingDecorator.hpp
+|           |           |   |   measure.hpp
+|           |           |   |   serialize.hpp
+|           |           |   |   Writer.hpp
+|           |           |   |   
+|           |           |   \---Writers
+|           |           |           ArduinoStringWriter.hpp
+|           |           |           DummyWriter.hpp
+|           |           |           PrintWriter.hpp
+|           |           |           StaticStringWriter.hpp
+|           |           |           StdStreamWriter.hpp
+|           |           |           StdStringWriter.hpp
+|           |           |           
+|           |           +---Strings
+|           |           |   |   IsString.hpp
+|           |           |   |   JsonString.hpp
+|           |           |   |   StringAdapter.hpp
+|           |           |   |   StringAdapters.hpp
+|           |           |   |   StringTraits.hpp
+|           |           |   |   
+|           |           |   \---Adapters
+|           |           |           FlashString.hpp
+|           |           |           RamString.hpp
+|           |           |           StringObject.hpp
+|           |           |           
+|           |           \---Variant
+|           |                   Converter.hpp
+|           |                   ConverterImpl.hpp
+|           |                   JsonVariant.hpp
+|           |                   JsonVariantConst.hpp
+|           |                   JsonVariantCopier.hpp
+|           |                   JsonVariantVisitor.hpp
+|           |                   VariantAttorney.hpp
+|           |                   VariantCompare.hpp
+|           |                   VariantContent.hpp
+|           |                   VariantData.hpp
+|           |                   VariantDataVisitor.hpp
+|           |                   VariantImpl.hpp
+|           |                   VariantOperators.hpp
+|           |                   VariantRefBase.hpp
+|           |                   VariantRefBaseImpl.hpp
+|           |                   VariantTag.hpp
+|           |                   VariantTo.hpp
+|           |                   
+|           +---AsyncTCP
+|           |   |   .piopm
+|           |   |   library.json
+|           |   |   library.properties
+|           |   |   LICENSE
+|           |   |   README.md
+|           |   |   
+|           |   +---examples
+|           |   |   +---AsyncSend
+|           |   |   |       AsyncSend.ino
+|           |   |   |       
+|           |   |   +---ChargenServer
+|           |   |   |       ChargenServer.ino
+|           |   |   |       
+|           |   |   +---Client
+|           |   |   |       Client.ino
+|           |   |   |       
+|           |   |   \---FetchWebsite
+|           |   |           FetchWebsite.ino
+|           |   |           
+|           |   \---src
+|           |           AsyncTCP.cpp
+|           |           AsyncTCP.h
+|           |           AsyncTCPLogging.h
+|           |           AsyncTCPSimpleIntrusiveList.h
+|           |           AsyncTCPVersion.h
+|           |           
+|           +---ESPAsyncWebServer
+|           |   |   .piopm
+|           |   |   library.json
+|           |   |   library.properties
+|           |   |   LICENSE
+|           |   |   README.md
+|           |   |   
+|           |   +---examples
+|           |   |   +---arduino
+|           |   |   |   +---AsyncResponseStream
+|           |   |   |   |       AsyncResponseStream.ino
+|           |   |   |   |       
+|           |   |   |   +---AsyncTunnel
+|           |   |   |   |       AsyncTunnel.ino
+|           |   |   |   |       
+|           |   |   |   +---Auth
+|           |   |   |   |       Auth.ino
+|           |   |   |   |       
+|           |   |   |   +---CaptivePortal
+|           |   |   |   |       CaptivePortal.ino
+|           |   |   |   |       
+|           |   |   |   +---CatchAllHandler
+|           |   |   |   |       CatchAllHandler.ino
+|           |   |   |   |       
+|           |   |   |   +---ChunkRequest
+|           |   |   |   |       ChunkRequest.ino
+|           |   |   |   |       
+|           |   |   |   +---ChunkResponse
+|           |   |   |   |       ChunkResponse.ino
+|           |   |   |   |       
+|           |   |   |   +---ChunkRetryResponse
+|           |   |   |   |       ChunkRetryResponse.ino
+|           |   |   |   |       
+|           |   |   |   +---CORS
+|           |   |   |   |       CORS.ino
+|           |   |   |   |       
+|           |   |   |   +---EndBegin
+|           |   |   |   |       EndBegin.ino
+|           |   |   |   |       
+|           |   |   |   +---Filters
+|           |   |   |   |       Filters.ino
+|           |   |   |   |       
+|           |   |   |   +---FlashResponse
+|           |   |   |   |       FlashResponse.ino
+|           |   |   |   |       
+|           |   |   |   +---HeaderManipulation
+|           |   |   |   |       HeaderManipulation.ino
+|           |   |   |   |       
+|           |   |   |   +---Headers
+|           |   |   |   |       Headers.ino
+|           |   |   |   |       
+|           |   |   |   +---HTTPMethodsWithArduino
+|           |   |   |   |       HTTPMethodsWithArduino.ino
+|           |   |   |   |       
+|           |   |   |   +---HTTPMethodsWithESPIDF
+|           |   |   |   |       HTTPMethodsWithESPIDF.ino
+|           |   |   |   |       
+|           |   |   |   +---Json
+|           |   |   |   |       Json.ino
+|           |   |   |   |       
+|           |   |   |   +---LargeResponse
+|           |   |   |   |       LargeResponse.ino
+|           |   |   |   |       
+|           |   |   |   +---Logging
+|           |   |   |   |       Logging.ino
+|           |   |   |   |       
+|           |   |   |   +---MessagePack
+|           |   |   |   |       MessagePack.ino
+|           |   |   |   |       
+|           |   |   |   +---Middleware
+|           |   |   |   |       Middleware.ino
+|           |   |   |   |       
+|           |   |   |   +---Params
+|           |   |   |   |       Params.ino
+|           |   |   |   |       
+|           |   |   |   +---PartitionDownloader
+|           |   |   |   |       PartitionDownloader.ino
+|           |   |   |   |       
+|           |   |   |   +---PerfTests
+|           |   |   |   |       PerfTests.ino
+|           |   |   |   |       
+|           |   |   |   +---RateLimit
+|           |   |   |   |       RateLimit.ino
+|           |   |   |   |       
+|           |   |   |   +---Redirect
+|           |   |   |   |       Redirect.ino
+|           |   |   |   |       
+|           |   |   |   +---RequestContinuation
+|           |   |   |   |       RequestContinuation.ino
+|           |   |   |   |       
+|           |   |   |   +---RequestContinuationComplete
+|           |   |   |   |       RequestContinuationComplete.ino
+|           |   |   |   |       
+|           |   |   |   +---ResumableDownload
+|           |   |   |   |       ResumableDownload.ino
+|           |   |   |   |       
+|           |   |   |   +---Rewrite
+|           |   |   |   |       Rewrite.ino
+|           |   |   |   |       
+|           |   |   |   +---ServerSentEvents
+|           |   |   |   |       ServerSentEvents.ino
+|           |   |   |   |       
+|           |   |   |   +---ServerSentEvents_PR156
+|           |   |   |   |       ServerSentEvents_PR156.ino
+|           |   |   |   |       
+|           |   |   |   +---ServerState
+|           |   |   |   |       ServerState.ino
+|           |   |   |   |       
+|           |   |   |   +---SkipServerMiddleware
+|           |   |   |   |       SkipServerMiddleware.ino
+|           |   |   |   |       
+|           |   |   |   +---SlowChunkResponse
+|           |   |   |   |       SlowChunkResponse.ino
+|           |   |   |   |       
+|           |   |   |   +---StaticFile
+|           |   |   |   |       StaticFile.ino
+|           |   |   |   |       
+|           |   |   |   +---Templates
+|           |   |   |   |       Templates.ino
+|           |   |   |   |       
+|           |   |   |   +---Upload
+|           |   |   |   |       Upload.ino
+|           |   |   |   |       
+|           |   |   |   +---UploadFlash
+|           |   |   |   |       UploadFlash.ino
+|           |   |   |   |       
+|           |   |   |   +---URIMatcher
+|           |   |   |   |       README.md
+|           |   |   |   |       URIMatcher.ino
+|           |   |   |   |       
+|           |   |   |   +---URIMatcherTest
+|           |   |   |   |       test_routes.sh
+|           |   |   |   |       URIMatcherTest.ino
+|           |   |   |   |       
+|           |   |   |   +---WebDAVMethods
+|           |   |   |   |       WebDAVMethods.ino
+|           |   |   |   |       
+|           |   |   |   +---WebSocket
+|           |   |   |   |       WebSocket.ino
+|           |   |   |   |       
+|           |   |   |   \---WebSocketEasy
+|           |   |   |           WebSocketEasy.ino
+|           |   |   |           
+|           |   |   +---arduino_emulator
+|           |   |   |       CMakeLists.txt
+|           |   |   |       main.cpp
+|           |   |   |       
+|           |   |   +---idf_component
+|           |   |   |   +---catchall
+|           |   |   |   |   |   CMakeLists.txt
+|           |   |   |   |   |   README.md
+|           |   |   |   |   |   sdkconfig.defaults
+|           |   |   |   |   |   
+|           |   |   |   |   \---main
+|           |   |   |   |           CMakeLists.txt
+|           |   |   |   |           idf_component.yml
+|           |   |   |   |           main.cpp
+|           |   |   |   |           
+|           |   |   |   +---serversentevents
+|           |   |   |   |   |   CMakeLists.txt
+|           |   |   |   |   |   README.md
+|           |   |   |   |   |   sdkconfig.defaults
+|           |   |   |   |   |   
+|           |   |   |   |   \---main
+|           |   |   |   |           CMakeLists.txt
+|           |   |   |   |           idf_component.yml
+|           |   |   |   |           main.cpp
+|           |   |   |   |           
+|           |   |   |   \---websocket
+|           |   |   |       |   CMakeLists.txt
+|           |   |   |       |   README.md
+|           |   |   |       |   sdkconfig.defaults
+|           |   |   |       |   
+|           |   |   |       \---main
+|           |   |   |               CMakeLists.txt
+|           |   |   |               idf_component.yml
+|           |   |   |               main.cpp
+|           |   |   |               
+|           |   |   \---pioarduino
+|           |   |       \---IncreaseMaxSockets
+|           |   |           |   .gitignore
+|           |   |           |   platformio.ini
+|           |   |           |   
+|           |   |           \---src
+|           |   |                   main.cpp
+|           |   |                   
+|           |   \---src
+|           |           AsyncEventSource.cpp
+|           |           AsyncEventSource.h
+|           |           AsyncJson.cpp
+|           |           AsyncJson.h
+|           |           AsyncMessagePack.h
+|           |           AsyncWebHeader.cpp
+|           |           AsyncWebServerLogging.h
+|           |           AsyncWebServerRequest.cpp
+|           |           AsyncWebServerVersion.h
+|           |           AsyncWebSocket.cpp
+|           |           AsyncWebSocket.h
+|           |           BackPort_SHA1Builder.cpp
+|           |           BackPort_SHA1Builder.h
+|           |           ChunkPrint.cpp
+|           |           ChunkPrint.h
+|           |           ESPAsyncWebServer.h
+|           |           literals.h
+|           |           Middleware.cpp
+|           |           WebAuthentication.cpp
+|           |           WebAuthentication.h
+|           |           WebHandlerImpl.h
+|           |           WebHandlers.cpp
+|           |           WebRequest.cpp
+|           |           WebResponseImpl.h
+|           |           WebResponses.cpp
+|           |           WebServer.cpp
+|           |           
+|           +---Firebase ESP32 Client
+|           |   |   .piopm
+|           |   |   keywords.txt
+|           |   |   library.json
+|           |   |   library.properties
+|           |   |   LICENSE
+|           |   |   README.md
+|           |   |   
+|           |   +---examples
+|           |   |   +---Authentications
+|           |   |   |   +---LegacyTokenAuthen
+|           |   |   |   |       LegacyTokenAuthen.ino
+|           |   |   |   |       
+|           |   |   |   +---ReAuthenticate
+|           |   |   |   |       ReAuthenticate.ino
+|           |   |   |   |       
+|           |   |   |   +---SignInAsAdmin
+|           |   |   |   |   \---AccessTokenFile
+|           |   |   |   |       |   AccessTokenFile.ino
+|           |   |   |   |       |   
+|           |   |   |   |       \---data
+|           |   |   |   |               gsr2.pem
+|           |   |   |   |               gtsr1.der
+|           |   |   |   |               gtsr1.pem
+|           |   |   |   |               
+|           |   |   |   +---SignInAsGuest
+|           |   |   |   |   \---AnonymousSignin
+|           |   |   |   |           AnonymousSignin.ino
+|           |   |   |   |           
+|           |   |   |   +---SignInAsUser
+|           |   |   |   |   +---CustomToken
+|           |   |   |   |   |       CustomToken.ino
+|           |   |   |   |   |       
+|           |   |   |   |   +---CustomTokenFile
+|           |   |   |   |   |       CustomTokenFile.ino
+|           |   |   |   |   |       
+|           |   |   |   |   \---EmailPassword
+|           |   |   |   |           EmailPassword.ino
+|           |   |   |   |           
+|           |   |   |   +---SignInWithAccessToken
+|           |   |   |   |       SignInWithAccessToken.ino
+|           |   |   |   |       
+|           |   |   |   +---SignInWithCustomToken
+|           |   |   |   |       SignInWithCustomToken.ino
+|           |   |   |   |       
+|           |   |   |   +---SignInWithIDToken
+|           |   |   |   |       SignInWithIDToken.ino
+|           |   |   |   |       
+|           |   |   |   +---SignInWithRefreshAccessToken
+|           |   |   |   |       SignInWithRefreshAccessToken.ino
+|           |   |   |   |       
+|           |   |   |   +---SignInWithRefreshIDToken
+|           |   |   |   |       SignInWithRefreshIDToken.ino
+|           |   |   |   |       
+|           |   |   |   +---TestMode
+|           |   |   |   |       TestMode.ino
+|           |   |   |   |       
+|           |   |   |   \---UserManagement
+|           |   |   |       +---ResetPassword
+|           |   |   |       |       ResetPassword.ino
+|           |   |   |       |       
+|           |   |   |       +---SendVerification
+|           |   |   |       |       SendVerification.ino
+|           |   |   |       |       
+|           |   |   |       \---Signup
+|           |   |   |               Signup.ino
+|           |   |   |               
+|           |   |   +---BackupRestore
+|           |   |   |   +---Flash
+|           |   |   |   |       Flash.ino
+|           |   |   |   |       
+|           |   |   |   \---SD
+|           |   |   |           SD.ino
+|           |   |   |           
+|           |   |   +---Basic
+|           |   |   |       Basic.ino
+|           |   |   |       
+|           |   |   +---BasicCert
+|           |   |   |   |   BasicCert.ino
+|           |   |   |   |   
+|           |   |   |   \---data
+|           |   |   |           gtsr1.der
+|           |   |   |           gtsr1.pem
+|           |   |   |           
+|           |   |   +---BasicEthernet
+|           |   |   |       BasicEthernet.ino
+|           |   |   |       
+|           |   |   +---Blob
+|           |   |   |       Blob.ino
+|           |   |   |       
+|           |   |   +---Blynk
+|           |   |   |       Blynk.ino
+|           |   |   |       
+|           |   |   +---DatabaseRules
+|           |   |   |       DatabaseRules.ino
+|           |   |   |       
+|           |   |   +---DataChangesListener
+|           |   |   |   +---Callback
+|           |   |   |   |       Callback.ino
+|           |   |   |   |       
+|           |   |   |   +---MultiPath
+|           |   |   |   |       MultiPath.ino
+|           |   |   |   |       
+|           |   |   |   +---NoCallback
+|           |   |   |   |       NoCallback.ino
+|           |   |   |   |       
+|           |   |   |   \---SingleDataObject
+|           |   |   |           SingleDataObject.ino
+|           |   |   |           
+|           |   |   +---DataFilter
+|           |   |   |       DataFilter.ino
+|           |   |   |       
+|           |   |   +---DataRetaining
+|           |   |   |       DataRetaining.ino
+|           |   |   |       
+|           |   |   +---DownloadFileOTA
+|           |   |   |       DownloadFileOTA.ino
+|           |   |   |       
+|           |   |   +---ETag
+|           |   |   |       ETag.ino
+|           |   |   |       
+|           |   |   +---ExternalClient
+|           |   |   |   +---Ethernet
+|           |   |   |   |   +---Basic
+|           |   |   |   |   |       Basic.ino
+|           |   |   |   |   |       
+|           |   |   |   |   \---StreamCallback
+|           |   |   |   |           StreamCallback.ino
+|           |   |   |   |           
+|           |   |   |   +---Generic
+|           |   |   |   |   +---Basic
+|           |   |   |   |   |       Basic.ino
+|           |   |   |   |   |       
+|           |   |   |   |   \---StreamCallback
+|           |   |   |   |           StreamCallback.ino
+|           |   |   |   |           
+|           |   |   |   \---GSM
+|           |   |   |       +---Basic
+|           |   |   |       |       Basic.ino
+|           |   |   |       |       
+|           |   |   |       \---StreamCallback
+|           |   |   |               StreamCallback.ino
+|           |   |   |               
+|           |   |   +---File
+|           |   |   |   +---Flash
+|           |   |   |   |       Flash.ino
+|           |   |   |   |       
+|           |   |   |   \---SD
+|           |   |   |           SD.ino
+|           |   |   |           
+|           |   |   +---FirebaseJson
+|           |   |   |   +---BasicUsage
+|           |   |   |   |   \---Create_Edit_Parse
+|           |   |   |   |           Create_Edit_Parse.ino
+|           |   |   |   |           
+|           |   |   |   +---Client
+|           |   |   |   |   +---ArduinoMQTT
+|           |   |   |   |   |       ArduinoMQTT.ino
+|           |   |   |   |   |       
+|           |   |   |   |   +---Firebase
+|           |   |   |   |   |       Firebase.ino
+|           |   |   |   |   |       
+|           |   |   |   |   +---WiFiClient
+|           |   |   |   |   |       WiFiClient.ino
+|           |   |   |   |   |       
+|           |   |   |   |   \---WiFiClientSecure
+|           |   |   |   |           WiFiClientSecure.ino
+|           |   |   |   |           
+|           |   |   |   \---Stream
+|           |   |   |       +---File
+|           |   |   |       |       File.ino
+|           |   |   |       |       
+|           |   |   |       \---Serial
+|           |   |   |               Serial.ino
+|           |   |   |               
+|           |   |   +---Messaging
+|           |   |   |   +---AppInstanceInfo
+|           |   |   |   |       AppInstanceInfo.ino
+|           |   |   |   |       
+|           |   |   |   +---RegistAPNsTokens
+|           |   |   |   |       RegistAPNsTokens.ino
+|           |   |   |   |       
+|           |   |   |   +---Send
+|           |   |   |   |   +---HTTPv1
+|           |   |   |   |   |   +---SendMessage
+|           |   |   |   |   |   |       SendMessage.ino
+|           |   |   |   |   |   |       
+|           |   |   |   |   |   \---SendTopic
+|           |   |   |   |   |           SendTopic.ino
+|           |   |   |   |   |           
+|           |   |   |   |   \---LegacyAPI
+|           |   |   |   |       +---BroadcastMessage
+|           |   |   |   |       |       BroadcastMessage.ino
+|           |   |   |   |       |       
+|           |   |   |   |       +---SendMessage
+|           |   |   |   |       |       SendMessage.ino
+|           |   |   |   |       |       
+|           |   |   |   |       +---SendMessageEthernet
+|           |   |   |   |       |   +---ESP32
+|           |   |   |   |       |   |       ESP32.ino
+|           |   |   |   |       |   |       
+|           |   |   |   |       |   \---ESP8266
+|           |   |   |   |       |           ESP8266.ino
+|           |   |   |   |       |           
+|           |   |   |   |       \---SendTopic
+|           |   |   |   |               SendTopic.ino
+|           |   |   |   |               
+|           |   |   |   +---SubscribeTopic
+|           |   |   |   |       SubscribeTopic.ino
+|           |   |   |   |       
+|           |   |   |   \---UnsubscribeTopic
+|           |   |   |           UnsubscribeTopic.ino
+|           |   |   |           
+|           |   |   +---Priority
+|           |   |   |       Priority.ino
+|           |   |   |       
+|           |   |   +---Queue
+|           |   |   |       Queue.ino
+|           |   |   |       
+|           |   |   +---ShallowedData
+|           |   |   |       ShallowedData.ino
+|           |   |   |       
+|           |   |   \---Timestamp
+|           |   |           Timestamp.ino
+|           |   |           
+|           |   \---src
+|           |       |   FB_Const.h
+|           |       |   FB_Error.h
+|           |       |   FB_Network.h
+|           |       |   FB_Utils.h
+|           |       |   Firebase.cpp
+|           |       |   Firebase.h
+|           |       |   FirebaseESP32.h
+|           |       |   FirebaseFS.h
+|           |       |   README.md
+|           |       |   
+|           |       +---addons
+|           |       |   |   RTDBHelper.h
+|           |       |   |   SDHelper.h
+|           |       |   |   TokenHelper.h
+|           |       |   |   
+|           |       |   \---FireSense
+|           |       |           FireSense.h
+|           |       |           library.properties
+|           |       |           README.md
+|           |       |           
+|           |       +---client
+|           |       |   |   FB_TCP_Client.h
+|           |       |   |   WiFiClientImpl.h
+|           |       |   |   
+|           |       |   \---SSLClient
+|           |       |       |   ESP_SSLClient.h
+|           |       |       |   ESP_SSLClient_Const.h
+|           |       |       |   ESP_SSLClient_FS.h
+|           |       |       |   
+|           |       |       +---bssl
+|           |       |       |       aesctr_drbg.c
+|           |       |       |       aes_big_cbcdec.c
+|           |       |       |       aes_big_cbcenc.c
+|           |       |       |       aes_big_ctr.c
+|           |       |       |       aes_big_ctrcbc.c
+|           |       |       |       aes_big_dec.c
+|           |       |       |       aes_big_enc.c
+|           |       |       |       aes_common.c
+|           |       |       |       aes_ct.c
+|           |       |       |       aes_ct64.c
+|           |       |       |       aes_ct64_cbcdec.c
+|           |       |       |       aes_ct64_cbcenc.c
+|           |       |       |       aes_ct64_ctr.c
+|           |       |       |       aes_ct64_ctrcbc.c
+|           |       |       |       aes_ct64_dec.c
+|           |       |       |       aes_ct64_enc.c
+|           |       |       |       aes_ct_cbcdec.c
+|           |       |       |       aes_ct_cbcenc.c
+|           |       |       |       aes_ct_ctr.c
+|           |       |       |       aes_ct_ctrcbc.c
+|           |       |       |       aes_ct_dec.c
+|           |       |       |       aes_ct_enc.c
+|           |       |       |       aes_pwr8.c
+|           |       |       |       aes_pwr8_cbcdec.c
+|           |       |       |       aes_pwr8_cbcenc.c
+|           |       |       |       aes_pwr8_ctr.c
+|           |       |       |       aes_pwr8_ctrcbc.c
+|           |       |       |       aes_small_cbcdec.c
+|           |       |       |       aes_small_cbcenc.c
+|           |       |       |       aes_small_ctr.c
+|           |       |       |       aes_small_ctrcbc.c
+|           |       |       |       aes_small_dec.c
+|           |       |       |       aes_small_enc.c
+|           |       |       |       aes_x86ni.c
+|           |       |       |       aes_x86ni_cbcdec.c
+|           |       |       |       aes_x86ni_cbcenc.c
+|           |       |       |       aes_x86ni_ctr.c
+|           |       |       |       aes_x86ni_ctrcbc.c
+|           |       |       |       asn1.t0
+|           |       |       |       asn1enc.c
+|           |       |       |       bearssl.h
+|           |       |       |       bearssl_aead.h
+|           |       |       |       bearssl_block.h
+|           |       |       |       bearssl_ec.h
+|           |       |       |       bearssl_hash.h
+|           |       |       |       bearssl_hmac.h
+|           |       |       |       bearssl_kdf.h
+|           |       |       |       bearssl_pem.h
+|           |       |       |       bearssl_prf.h
+|           |       |       |       bearssl_rand.h
+|           |       |       |       bearssl_rsa.h
+|           |       |       |       bearssl_ssl.h
+|           |       |       |       bearssl_x509.h
+|           |       |       |       ccm.c
+|           |       |       |       ccopy.c
+|           |       |       |       chacha20_ct.c
+|           |       |       |       chacha20_sse2.c
+|           |       |       |       config.h
+|           |       |       |       dec16be.c
+|           |       |       |       dec16le.c
+|           |       |       |       dec32be.c
+|           |       |       |       dec32le.c
+|           |       |       |       dec64be.c
+|           |       |       |       dec64le.c
+|           |       |       |       des_ct.c
+|           |       |       |       des_ct_cbcdec.c
+|           |       |       |       des_ct_cbcenc.c
+|           |       |       |       des_support.c
+|           |       |       |       des_tab.c
+|           |       |       |       des_tab_cbcdec.c
+|           |       |       |       des_tab_cbcenc.c
+|           |       |       |       dig_oid.c
+|           |       |       |       dig_size.c
+|           |       |       |       eax.c
+|           |       |       |       ecdsa_atr.c
+|           |       |       |       ecdsa_default_sign_asn1.c
+|           |       |       |       ecdsa_default_sign_raw.c
+|           |       |       |       ecdsa_default_vrfy_asn1.c
+|           |       |       |       ecdsa_default_vrfy_raw.c
+|           |       |       |       ecdsa_i15_bits.c
+|           |       |       |       ecdsa_i15_sign_asn1.c
+|           |       |       |       ecdsa_i15_sign_raw.c
+|           |       |       |       ecdsa_i15_vrfy_asn1.c
+|           |       |       |       ecdsa_i15_vrfy_raw.c
+|           |       |       |       ecdsa_i31_bits.c
+|           |       |       |       ecdsa_i31_sign_asn1.c
+|           |       |       |       ecdsa_i31_sign_raw.c
+|           |       |       |       ecdsa_i31_vrfy_asn1.c
+|           |       |       |       ecdsa_i31_vrfy_raw.c
+|           |       |       |       ecdsa_rta.c
+|           |       |       |       ec_all_m15.c
+|           |       |       |       ec_all_m31.c
+|           |       |       |       ec_c25519_i15.c
+|           |       |       |       ec_c25519_i31.c
+|           |       |       |       ec_c25519_m15.c
+|           |       |       |       ec_c25519_m31.c
+|           |       |       |       ec_c25519_m62.c
+|           |       |       |       ec_c25519_m64.c
+|           |       |       |       ec_curve25519.c
+|           |       |       |       ec_default.c
+|           |       |       |       ec_keygen.c
+|           |       |       |       ec_p256_m15.c
+|           |       |       |       ec_p256_m31.c
+|           |       |       |       ec_p256_m62.c
+|           |       |       |       ec_p256_m64.c
+|           |       |       |       ec_prime_i15.c
+|           |       |       |       ec_prime_i31.c
+|           |       |       |       ec_pubkey.c
+|           |       |       |       ec_secp256r1.c
+|           |       |       |       ec_secp384r1.c
+|           |       |       |       ec_secp521r1.c
+|           |       |       |       enc16be.c
+|           |       |       |       enc16le.c
+|           |       |       |       enc32be.c
+|           |       |       |       enc32le.c
+|           |       |       |       enc64be.c
+|           |       |       |       enc64le.c
+|           |       |       |       encode_ec_pk8der.c
+|           |       |       |       encode_ec_rawder.c
+|           |       |       |       encode_rsa_pk8der.c
+|           |       |       |       encode_rsa_rawder.c
+|           |       |       |       gcm.c
+|           |       |       |       ghash_ctmul.c
+|           |       |       |       ghash_ctmul32.c
+|           |       |       |       ghash_ctmul64.c
+|           |       |       |       ghash_pclmul.c
+|           |       |       |       ghash_pwr8.c
+|           |       |       |       hkdf.c
+|           |       |       |       hmac.c
+|           |       |       |       hmac_ct.c
+|           |       |       |       hmac_drbg.c
+|           |       |       |       i15_add.c
+|           |       |       |       i15_bitlen.c
+|           |       |       |       i15_decmod.c
+|           |       |       |       i15_decode.c
+|           |       |       |       i15_decred.c
+|           |       |       |       i15_encode.c
+|           |       |       |       i15_fmont.c
+|           |       |       |       i15_iszero.c
+|           |       |       |       i15_moddiv.c
+|           |       |       |       i15_modpow.c
+|           |       |       |       i15_modpow2.c
+|           |       |       |       i15_montmul.c
+|           |       |       |       i15_mulacc.c
+|           |       |       |       i15_muladd.c
+|           |       |       |       i15_ninv15.c
+|           |       |       |       i15_reduce.c
+|           |       |       |       i15_rshift.c
+|           |       |       |       i15_sub.c
+|           |       |       |       i15_tmont.c
+|           |       |       |       i31_add.c
+|           |       |       |       i31_bitlen.c
+|           |       |       |       i31_decmod.c
+|           |       |       |       i31_decode.c
+|           |       |       |       i31_decred.c
+|           |       |       |       i31_encode.c
+|           |       |       |       i31_fmont.c
+|           |       |       |       i31_iszero.c
+|           |       |       |       i31_moddiv.c
+|           |       |       |       i31_modpow.c
+|           |       |       |       i31_modpow2.c
+|           |       |       |       i31_montmul.c
+|           |       |       |       i31_mulacc.c
+|           |       |       |       i31_muladd.c
+|           |       |       |       i31_ninv31.c
+|           |       |       |       i31_reduce.c
+|           |       |       |       i31_rshift.c
+|           |       |       |       i31_sub.c
+|           |       |       |       i31_tmont.c
+|           |       |       |       i32_add.c
+|           |       |       |       i32_bitlen.c
+|           |       |       |       i32_decmod.c
+|           |       |       |       i32_decode.c
+|           |       |       |       i32_decred.c
+|           |       |       |       i32_div32.c
+|           |       |       |       i32_encode.c
+|           |       |       |       i32_fmont.c
+|           |       |       |       i32_iszero.c
+|           |       |       |       i32_modpow.c
+|           |       |       |       i32_montmul.c
+|           |       |       |       i32_mulacc.c
+|           |       |       |       i32_muladd.c
+|           |       |       |       i32_ninv32.c
+|           |       |       |       i32_reduce.c
+|           |       |       |       i32_sub.c
+|           |       |       |       i32_tmont.c
+|           |       |       |       i62_modpow2.c
+|           |       |       |       inner.h
+|           |       |       |       md5.c
+|           |       |       |       md5sha1.c
+|           |       |       |       mgf1.c
+|           |       |       |       multihash.c
+|           |       |       |       pemdec.c
+|           |       |       |       pemdec.t0
+|           |       |       |       pemenc.c
+|           |       |       |       pkey_decoder.c
+|           |       |       |       poly1305_ctmul.c
+|           |       |       |       poly1305_ctmul32.c
+|           |       |       |       poly1305_ctmulq.c
+|           |       |       |       poly1305_i15.c
+|           |       |       |       prf.c
+|           |       |       |       prf_md5sha1.c
+|           |       |       |       prf_sha256.c
+|           |       |       |       prf_sha384.c
+|           |       |       |       rsa_default_keygen.c
+|           |       |       |       rsa_default_modulus.c
+|           |       |       |       rsa_default_oaep_decrypt.c
+|           |       |       |       rsa_default_oaep_encrypt.c
+|           |       |       |       rsa_default_pkcs1_sign.c
+|           |       |       |       rsa_default_pkcs1_vrfy.c
+|           |       |       |       rsa_default_priv.c
+|           |       |       |       rsa_default_privexp.c
+|           |       |       |       rsa_default_pss_sign.c
+|           |       |       |       rsa_default_pss_vrfy.c
+|           |       |       |       rsa_default_pub.c
+|           |       |       |       rsa_default_pubexp.c
+|           |       |       |       rsa_i15_keygen.c
+|           |       |       |       rsa_i15_modulus.c
+|           |       |       |       rsa_i15_oaep_decrypt.c
+|           |       |       |       rsa_i15_oaep_encrypt.c
+|           |       |       |       rsa_i15_pkcs1_sign.c
+|           |       |       |       rsa_i15_pkcs1_vrfy.c
+|           |       |       |       rsa_i15_priv.c
+|           |       |       |       rsa_i15_privexp.c
+|           |       |       |       rsa_i15_pss_sign.c
+|           |       |       |       rsa_i15_pss_vrfy.c
+|           |       |       |       rsa_i15_pub.c
+|           |       |       |       rsa_i15_pubexp.c
+|           |       |       |       rsa_i31_keygen.c
+|           |       |       |       rsa_i31_keygen_inner.c
+|           |       |       |       rsa_i31_modulus.c
+|           |       |       |       rsa_i31_oaep_decrypt.c
+|           |       |       |       rsa_i31_oaep_encrypt.c
+|           |       |       |       rsa_i31_pkcs1_sign.c
+|           |       |       |       rsa_i31_pkcs1_vrfy.c
+|           |       |       |       rsa_i31_priv.c
+|           |       |       |       rsa_i31_privexp.c
+|           |       |       |       rsa_i31_pss_sign.c
+|           |       |       |       rsa_i31_pss_vrfy.c
+|           |       |       |       rsa_i31_pub.c
+|           |       |       |       rsa_i31_pubexp.c
+|           |       |       |       rsa_i32_oaep_decrypt.c
+|           |       |       |       rsa_i32_oaep_encrypt.c
+|           |       |       |       rsa_i32_pkcs1_sign.c
+|           |       |       |       rsa_i32_pkcs1_vrfy.c
+|           |       |       |       rsa_i32_priv.c
+|           |       |       |       rsa_i32_pss_sign.c
+|           |       |       |       rsa_i32_pss_vrfy.c
+|           |       |       |       rsa_i32_pub.c
+|           |       |       |       rsa_i62_keygen.c
+|           |       |       |       rsa_i62_oaep_decrypt.c
+|           |       |       |       rsa_i62_oaep_encrypt.c
+|           |       |       |       rsa_i62_pkcs1_sign.c
+|           |       |       |       rsa_i62_pkcs1_vrfy.c
+|           |       |       |       rsa_i62_priv.c
+|           |       |       |       rsa_i62_pss_sign.c
+|           |       |       |       rsa_i62_pss_vrfy.c
+|           |       |       |       rsa_i62_pub.c
+|           |       |       |       rsa_oaep_pad.c
+|           |       |       |       rsa_oaep_unpad.c
+|           |       |       |       rsa_pkcs1_sig_pad.c
+|           |       |       |       rsa_pkcs1_sig_unpad.c
+|           |       |       |       rsa_pss_sig_pad.c
+|           |       |       |       rsa_pss_sig_unpad.c
+|           |       |       |       rsa_ssl_decrypt.c
+|           |       |       |       settings.c
+|           |       |       |       sha1.c
+|           |       |       |       sha2big.c
+|           |       |       |       sha2small.c
+|           |       |       |       shake.c
+|           |       |       |       skey_decoder.c
+|           |       |       |       skey_decoder.t0
+|           |       |       |       ssl_ccert_single_ec.c
+|           |       |       |       ssl_ccert_single_rsa.c
+|           |       |       |       ssl_client.c
+|           |       |       |       ssl_client_default_rsapub.c
+|           |       |       |       ssl_client_full.c
+|           |       |       |       ssl_engine.c
+|           |       |       |       ssl_engine_default_aescbc.c
+|           |       |       |       ssl_engine_default_aesccm.c
+|           |       |       |       ssl_engine_default_aesgcm.c
+|           |       |       |       ssl_engine_default_chapol.c
+|           |       |       |       ssl_engine_default_descbc.c
+|           |       |       |       ssl_engine_default_ec.c
+|           |       |       |       ssl_engine_default_ecdsa.c
+|           |       |       |       ssl_engine_default_rsavrfy.c
+|           |       |       |       ssl_hashes.c
+|           |       |       |       ssl_hs_client.c
+|           |       |       |       ssl_hs_client.t0
+|           |       |       |       ssl_hs_common.t0
+|           |       |       |       ssl_hs_server.c
+|           |       |       |       ssl_hs_server.t0
+|           |       |       |       ssl_io.c
+|           |       |       |       ssl_keyexport.c
+|           |       |       |       ssl_lru.c
+|           |       |       |       ssl_rec_cbc.c
+|           |       |       |       ssl_rec_ccm.c
+|           |       |       |       ssl_rec_chapol.c
+|           |       |       |       ssl_rec_gcm.c
+|           |       |       |       ssl_scert_single_ec.c
+|           |       |       |       ssl_scert_single_rsa.c
+|           |       |       |       ssl_server.c
+|           |       |       |       ssl_server_full_ec.c
+|           |       |       |       ssl_server_full_rsa.c
+|           |       |       |       ssl_server_mine2c.c
+|           |       |       |       ssl_server_mine2g.c
+|           |       |       |       ssl_server_minf2c.c
+|           |       |       |       ssl_server_minf2g.c
+|           |       |       |       ssl_server_minr2g.c
+|           |       |       |       ssl_server_minu2g.c
+|           |       |       |       ssl_server_minv2g.c
+|           |       |       |       sysrng.c
+|           |       |       |       x509_decoder.c
+|           |       |       |       x509_decoder.t0
+|           |       |       |       x509_knownkey.c
+|           |       |       |       x509_minimal.c
+|           |       |       |       x509_minimal.t0
+|           |       |       |       x509_minimal_full.c
+|           |       |       |       
+|           |       |       \---client
+|           |       |               BSSL_CertStore.cpp
+|           |       |               BSSL_CertStore.h
+|           |       |               BSSL_Helper.cpp
+|           |       |               BSSL_Helper.h
+|           |       |               BSSL_SSL_Client.cpp
+|           |       |               BSSL_SSL_Client.h
+|           |       |               BSSL_TCP_Client.cpp
+|           |       |               BSSL_TCP_Client.h
+|           |       |               stm32_time_fix.c
+|           |       |               
+|           |       +---core
+|           |       |       FirebaseCore.cpp
+|           |       |       FirebaseCore.h
+|           |       |       Firebase_Build_Options.h
+|           |       |       Firebase_Client_Version.h
+|           |       |       
+|           |       +---json
+|           |       |   |   FirebaseJson.cpp
+|           |       |   |   FirebaseJson.h
+|           |       |   |   MB_List.h
+|           |       |   |   MB_String.h
+|           |       |   |   
+|           |       |   +---extras
+|           |       |   |   \---print
+|           |       |   |           fb_json_print.c
+|           |       |   |           fb_json_print.h
+|           |       |   |           
+|           |       |   \---MB_JSON
+|           |       |           MB_JSON.c
+|           |       |           MB_JSON.h
+|           |       |           
+|           |       +---mbfs
+|           |       |       MB_FS.h
+|           |       |       MB_FS_Interfaces.h
+|           |       |       MB_MCU.h
+|           |       |       
+|           |       +---message
+|           |       |       FCM.cpp
+|           |       |       FCM.h
+|           |       |       LFCM.h
+|           |       |       
+|           |       +---rtdb
+|           |       |   |   FB_RTDB.cpp
+|           |       |   |   FB_RTDB.h
+|           |       |   |   QueryFilter.cpp
+|           |       |   |   QueryFilter.h
+|           |       |   |   QueueInfo.cpp
+|           |       |   |   QueueInfo.h
+|           |       |   |   QueueManager.cpp
+|           |       |   |   QueueManager.h
+|           |       |   |   
+|           |       |   \---stream
+|           |       |           FB_MP_Stream.cpp
+|           |       |           FB_MP_Stream.h
+|           |       |           FB_Stream.cpp
+|           |       |           FB_Stream.h
+|           |       |           
+|           |       \---session
+|           |               FB_Session.cpp
+|           |               FB_Session.h
+|           |               
+|           \---WebSerial
+|               |   .gitattributes
+|               |   .gitignore
+|               |   .piopm
+|               |   CLA.md
+|               |   CODE_OF_CONDUCT.md
+|               |   keywords.txt
+|               |   library.properties
+|               |   LICENSE
+|               |   platformio.ini
+|               |   README.md
+|               |   
+|               +---.github
+|               |   +---cla-signatures
+|               |   |       cla.json
+|               |   |       
+|               |   \---workflows
+|               |           ci.yml
+|               |           cla.yml
+|               |           stale.yml
+|               |           
+|               +---examples
+|               |   +---Demo
+|               |   |       Demo.ino
+|               |   |       
+|               |   +---Demo_AP
+|               |   |       Demo_AP.ino
+|               |   |       
+|               |   +---HighPerf
+|               |   |       HighPerf.ino
+|               |   |       
+|               |   \---Logging
+|               |           Logging.ino
+|               |           
+|               \---src
+|                       WebSerial.cpp
+|                       WebSerial.h
+|                       wslp.cpp
+|                       wslp.h
+|                       
++---.vscode
+|       c_cpp_properties.json
+|       extensions.json
+|       launch.json
+|       
++---burn_in_firmware
+|   |   platformio.ini
+|   |   
+|   +---.pio
+|   |   \---build
+|   |       |   project.checksum
+|   |       |   
+|   |       \---vintlabs-devkit-v1
+|   |           |   .sconsign311.dblite
+|   |           |   bootloader.bin
+|   |           |   firmware.bin
+|   |           |   firmware.elf
+|   |           |   firmware.map
+|   |           |   libFrameworkArduino.a
+|   |           |   partitions.bin
+|   |           |   
+|   |           +---FrameworkArduino
+|   |           |   |   base64.cpp.d
+|   |           |   |   base64.cpp.o
+|   |           |   |   cbuf.cpp.d
+|   |           |   |   cbuf.cpp.o
+|   |           |   |   Esp.cpp.d
+|   |           |   |   Esp.cpp.o
+|   |           |   |   esp32-hal-adc.c.d
+|   |           |   |   esp32-hal-adc.c.o
+|   |           |   |   esp32-hal-bt.c.d
+|   |           |   |   esp32-hal-bt.c.o
+|   |           |   |   esp32-hal-cpu.c.d
+|   |           |   |   esp32-hal-cpu.c.o
+|   |           |   |   esp32-hal-dac.c.d
+|   |           |   |   esp32-hal-dac.c.o
+|   |           |   |   esp32-hal-gpio.c.d
+|   |           |   |   esp32-hal-gpio.c.o
+|   |           |   |   esp32-hal-i2c-slave.c.d
+|   |           |   |   esp32-hal-i2c-slave.c.o
+|   |           |   |   esp32-hal-i2c.c.d
+|   |           |   |   esp32-hal-i2c.c.o
+|   |           |   |   esp32-hal-ledc.c.d
+|   |           |   |   esp32-hal-ledc.c.o
+|   |           |   |   esp32-hal-matrix.c.d
+|   |           |   |   esp32-hal-matrix.c.o
+|   |           |   |   esp32-hal-misc.c.d
+|   |           |   |   esp32-hal-misc.c.o
+|   |           |   |   esp32-hal-psram.c.d
+|   |           |   |   esp32-hal-psram.c.o
+|   |           |   |   esp32-hal-rgb-led.c.d
+|   |           |   |   esp32-hal-rgb-led.c.o
+|   |           |   |   esp32-hal-rmt.c.d
+|   |           |   |   esp32-hal-rmt.c.o
+|   |           |   |   esp32-hal-sigmadelta.c.d
+|   |           |   |   esp32-hal-sigmadelta.c.o
+|   |           |   |   esp32-hal-spi.c.d
+|   |           |   |   esp32-hal-spi.c.o
+|   |           |   |   esp32-hal-time.c.d
+|   |           |   |   esp32-hal-time.c.o
+|   |           |   |   esp32-hal-timer.c.d
+|   |           |   |   esp32-hal-timer.c.o
+|   |           |   |   esp32-hal-tinyusb.c.d
+|   |           |   |   esp32-hal-tinyusb.c.o
+|   |           |   |   esp32-hal-touch.c.d
+|   |           |   |   esp32-hal-touch.c.o
+|   |           |   |   esp32-hal-uart.c.d
+|   |           |   |   esp32-hal-uart.c.o
+|   |           |   |   FirmwareMSC.cpp.d
+|   |           |   |   FirmwareMSC.cpp.o
+|   |           |   |   firmware_msc_fat.c.d
+|   |           |   |   firmware_msc_fat.c.o
+|   |           |   |   FunctionalInterrupt.cpp.d
+|   |           |   |   FunctionalInterrupt.cpp.o
+|   |           |   |   HardwareSerial.cpp.d
+|   |           |   |   HardwareSerial.cpp.o
+|   |           |   |   HWCDC.cpp.d
+|   |           |   |   HWCDC.cpp.o
+|   |           |   |   IPAddress.cpp.d
+|   |           |   |   IPAddress.cpp.o
+|   |           |   |   IPv6Address.cpp.d
+|   |           |   |   IPv6Address.cpp.o
+|   |           |   |   main.cpp.d
+|   |           |   |   main.cpp.o
+|   |           |   |   MD5Builder.cpp.d
+|   |           |   |   MD5Builder.cpp.o
+|   |           |   |   Print.cpp.d
+|   |           |   |   Print.cpp.o
+|   |           |   |   stdlib_noniso.c.d
+|   |           |   |   stdlib_noniso.c.o
+|   |           |   |   Stream.cpp.d
+|   |           |   |   Stream.cpp.o
+|   |           |   |   StreamString.cpp.d
+|   |           |   |   StreamString.cpp.o
+|   |           |   |   Tone.cpp.d
+|   |           |   |   Tone.cpp.o
+|   |           |   |   USB.cpp.d
+|   |           |   |   USB.cpp.o
+|   |           |   |   USBCDC.cpp.d
+|   |           |   |   USBCDC.cpp.o
+|   |           |   |   USBMSC.cpp.d
+|   |           |   |   USBMSC.cpp.o
+|   |           |   |   wiring_pulse.c.d
+|   |           |   |   wiring_pulse.c.o
+|   |           |   |   wiring_shift.c.d
+|   |           |   |   wiring_shift.c.o
+|   |           |   |   WMath.cpp.d
+|   |           |   |   WMath.cpp.o
+|   |           |   |   WString.cpp.d
+|   |           |   |   WString.cpp.o
+|   |           |   |   
+|   |           |   \---libb64
+|   |           |           cdecode.c.d
+|   |           |           cdecode.c.o
+|   |           |           cencode.c.d
+|   |           |           cencode.c.o
+|   |           |           
+|   |           +---libe46
+|   |           |   |   libWiFi.a
+|   |           |   |   
+|   |           |   \---WiFi
+|   |           |           WiFi.cpp.d
+|   |           |           WiFi.cpp.o
+|   |           |           WiFiAP.cpp.d
+|   |           |           WiFiAP.cpp.o
+|   |           |           WiFiClient.cpp.d
+|   |           |           WiFiClient.cpp.o
+|   |           |           WiFiGeneric.cpp.d
+|   |           |           WiFiGeneric.cpp.o
+|   |           |           WiFiMulti.cpp.d
+|   |           |           WiFiMulti.cpp.o
+|   |           |           WiFiScan.cpp.d
+|   |           |           WiFiScan.cpp.o
+|   |           |           WiFiServer.cpp.d
+|   |           |           WiFiServer.cpp.o
+|   |           |           WiFiSTA.cpp.d
+|   |           |           WiFiSTA.cpp.o
+|   |           |           WiFiUdp.cpp.d
+|   |           |           WiFiUdp.cpp.o
+|   |           |           
+|   |           \---src
+|   |                   main.cpp.d
+|   |                   main.cpp.o
+|   |                   
+|   \---src
+|           main.cpp
+|           
++---burn_in_reports
+|       reefDoser4_20260713_190710.json
+|       
++---claim_inventory
+|       claim_codes_to_print.csv
+|       claim_inventory.json
+|       claim_inventory.json.bak
+|       
++---customers
+|   |   devices.json
+|   |   
+|   \---profiles
+|       \---reefDoser3
++---device_ai_engines
+|   +---reefDoser1
+|   |       AI_Engine.h
+|   |       
+|   +---reefDoser2
+|   |       AI_Engine.h
+|   |       
+|   +---ReefDoser3
+|   |       AI_Engine.h
+|   |       
+|   +---reefDoser4
+|   |       AI_Engine.h
+|   |       
+|   +---reefDoser5
+|   |       AI_Engine.h
+|   |       
+|   +---reefDoser6
+|   |       AI_Engine.h
+|   |       
+|   \---reefDoser7
+|           AI_Engine.h
+|           
++---dist
+|   +---reefDoser1
+|   |       AI_Engine.h
+|   |       firmware.bin
+|   |       firmware.json
+|   |       reefDoser1.bin
+|   |       reefDoser1.json
+|   |       
+|   +---reefDoser2
+|   |       firmware.bin
+|   |       firmware.json
+|   |       reefDoser2.bin
+|   |       reefDoser2.json
+|   |       
+|   +---reefDoser3
+|   |       firmware.bin
+|   |       firmware.json
+|   |       reefDoser3.bin
+|   |       reefDoser3.json
+|   |       
+|   +---reefDoser4
+|   |       AI_Engine.h
+|   |       firmware.bin
+|   |       firmware.json
+|   |       reefDoser4.bin
+|   |       reefDoser4.json
+|   |       
+|   +---reefDoser5
+|   |       firmware.bin
+|   |       firmware.json
+|   |       reefDoser5.bin
+|   |       reefDoser5.json
+|   |       
+|   +---reefDoser6
+|   |       reefDoser6.bin
+|   |       reefDoser6.json
+|   |       
+|   \---reefDoser7
+|           reefDoser7.bin
+|           reefDoser7.json
+|           
++---generated
+|       device_config.generated.h
+|       
++---include
+|       global_config.h
+|       README
+|       
++---labels
+|       reefDoser4.txt
+|       reefDoser5.txt
+|       reefDoser6.txt
+|       reefDoser7.txt
+|       
++---lib
+|   |   README
+|   |   
+|   +---AI_Engine
+|   |       AI_Engine.cpp
+|   |       AI_Engine.h
+|   |       
+|   +---ApexApi
+|   |       apexapi.cpp
+|   |       apexapi.h
+|   |       
+|   +---ApexLogEmulator
+|   |       ApexLogEmulator.cpp
+|   |       ApexLogEmulator.h
+|   |       
+|   +---Calibratrion
+|   |       Calibration.cpp
+|   |       Calibration.h
+|   |       
+|   +---Dashboard
+|   |       Dashboard.h
+|   |       
+|   +---DemandLearning
+|   |       DemandLearning.cpp
+|   |       DemandLearning.h
+|   |       
+|   +---Doser
+|   |       Doser.cpp
+|   |       Doser.h
+|   |       
+|   +---Logger
+|   |       logger.cpp
+|   |       logger.h
+|   |       
+|   +---ManualInput
+|   +---OTA
+|   |       Ota.cpp
+|   |       Ota.h
+|   |       
+|   +---Provisioner
+|   |       Provisioner.cpp
+|   |       Provisioner.h
+|   |       
+|   +---Reporting
+|   +---StateMachine
+|   |       StateMachine.cpp
+|   |       StateMachine.h
+|   |       
+|   \---WebRoutes
+|           WebRoutes.cpp
+|           WebRoutes.h
+|           WebRoutesShared.h
+|           
++---manufacturing_reports
+|       reedDoser6_burnin_20260716_115323.txt
+|       reefDoser4_20260713_223126.json
+|       reefDoser4_burnin_20260713_212420.txt
+|       reefDoser4_burnin_20260713_220147.txt
+|       reefDoser4_burnin_20260713_221331.txt
+|       reefDoser4_burnin_20260713_223022.json
+|       reefDoser4_burnin_20260714_193637.txt
+|       reefDoser5_burnin_20260715_114210.txt
+|       reefDoser6_burnin_20260716_120122.txt
+|       reefDoser6_burnin_20260716_120802.txt
+|       reefDoser6_burnin_20260716_122825.txt
+|       reefDoser7_burnin_20260716_124411.txt
+|       reefDoser7_burnin_20260716_125106.txt
+|       
++---scripts
+|       build_device.py
+|       burn_in_device.py
+|       devices.example.json
+|       devices.json
+|       devices.json.bak
+|       enroll_customer.py
+|       generate_claim_batch.py
+|       manufacture_device.py
+|       
++---secrets
+|       firebase-service-account.json
+|       
++---src
+|       main.cpp
+|       
+\---test
+        README
+        

@@ -1,0 +1,20 @@
+{
+  "reefDoser1": {
+    "customer": "Test Bench",
+    "label": "AIES-00001",
+    "deviceId": "reefDoser1",
+    "firmwareVersion": "P-1.1.22",
+    "chipId": "REPLACE_WITH_ESP32_CHIP_ID",
+    "macAddress": "REPLACE_WITH_DEVICE_MAC",
+    "board": "vintlabs-devkit-v1",
+    "otaJsonName": "reefDoser1.json",
+    "otaBinName": "reefDoser1.bin",
+    "firebasePublic": "C:/path/to/local/Firebase/public/mirror",
+    "firebaseEmail": "reefDoser1@device.example.tech",
+    "firebasePassword": "",
+    "firebasePasswordPending": "",
+    "firebaseUid": "",
+    "alkDemandBootstrapEnabled": false,
+    "alkDemandBootstrapDkhDay": 0.0
+  }
+}

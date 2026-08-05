@@ -13,7 +13,9 @@
 
 // 2. YOUR CUSTOM HEADERS
 #include "Doser.h"
-#include "AI_Engine.h"
+#include "AI_EngineV2.h"
+#include "Allocator.h"
+#include "ChemicalPresets.h"
 #include "StateMachine.h"
 #include "Provisioner.h"
 #include "logger.h"
@@ -55,6 +57,14 @@
 
 #include "Dashboard.h"
 
+// Web route handlers used to be defined inline in this file. They now live
+// in lib/WebRoutes/WebRoutes.cpp. WebRoutesShared.h provides the struct
+// definitions (LightConfig, AlkDemandStore, etc.) that both this file and
+// WebRoutes.cpp need to see.
+#include "WebRoutesShared.h"
+#include "WebRoutes.h"
+#include "DemandLearning.h"
+
 // --- DEFINITIONS (Allocating actual memory for the Truth) ---
 bool emergencyStop = false;
 
@@ -62,17 +72,20 @@ bool emergencyStop = false;
 int systemMode = 1;
 
 // --- Version 2: Smoothing & Lighting Config ---
-struct LightConfig {
-    int source = 0;    // 0 = Timer, 1 = Apex
-    int start = 8;     // 8 AM
-    int end = 20;      // 8 PM
-    String outlet = "Light_7_1";
-} lightConfig;
+// struct LightConfig is now defined in lib/WebRoutes/WebRoutesShared.h
+// (moved there so WebRoutes.cpp can see the type too). This is still the
+// one real instance.
+LightConfig lightConfig;
 
 // Historical Smoothing Buffer
 float alkHistory[5] = {0, 0, 0, 0, 0};
 int alkIdx = 0;
-float targetAlk = 8.5f; // Set your desired target here
+// §8.5 chemistry targets. These were hardcoded compile-time constants with
+// no customer-facing way to change them at all -- fixed 2026-07-25: now
+// loaded from Preferences via loadChemistryTargets() (see near
+// loadManualTestLocally()), these values are just the fallback defaults for
+// a device that's never had targets explicitly set.
+float targetAlk = 8.5f;
 float targetCa  = 450.0f;
 float targetMg  = 1440.0f;
 
@@ -89,15 +102,14 @@ String baselineCoralLoad = "custom";
 bool automaticDemandLearningEnabled = true;
 bool automaticCalciumLearningEnabled = true;
 
-// Mode 7 temporary 24-48 hour Alk learner state. This is separate from the
-// seven-day baseline learner and is persisted so a reboot does not erase a
-// genuine multi-day low-Alk condition.
-float fastAlkBoostDkhDay = 0.0f;
-uint16_t fastAlkLowSamples = 0;
-uint16_t fastAlkStableSamples = 0;
-float lastSavedFastAlkBoostDkhDay = -1.0f;
-uint16_t lastSavedFastAlkLowSamples = 0xFFFF;
-uint16_t lastSavedFastAlkStableSamples = 0xFFFF;
+// REMOVED (v1 -> v2 migration): the old two-speed fastAlk boost/step-size
+// learner (fastAlkBoostDkhDay / fastAlkLowSamples / fastAlkStableSamples and
+// its ai.setFastAlkLearnerState/getFastAlkBoostDkhDay/etc. calls) is gone.
+// v2's per-parameter Kalman filter maturity (ParamKalmanState::maturity(),
+// MathEngine::maxCorrectionStep) provides the same "go faster early, taper
+// as the estimate matures" behavior for all 4 water parameters, not just
+// Alk, and needs no separate persisted counter set (see MIGRATION_NOTES.md,
+// row 4). Persisted "alkfast_*" Preferences keys are simply no longer read.
 
 // Optional one-time historical-demand bootstrap supplied by the per-device build.
 // Every compatible device still receives normal rolling 7-day learning.
@@ -109,13 +121,6 @@ uint16_t lastSavedFastAlkStableSamples = 0xFFFF;
 #ifndef BUILD_ALK_DEMAND_BOOTSTRAP_DKH_DAY
 #define BUILD_ALK_DEMAND_BOOTSTRAP_DKH_DAY 0.0f
 #endif
-
-bool shouldUseAlkDemandBootstrapForThisDevice() {
-    return dosingMode == 7 &&
-           BUILD_ALK_DEMAND_BOOTSTRAP_ENABLED &&
-           isfinite(BUILD_ALK_DEMAND_BOOTSTRAP_DKH_DAY) &&
-           BUILD_ALK_DEMAND_BOOTSTRAP_DKH_DAY > 0.0f;
-}
 
 // Customer-facing chemical recipe values.
 // Dashboard users enter grams per gallon; dashboard/firmware still save the
@@ -222,7 +227,7 @@ extern float dailyDoseTotals[4]; // Links to Doser.cpp
 // ---------------- LOCAL CHEMICAL RESERVOIR TRACKING ----------------
 // Stored only in ESP32 Preferences/NVS. Volumes are NOT mirrored to Firebase.
 // Dashboard can set bucket size in gallons; firmware subtracts actual dispensed mL.
-const float ML_PER_GALLON = 3785.41f;
+extern const float ML_PER_GALLON = 3785.41f;
 float chemicalCapacityGal[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 float chemicalRemainingMl[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -232,6 +237,10 @@ String apexIp = "";
 float pumpFlowRates[4] = {675.0f, 645.0f, 50.0f, 50.0f};
 ManualTest lastLocalTest;
 bool hasSavedManualTest = false;
+// §8/§8.5 one-time setup wizard, lives on the local dashboard (not the
+// cloud device-setup.html page, which only handles Wi-Fi + online-check
+// before handing off here). Persisted so it doesn't show again once done.
+bool setupWizardCompleted = false;
 
 ApexApi apex;
 
@@ -239,13 +248,20 @@ ApexApi apex;
 // TEST ONLY: reefDoser3 Apex Log Emulator
 // ----------------------------------------------------------------------------
 // This does NOT change OTA and does NOT affect reefDoser1 or reefDoser2.
-// When enabled on reefDoser3, syncAllTruths() reads Eric's latest reefDoser2
-// Google Drive serial log through Apps Script instead of calling the real Apex.
+// When enabled, syncAllTruths() reads Eric's latest reefDoser2 Google Drive
+// serial log through Apps Script instead of calling the real Apex.
+//
+// Controlled per-device via devices.json's "apexEmulatorTestEnabled" field
+// (see scripts/build_device.py) rather than a hardcoded device ID here, so
+// enabling this for a different bench/test unit is a devices.json change +
+// rebuild for that one device, not a main.cpp edit shared by every device.
 //
 // Deploy AppsScript_ReefDoserLogApi.gs as a web app, then paste the /exec URL
 // below. Use folder=roofDoser2 if the Drive folder is really misspelled that way.
 // ============================================================================
-#define REEFDOSER3_APEX_EMULATOR_TEST 0
+#ifndef BUILD_APEX_EMULATOR_TEST_ENABLED
+#define BUILD_APEX_EMULATOR_TEST_ENABLED 0
+#endif
 const char* APEX_EMULATOR_URL = "https://script.google.com/macros/s/AKfycbxN_NPXAxSR54WUfZmQeqPMv-S3GJzsQvhGHHWP2udwtONEoDrXordu-h_7tGUiXSPlwQ/exec?raw=1";
 const unsigned long APEX_EMULATOR_POLL_MS = 1800000UL;
 
@@ -312,6 +328,13 @@ unsigned long lastFirebaseMirrorMs = 0;
 // Low-cost AI plan publishing: write dosingMlPerDay only when the plan changes
 // by more than 10%, or once per day as a refresh.
 float lastPublishedPlanMlDay[6] = {-1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
+// Fixed 2026-08-02: parallel tracking array for the new pump-indexed
+// publish path (see publishAiPlanIfNeeded()) -- kept separate from
+// lastPublishedPlanMlDay above rather than repurposing it, since the two
+// arrays are indexed completely differently (legacy chemical-type slot vs.
+// physical pump number) and conflating them would silently break the
+// "did this actually change" comparison for both paths.
+float lastPublishedPumpMlDay[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
 String lastPlanPublishDate = "";
 const float PLAN_PUBLISH_CHANGE_FRACTION = 0.10f;
 
@@ -331,7 +354,7 @@ Provisioner provisioner;
 String deviceID = BUILD_DEVICE_ID;
 
 bool useApexLogEmulatorForThisDevice() {
-    return REEFDOSER3_APEX_EMULATOR_TEST && deviceID == "reefDoser3";
+    return BUILD_APEX_EMULATOR_TEST_ENABLED;
 }
 
 WebServer server(80);
@@ -341,8 +364,67 @@ Preferences prefs;
 Doser doser;
 // Global logger instance is defined in lib/Logger/logger.cpp via extern Logger logger;
 CalibrationManager calManager(doser);
-AIEngine ai;
+AIEngineV2 ai;
 StateManager state;
+
+// ============================================================================
+// v1 -> v2 compatibility layer
+// ----------------------------------------------------------------------------
+// v1 exposed a fixed named-field plan (currentPlan.kalk/afr/alk/cacl2/naoh/mg).
+// v2's DosingPlanV2 is indexed by declared-chemical slot instead, since the
+// chemical list is now customer-declared (§5). This file (and WebRoutes.cpp)
+// still has per-physical-pump wiring, safety logging, Firebase publishing,
+// and dashboard JSON that all key off those six legacy chemical names, and
+// none of that is AI_Engine's job to redesign. So: declare the six legacy
+// chemicals into AIEngineV2 in a FIXED slot order every time the declaration
+// needs rebuilding, and mirror the resulting DosingPlanV2 back into a
+// same-shaped `currentPlan` global so every existing `currentPlan.X`
+// call site (here and in WebRoutes.cpp) keeps compiling and behaving the
+// same way. The LegacyChemSlot enum / LegacyPlanView struct themselves live
+// in WebRoutesShared.h (not here) so both .cpp files see the identical
+// type -- this is the one real `currentPlan` instance.
+LegacyPlanView currentPlan;
+
+// §5 free chemical declaration -- replaces the mode picker. See
+// DASHBOARD_MIGRATION_PLAN.md for the full design. declaredChemicals[i]
+// always corresponds index-for-index to ai.chemicals[i] (rebuilt fresh
+// every cycle by rebuildAiChemicalDeclarations()) and to
+// planMlPerDayByIndex[i] (populated by syncLegacyPlanFromV2()) -- the
+// bucket scheduler relies on all three staying in lockstep by index.
+DeclaredChemical declaredChemicals[kMaxDeclaredChemicals];
+int declaredChemicalCount = 0;
+
+// Last computed plan's mL/day, indexed to match declaredChemicals[] --
+// the mode-agnostic replacement for reading currentPlan.kalk/afr/alk/
+// cacl2/naoh/mg (which assumed exactly six fixed, named chemicals) in the
+// AI bucket scheduler.
+float planMlPerDayByIndex[kMaxDeclaredChemicals] = {0};
+
+// Chemical strengths (dKH/mL for Alk-moving chemicals, ppm/mL for Ca/Mg-only
+// chemicals). v1 kept these inside AIEngine and exposed them via
+// ai.getDkhPerMlKalk()/etc getters; v2 has no such per-chemical accessor
+// (the whole point of ChemicalDeclaration is that potency lives on the
+// declaration, not on named engine methods), so this file now owns them
+// directly as plain globals (also externed from WebRoutesShared.h so
+// WebRoutes.cpp's chemical-strength dashboard routes see the same values).
+//
+// TODO(migration, safety-relevant): the fallback defaults below are NOT
+// copied from the retired v1 AI_Engine.cpp, because that file was not part
+// of the v2 delivery package (only AI_EngineV2/Allocator were). Every
+// in-field device already has "str_kalk"/"str_afr"/etc. saved in the
+// "doser-settings" Preferences namespace from before this migration, and
+// "existing saved Preferences always win" (see loadChemicalStrengths()
+// below), so these fallbacks only matter for a brand-new chip that has
+// never saved a strength. CONFIRM these against the real removed v1
+// defaults (or the dashboard's recipe-entry math) before flashing any
+// factory-fresh unit.
+float kalkStrengthDkhPerMl  = 0.014f;   // saturated kalkwasser, ~recipeKalkGpg-based
+float afrStrengthDkhPerMl   = 0.0f;     // commercial AFR liquids vary by product/label
+float alkStrengthDkhPerMl   = 0.056f;   // soda ash solution, ~recipeAlkGpg-based
+float naohStrengthDkhPerMl  = 0.090f;   // NaOH solution, ~recipeNaohGpg-based
+float mgStrengthPpmPerMl    = 2.20f;    // magnesium chloride solution
+float cacl2StrengthPpmPerMl = 1.10f;    // calcium chloride solution
+
 OtaManager ota;
 
 float TANK_VOLUME_L = 1135.6f; // Default to 300 Gallons
@@ -365,14 +447,9 @@ unsigned long lastGoogleDriveDiagMs = 0;
 unsigned long lastLoggerHealthFirebaseMs = 0;
 unsigned long googleDriveDiagCount = 0;
 
-struct GoogleDriveLogQueueStats {
-    int fileCount = 0;
-    size_t totalBytes = 0;
-    String oldestPath = "none";
-    size_t oldestSize = 0;
-    String newestPath = "none";
-    size_t newestSize = 0;
-};
+// struct GoogleDriveLogQueueStats is now defined in
+// lib/WebRoutes/WebRoutesShared.h (moved there so WebRoutes.cpp can see
+// the type too).
 
 // Calibration timed runs are intentionally time-based, not mL-based.
 // This prevents a bad/old calibration value from making a 60-second calibration run
@@ -394,7 +471,7 @@ unsigned long calibrationRunUntilMs[4] = {0, 0, 0, 0};
 static constexpr uint8_t SAFETY_PUMP_PINS[4] = {22, 25, 26, 27};
 static constexpr uint32_t PUMP_RUNTIME_MARGIN_MS = 20000UL;
 static constexpr uint32_t PUMP_RUNTIME_ABSOLUTE_MAX_MS = 5UL * 60UL * 1000UL;
-static constexpr uint32_t INTER_PUMP_DELAY_MS = 5UL * 60UL * 1000UL;
+static constexpr uint32_t INTER_PUMP_DELAY_MS = 2UL * 60UL * 1000UL;
 
 int safetyActivePump = -1;
 unsigned long safetyPumpDeadlineMs = 0;
@@ -431,21 +508,28 @@ void noteInterPumpDoseStarted(int pumpIndex, const char* source) {
 
 void serviceInterPumpDelay() {
     // A dose that we started has completed as soon as no doser pump is running.
-    // Start the five-minute separation period from that actual completion time.
+    // Start the separation period from that actual completion time.
     if (interPumpDoseActive && !anyDoserPumpRunning()) {
         interPumpDoseActive = false;
         interPumpDelayActive = true;
         lastPumpDoseFinishedMs = millis();
 
+        // Fixed 2026-08-04: "300 seconds" was a hardcoded literal, not
+        // calculated from INTER_PUMP_DELAY_MS -- confirmed misleading when
+        // the constant was changed to 2 minutes and this text kept saying
+        // 300 regardless. Now reports whatever the constant actually is.
+        const unsigned long delaySeconds = INTER_PUMP_DELAY_MS / 1000UL;
         Serial.printf(
-            "INTER-PUMP DELAY STARTED [%s]: P%d finished; next dose allowed in 300 seconds.\n",
+            "INTER-PUMP DELAY STARTED [%s]: P%d finished; next dose allowed in %lu seconds.\n",
             interPumpLastSource.c_str(),
-            interPumpLastPump + 1
+            interPumpLastPump + 1,
+            delaySeconds
         );
         logger.printf(
-            "INTER-PUMP DELAY STARTED [%s]: P%d finished; next dose allowed in 300 seconds.\n",
+            "INTER-PUMP DELAY STARTED [%s]: P%d finished; next dose allowed in %lu seconds.\n",
             interPumpLastSource.c_str(),
-            interPumpLastPump + 1
+            interPumpLastPump + 1,
+            delaySeconds
         );
     }
 
@@ -609,100 +693,33 @@ struct DailyStats {
 // ---------------- ROLLING 7-DAY ALK DEMAND LEARNER ----------------
 // One compact binary file is written once per completed day. Preferences only
 // stores the resulting baseline because it is a setting, not time-series data.
-static constexpr const char* ALK_DEMAND_HISTORY_FILE = "/alk_demand.bin";
-static constexpr uint32_t ALK_DEMAND_MAGIC = 0x414C4B37UL; // "ALK7"
-static constexpr uint8_t ALK_DEMAND_VERSION = 3;
-static constexpr uint8_t ALK_DEMAND_MAX_DAYS = 14;
+// ALK_DEMAND_HISTORY_FILE now lives in lib/WebRoutes/WebRoutesShared.h.
 static constexpr float ERIC_SEEDED_DAILY_DEMAND_DKH = 0.73f;
 
-struct AlkDemandDay {
-    uint32_t dayKey = 0;       // local YYYYMMDD
-    float avgAlk = 0.0f;
-    float kalkMl = 0.0f;
-    float afrMl = 0.0f;
-    float naohMl = 0.0f;
-    float alkMl = 0.0f;
-    uint8_t mode = 0;
-    uint8_t reserved[3] = {0,0,0};
-};
-
-struct AlkDemandStore {
-    uint32_t magic = ALK_DEMAND_MAGIC;
-    uint8_t version = ALK_DEMAND_VERSION;
-    uint8_t count = 0;
-    uint8_t seeded = 0;
-    uint8_t reserved = 0;
-    float recommendedDailyDemandDkh = 0.0f;
-    float lastRecommendedP4MlDay = 0.0f;
-    AlkDemandDay days[ALK_DEMAND_MAX_DAYS];
-};
-
-
+// struct AlkDemandDay/AlkDemandStore and the ALK_DEMAND_MAGIC/VERSION/
+// MAX_DAYS constants are now defined in lib/WebRoutes/WebRoutesShared.h
+// (moved there so WebRoutes.cpp can see the type too). This is still the
+// one real instance.
 AlkDemandStore alkDemandStore;
 
 // ---------------- ROLLING 7-DAY CALCIUM DEMAND LEARNER ----------------
 // Calcium added by kalk is derived from balanced calcification stoichiometry:
 // approximately 7.143 ppm Ca accompanies each 1.0 dKH supplied by kalk.
-static constexpr const char* CA_DEMAND_HISTORY_FILE = "/ca_demand.bin";
-static constexpr uint32_t CA_DEMAND_MAGIC = 0x43413744UL; // "CA7D"
-static constexpr uint8_t CA_DEMAND_VERSION = 2;
-static constexpr uint8_t CA_DEMAND_MAX_DAYS = 7;
-static constexpr float CA_PPM_PER_DKH_KALK = 7.142857f;
+// CA_DEMAND_HISTORY_FILE and CA_PPM_PER_DKH_KALK now live in
+// lib/WebRoutes/WebRoutesShared.h.
 
-struct CalciumDemandDay {
-    uint32_t dayKey = 0;
-    float avgCa = 0.0f;
-    float kalkMl = 0.0f;
-    float afrMl = 0.0f;
-    float cacl2Ml = 0.0f;
-    uint8_t mode = 0;
-    uint8_t reserved[3] = {0,0,0};
-};
-
-struct CalciumDemandStore {
-    uint32_t magic = CA_DEMAND_MAGIC;
-    uint8_t version = CA_DEMAND_VERSION;
-    uint8_t count = 0;
-    uint8_t reserved1 = 0;
-    uint8_t reserved2 = 0;
-    float recommendedDailyDemandPpm = 0.0f;
-    float lastRecommendedP2MlDay = 0.0f;
-    CalciumDemandDay days[CA_DEMAND_MAX_DAYS];
-};
-
+// struct CalciumDemandDay/CalciumDemandStore and the CA_DEMAND_MAGIC/
+// VERSION/MAX_DAYS constants are now defined in
+// lib/WebRoutes/WebRoutesShared.h (moved there so WebRoutes.cpp can see
+// the type too). This is still the one real instance.
 CalciumDemandStore calciumDemandStore;
 
 
-void loadAlkDemandLearningSetting() {
-    prefs.begin("doser-settings", true);
-    automaticDemandLearningEnabled = prefs.getBool("alk7_auto", false);
-    prefs.end();
+// loadAlkDemandLearningSetting() moved to lib/DemandLearning/DemandLearning.cpp
 
-    Serial.printf("ALK 7-DAY AUTO LEARNING: %s\n",
-                  automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
-    logger.printf("ALK 7-DAY AUTO LEARNING: %s\n",
-                  automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
-}
+// saveAlkDemandLearningSetting() moved to lib/DemandLearning/DemandLearning.cpp
 
-void saveAlkDemandLearningSetting() {
-    prefs.begin("doser-settings", false);
-    prefs.putBool("alk7_auto", automaticDemandLearningEnabled);
-    prefs.end();
-}
-
-void handleGetAlkDemandLearning() {
-    JsonDocument doc;
-    doc["ok"] = true;
-    doc["enabled"] = automaticDemandLearningEnabled;
-    doc["daysCollected"] = (int)min((uint8_t)7, alkDemandStore.count);
-    doc["ready"] = alkDemandStore.count >= 7;
-    doc["recommendedDemandDkhDay"] = alkDemandStore.recommendedDailyDemandDkh;
-    doc["recommendedP4MlDay"] = alkDemandStore.lastRecommendedP4MlDay;
-    doc["currentP4MlDay"] = baselineMgMlDay;
-    String output;
-    serializeJson(doc, output);
-    server.send(200, "application/json", output);
-}
+// handleGetAlkDemandLearning() moved to lib/WebRoutes/WebRoutes.cpp
 
 bool publishAlkDemandStatusToFirebase(const char* source, bool force);
 bool publishCalciumDemandStatusToFirebase(const char* source, bool force);
@@ -712,213 +729,16 @@ void recordCompletedCalciumDayAndLearn(float avgCa);
 void printCalciumDemandRecommendation(const char* source);
 
 
-void loadCalciumDemandLearningSetting() {
-    prefs.begin("doser-settings", true);
-    automaticCalciumLearningEnabled = prefs.getBool("ca7_auto", false);
-    prefs.end();
+// loadCalciumDemandLearningSetting() moved to lib/DemandLearning/DemandLearning.cpp
 
-    Serial.printf("CALCIUM 7-DAY AUTO LEARNING: %s\n",
-                  automaticCalciumLearningEnabled ? "ENABLED" : "DISABLED");
-    logger.printf("CALCIUM 7-DAY AUTO LEARNING: %s\n",
-                  automaticCalciumLearningEnabled ? "ENABLED" : "DISABLED");
-}
+// saveCalciumDemandLearningSetting() moved to lib/DemandLearning/DemandLearning.cpp
 
-void saveCalciumDemandLearningSetting() {
-    prefs.begin("doser-settings", false);
-    prefs.putBool("ca7_auto", automaticCalciumLearningEnabled);
-    prefs.end();
-}
+// handleGetCalciumDemandLearning() moved to lib/WebRoutes/WebRoutes.cpp
 
-void handleGetCalciumDemandLearning() {
-    JsonDocument doc;
-    doc["ok"] = true;
-    doc["enabled"] = automaticCalciumLearningEnabled;
-    doc["daysCollected"] = (int)calciumDemandStore.count;
-    doc["ready"] = calciumDemandStore.count >= 7;
-    doc["recommendedDemandPpmDay"] = calciumDemandStore.recommendedDailyDemandPpm;
-    doc["recommendedP2MlDay"] = calciumDemandStore.lastRecommendedP2MlDay;
-    doc["currentP2MlDay"] = baselineCacl2MlDay;
-    String output;
-    serializeJson(doc, output);
-    server.send(200, "application/json", output);
-}
+// handlePostCalciumDemandLearning() moved to lib/WebRoutes/WebRoutes.cpp
 
-void handlePostCalciumDemandLearning() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, server.arg("plain"));
-    if (err) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    automaticCalciumLearningEnabled = doc["enabled"] | false;
-    saveCalciumDemandLearningSetting();
-
-    Serial.printf("CALCIUM 7-DAY AUTO LEARNING CHANGED: %s\n",
-                  automaticCalciumLearningEnabled ? "ENABLED" : "DISABLED");
-    logger.printf("CALCIUM 7-DAY AUTO LEARNING CHANGED: %s\n",
-                  automaticCalciumLearningEnabled ? "ENABLED" : "DISABLED");
-
-    publishCalciumDemandStatusToFirebase("learning-setting", true);
-
-    JsonDocument out;
-    out["ok"] = true;
-    out["enabled"] = automaticCalciumLearningEnabled;
-    String output;
-    serializeJson(out, output);
-    server.send(200, "application/json", output);
-}
-
-void handlePostAlkDemandLearning() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, server.arg("plain"));
-    if (err) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    automaticDemandLearningEnabled = doc["enabled"] | false;
-    saveAlkDemandLearningSetting();
-
-    Serial.printf("ALK 7-DAY AUTO LEARNING CHANGED: %s\n",
-                  automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
-    logger.printf("ALK 7-DAY AUTO LEARNING CHANGED: %s\n",
-                  automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
-
-    publishAlkDemandStatusToFirebase("learning-setting", true);
-
-    JsonDocument out;
-    out["ok"] = true;
-    out["enabled"] = automaticDemandLearningEnabled;
-    String output;
-    serializeJson(out, output);
-    server.send(200, "application/json", output);
-}
+// handlePostAlkDemandLearning() moved to lib/WebRoutes/WebRoutes.cpp
 bool saveAlkDemandHistory();
-void applyAiBaselineToEngine();
-void loadFastAlkLearnerState();
-void saveFastAlkLearnerStateIfChanged();
-
-void applyOneTimeAlkDemandBootstrapIfNeeded() {
-    if (!shouldUseAlkDemandBootstrapForThisDevice()) {
-        Serial.printf(
-            "ALK 7-DAY BOOTSTRAP: not configured for this build (mode=%d enabled=%d seed=%.3f).\n",
-            dosingMode,
-            (int)BUILD_ALK_DEMAND_BOOTSTRAP_ENABLED,
-            (float)BUILD_ALK_DEMAND_BOOTSTRAP_DKH_DAY
-        );
-        return;
-    }
-
-    prefs.begin("doser-settings", true);
-    bool alreadySeeded = prefs.getBool("alk7_seeded", false);
-    prefs.end();
-
-    if (alreadySeeded) {
-        Serial.printf("ALK 7-DAY BOOTSTRAP: already applied on %s; skipping.\n", deviceID.c_str());
-        logger.printf("ALK 7-DAY BOOTSTRAP: already applied on %s; skipping.\n", deviceID.c_str());
-        return;
-    }
-
-    // Seed only the learned/recommended total demand. Do not fabricate seven
-    // LittleFS daily records. Real daily records will replace this estimate
-    // after the controller has collected seven completed days.
-    alkDemandStore.recommendedDailyDemandDkh = BUILD_ALK_DEMAND_BOOTSTRAP_DKH_DAY;
-
-    const float fixedDkh =
-        baselineKalkMlDay * ai.getDkhPerMlKalk() +
-        baselineNaohMlDay * ai.getDkhPerMlNaoh();
-
-    float recommendedP4MlDay = 0.0f;
-    const float alkStrength = ai.getDkhPerMlAlk();
-    if (alkStrength > 0.0f) {
-        recommendedP4MlDay =
-            (BUILD_ALK_DEMAND_BOOTSTRAP_DKH_DAY - fixedDkh) / alkStrength;
-    }
-
-    if (!isfinite(recommendedP4MlDay) || recommendedP4MlDay < 0.0f) {
-        recommendedP4MlDay = 0.0f;
-    }
-    if (recommendedP4MlDay > aiMaxAlkDayMl) {
-        recommendedP4MlDay = aiMaxAlkDayMl;
-    }
-
-    alkDemandStore.lastRecommendedP4MlDay = recommendedP4MlDay;
-    saveAlkDemandHistory();
-
-    prefs.begin("doser-settings", false);
-    prefs.putBool("alk7_seeded", true);
-    prefs.end();
-
-    Serial.println("========== ALK 7-DAY ONE-TIME BOOTSTRAP ==========");
-    Serial.printf("Device: %s\n", deviceID.c_str());
-    Serial.printf("Seed source: previously calculated Google Drive week\n");
-    Serial.printf("Seeded total demand: %.3f dKH/day\n", BUILD_ALK_DEMAND_BOOTSTRAP_DKH_DAY);
-    Serial.printf("Existing Kalk + NaOH baseline contribution: %.3f dKH/day\n", fixedDkh);
-    Serial.printf("Recommended P4 Alk baseline: %.2f ml/day\n", recommendedP4MlDay);
-    Serial.printf("Automatic learning: %s\n",
-                  automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
-    Serial.println("Seven real daily records will replace this bootstrap estimate.");
-    Serial.println("===================================================");
-
-    logger.println("========== ALK 7-DAY ONE-TIME BOOTSTRAP ==========");
-    logger.printf("Device: %s\n", deviceID.c_str());
-    logger.println("Seed source: previously calculated Google Drive week");
-    logger.printf("Seeded total demand: %.3f dKH/day\n", BUILD_ALK_DEMAND_BOOTSTRAP_DKH_DAY);
-    logger.printf("Existing Kalk + NaOH baseline contribution: %.3f dKH/day\n", fixedDkh);
-    logger.printf("Recommended P4 Alk baseline: %.2f ml/day\n", recommendedP4MlDay);
-    logger.printf("Automatic learning: %s\n",
-                  automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
-    logger.println("Seven real daily records will replace this bootstrap estimate.");
-    logger.println("===================================================");
-
-    // If automatic learning is already enabled, use the same bounded starting
-    // rule as normal learning: existing P4 moves no more than 10%; zero starts
-    // at only 10% of the calculated target.
-    if (automaticDemandLearningEnabled && alkStrength > 0.0f) {
-        float lowP4 = baselineMgMlDay > 0.0f ? baselineMgMlDay * 0.90f : 0.0f;
-        float highP4 = baselineMgMlDay > 0.0f
-            ? baselineMgMlDay * 1.10f
-            : recommendedP4MlDay * 0.10f;
-
-        float appliedP4 = constrain(recommendedP4MlDay, lowP4, highP4);
-        appliedP4 = constrain(appliedP4, 0.0f, aiMaxAlkDayMl);
-
-        if (fabsf(appliedP4 - baselineMgMlDay) >= 0.01f) {
-            float oldP4 = baselineMgMlDay;
-            baselineMgMlDay = appliedP4;
-
-            prefs.begin("doser-settings", false);
-            prefs.putFloat("base_mg", baselineMgMlDay);
-            prefs.end();
-
-            applyAiBaselineToEngine();
-
-            Serial.printf("ALK 7-DAY BOOTSTRAP APPLIED: P4 baseline %.2f -> %.2f ml/day target=%.2f\n",
-                          oldP4, baselineMgMlDay, recommendedP4MlDay);
-            logger.printf("ALK 7-DAY BOOTSTRAP APPLIED: P4 baseline %.2f -> %.2f ml/day target=%.2f\n",
-                          oldP4, baselineMgMlDay, recommendedP4MlDay);
-        } else {
-            Serial.printf("ALK 7-DAY BOOTSTRAP: no P4 baseline change required. current=%.2f target=%.2f\n",
-                          baselineMgMlDay, recommendedP4MlDay);
-            logger.printf("ALK 7-DAY BOOTSTRAP: no P4 baseline change required. current=%.2f target=%.2f\n",
-                          baselineMgMlDay, recommendedP4MlDay);
-        }
-    } else {
-        Serial.println("ALK 7-DAY BOOTSTRAP: recommendation stored but not applied.");
-        logger.println("ALK 7-DAY BOOTSTRAP: recommendation stored but not applied.");
-    }
-}
 
 void loadAlkDemandHistory();
 void recordCompletedDayAndLearn(float avgAlk);
@@ -951,7 +771,6 @@ void handleGetAlkDemandLearning();
 void handlePostAlkDemandLearning();
 void loadAlkDemandLearningSetting();
 void saveAlkDemandLearningSetting();
-void applyOneTimeAlkDemandBootstrapIfNeeded();
 void loadCalciumDemandLearningSetting();
 void saveCalciumDemandLearningSetting();
 void handleGetCalciumDemandLearning();
@@ -998,7 +817,6 @@ GoogleDriveLogQueueStats collectGoogleDriveLogQueueStats();
 void logGoogleDriveDiagnostics(const char* source);
 bool publishLoggerHealthToFirebase(const char* source, bool force = false);
 void addCurrentAiPlanToBuckets(const char* source, bool force = false);
-void enforceAllModeNetRecovery(float measuredAlk, float measuredCa, float measuredPh, const char* sourceLabel);
 void publishAiPlanIfNeeded(const char* source, bool force = false);
 bool isLightsOn();
 void publishFirmwareVersionIfReady(bool force = false);
@@ -1411,15 +1229,37 @@ void savePumpSafeties() {
     prefs.end();
 }
 
+// Added 2026-08-04: see DeclaredChemical::bucketThresholdMl's comment for
+// the full incident. Single source of truth for "which chemical, if any,
+// is on this physical pump right now" -- used by the three getters below
+// so threshold/max-single-dose/max-day all resolve the same way.
+int chemicalIndexForPump(int pumpIndex) {
+    if (pumpIndex < 0 || pumpIndex >= 4) return -1;
+    for (int i = 0; i < declaredChemicalCount; i++) {
+        if (declaredChemicals[i].active && declaredChemicals[i].pumpIndex == pumpIndex) return i;
+    }
+    return -1;
+}
+
 float getPumpDoseThresholdMl(int pumpIndex) {
+    int ci = chemicalIndexForPump(pumpIndex);
+    if (ci >= 0) {
+        float v = declaredChemicals[ci].bucketThresholdMl;
+        if (isfinite(v) && v > 0.0f) return v; // chemical-level value takes priority
+    }
     if (pumpIndex >= 0 && pumpIndex < 4) {
         float v = pumpDoseThresholdMl[pumpIndex];
-        if (isfinite(v) && v > 0.0f) return v;
+        if (isfinite(v) && v > 0.0f) return v; // fallback: not yet configured per-chemical
     }
     return DOSING_THRESHOLD > 0.0f ? DOSING_THRESHOLD : 1.0f;
 }
 
 float getPumpMaxDoseMl(int pumpIndex) {
+    int ci = chemicalIndexForPump(pumpIndex);
+    if (ci >= 0) {
+        float v = declaredChemicals[ci].maxSingleDoseMl;
+        if (isfinite(v) && v > 0.0f) return v;
+    }
     if (pumpIndex >= 0 && pumpIndex < 4) {
         float v = pumpMaxDoseMl[pumpIndex];
         if (isfinite(v) && v > 0.0f) return v;
@@ -1428,6 +1268,18 @@ float getPumpMaxDoseMl(int pumpIndex) {
 }
 
 float getPumpMaxDayMl(int pumpIndex) {
+    // Fixed 2026-08-04: this is the actual PHYSICAL EXECUTION enforcement
+    // (see applyPumpSafetyCaps() below) -- previously read ONLY the
+    // pump-indexed array, completely independent of this same chemical's
+    // maxMlPerDay that the allocator plans against (Manage Chemicals'
+    // "Daily Dose Cap"). Now chemical-level takes priority, same pattern
+    // as the two getters above, so planning and physical dispensing can
+    // no longer silently disagree about the same chemical's daily cap.
+    int ci = chemicalIndexForPump(pumpIndex);
+    if (ci >= 0) {
+        float v = declaredChemicals[ci].maxMlPerDay;
+        if (isfinite(v) && v > 0.0f) return v;
+    }
     if (pumpIndex >= 0 && pumpIndex < 4) {
         float v = pumpMaxDayMl[pumpIndex];
         if (isfinite(v) && v > 0.0f) return v;
@@ -1511,15 +1363,17 @@ void saveMode7DayNightSplit() {
     prefs.end();
 }
 
+// v1 -> v2 migration: intentionally a no-op now. AIEngineV2/Allocator has no
+// setMode7DayNightSplit()-shaped API -- the percentage split concept is
+// replaced by Allocator.cpp's fixed lights-off pH-taper boost (see the
+// block comment above runAiRecalculation() in the AI recalculation section
+// for the full explanation). Kept as a function (rather than deleted
+// outright) purely so loadMode7DayNightSplit() and any WebRoutes.cpp
+// dashboard handlers that call it still compile unchanged; the Preferences
+// values it used to push into the engine are simply no longer read by
+// anything that doses.
 void applyMode7DayNightSplitToEngine() {
-    ai.setMode7DayNightSplit(
-        mode7DayNaohPct,
-        mode7DayAlkPct,
-        mode7NightNaohPct,
-        mode7NightAlkPct,
-        mode7NaohMaxPh,
-        mode7DayNightSplitEnabled
-    );
+    // Intentionally empty post-migration -- see comment above.
 }
 
 
@@ -1577,16 +1431,17 @@ void saveAiChemistrySafeties() {
     prefs.end();
 }
 
+// v1 -> v2 migration: intentionally a no-op now. v1 cached these limits
+// inside AIEngine via a setter; v2's rebuildAiChemicalDeclarations() and
+// runAiRecalculation() read aiMaxKalkDayMl/aiMaxNaohDayMl/aiMaxAlkDayMl/
+// aiMaxAlkRiseDkhDay/aiMaxCaRisePpmDay/aiMaxMgCorrectionDayMl/aiMaxMgDayMl
+// directly from these same globals on every recalculation cycle, so there is
+// nothing left to push into the engine ahead of time. aiMgDeadbandPpm has no
+// v2 consumer at all yet (no equivalent deadband concept in Allocator.cpp).
+// Kept as a function purely so loadAiChemistrySafeties() and any
+// WebRoutes.cpp handlers calling it still compile unchanged.
 void applyAiChemistrySafetiesToEngine() {
-    ai.setChemistrySafetyLimits(
-        aiMaxKalkDayMl,
-        aiMaxNaohDayMl,
-        aiMaxAlkDayMl,
-        aiMaxAlkRiseDkhDay,
-        aiMaxMgCorrectionDayMl,
-        aiMaxMgDayMl,
-        aiMgDeadbandPpm
-    );
+    // Intentionally empty post-migration -- see comment above.
 }
 
 const char* chemicalCapacityKey(int idx) {
@@ -1675,16 +1530,10 @@ void recordChemicalDispense(int pumpIndex, float ml, const char* source) {
 }
 
 
-struct dailyStats {
-    float tempSum = 0.0f;
-    float phSum = 0.0f;
-    float alkSum = 0.0f;
-    float caSum = 0.0f;
-    float mgSum = 0.0f;
-    float pptSum = 0.0f;
-    float sgSum = 0.0f;
-    int count = 0;
-} dailyStats;
+// struct dailyStats is now defined in lib/WebRoutes/WebRoutesShared.h
+// (moved there so WebRoutes.cpp can see the type too). This is still the
+// one real instance.
+struct dailyStats dailyStats;
 
 bool reportPushedToday = false;
 String dailyAccountingDate = "";
@@ -1714,321 +1563,663 @@ bool hasValidSavedManualChemistry() {
            lastLocalTest.ph  > 0.0f;
 }
 
-// Convert the fast learner's requested alkalinity correction from dKH/day into
-// the actual mL/day required by the configured Alk solution. The AI engine's
-// internal plan can be more conservative, but it must not silently turn a
-// 0.400 dKH/day request into 400 mL/day when the configured strength says that
-// 400 mL supplies only a small fraction of that correction.
+// §1/§3.2 "reduce required manual testing frequency over time (starting
+// daily -> toward weekly)... actively prompts for a manual test if 7+ days
+// have passed with no manual cross-check." Owner decision 2026-07-24: this
+// applies ONLY to manual-only customers -- a tank with Apex/Trident
+// automated testing (every few hours) has no need for this prompt at all,
+// since it's already cross-checking constantly. Engine-side: tracks the
+// data and computes the recommendation; dashboard (not built yet) is
+// expected to read this and render the actual prompt UI.
 //
-// This correction is intentionally bounded twice:
-//   1. AI chemistry max for Alk solution.
-//   2. Physical pump daily max for the pump carrying Alk in the active mode.
-// Existing per-dose and daily execution rails remain active as a final layer.
-void enforceFastAlkPlanConversion(const char* sourceLabel, bool lightsOnNow) {
-    // Final-plan alkalinity guard. The fast learner expresses its correction in
-    // dKH/day, while the plan contains mL/day. Mode 7 can split that correction
-    // between regular Alk solution and NaOH, so compare the COMBINED routed
-    // correction in dKH/day before changing either pump. This prevents both the
-    // old under-conversion (0.400 dKH/day becoming 400 mL/day) and accidental
-    // double dosing when NaOH already supplies the requested correction.
+// Real epoch time, not millis(): saveManualTestLocally()'s existing
+// last_ts field stores millis()/1000 (uptime seconds), which resets to a
+// stale, meaningless value across every reboot -- fine for whatever it was
+// originally used for, but wrong for a multi-day "how long has it been"
+// calculation. This uses a separate, correctly wall-clock-anchored field
+// instead, added alongside (not replacing) the existing one.
+uint32_t lastManualTestEpochSec = 0; // 0 = never recorded / not yet synced
 
-    const float requestedDkhDay = max(ai.getFastAlkBoostDkhDay(),
-                                      ai.getImmediateAlkCatchupDkhDay());
-    const float alkStrength = ai.getDkhPerMlAlk();
-    const float naohStrength = ai.getDkhPerMlNaoh();
-
-    if (!isfinite(requestedDkhDay) || requestedDkhDay <= 0.0f) return;
-
-    int alkPumpIndex = -1;
-    int naohPumpIndex = -1;
-    switch (dosingMode) {
-        case 4: alkPumpIndex = 0; break;                 // P1 Alk
-        case 5: alkPumpIndex = 1; break;                 // P2 Alk
-        case 6: naohPumpIndex = 2; break;                // P3 NaOH
-        case 7: alkPumpIndex = 3; naohPumpIndex = 2; break; // P4 Alk, P3 NaOH
-        case 8: naohPumpIndex = 2; break;                // P3 NaOH
-        default: return;
-    }
-
-    const bool validAlkStrength = isfinite(alkStrength) && alkStrength > 0.0f;
-    const bool validNaohStrength = isfinite(naohStrength) && naohStrength > 0.0f;
-
-    float engineAlkDkhDay = validAlkStrength
-        ? max(0.0f, ai.currentPlan.alk) * alkStrength : 0.0f;
-    float engineNaohDkhDay = validNaohStrength
-        ? max(0.0f, ai.currentPlan.naoh) * naohStrength : 0.0f;
-    float engineCorrectionDkhDay = engineAlkDkhDay + engineNaohDkhDay;
-    float deficitDkhDay = requestedDkhDay - engineCorrectionDkhDay;
-
-    // Pick the route already selected by the final AI plan. For Mode 7, the
-    // day/night preference is used only as a tie-breaker. We never erase or
-    // remap the other route.
-    bool useNaohRoute = false;
-    if (naohPumpIndex >= 0 && alkPumpIndex < 0) {
-        useNaohRoute = true;
-    } else if (dosingMode == 7) {
-        if (ai.currentPlan.naoh > 0.01f && ai.currentPlan.alk <= 0.01f) {
-            useNaohRoute = true;
-        } else if (ai.currentPlan.alk > 0.01f && ai.currentPlan.naoh <= 0.01f) {
-            useNaohRoute = false;
-        } else {
-            useNaohRoute = mode7DayNightSplitEnabled && !lightsOnNow;
-        }
-    }
-
-    const char* routeName = useNaohRoute ? "NaOH" : "Alk";
-    const int routePumpIndex = useNaohRoute ? naohPumpIndex : alkPumpIndex;
-    const float routeStrength = useNaohRoute ? naohStrength : alkStrength;
-    const float routeEngineMlDay = useNaohRoute
-        ? ai.currentPlan.naoh : ai.currentPlan.alk;
-    float routeAllowedMlDay = 0.0f;
-
-    if (routePumpIndex >= 0) {
-        const float aiCap = useNaohRoute ? aiMaxNaohDayMl : aiMaxAlkDayMl;
-        routeAllowedMlDay = min(aiCap, pumpMaxDayMl[routePumpIndex]);
-        if (!isfinite(routeAllowedMlDay) || routeAllowedMlDay < 0.0f) {
-            routeAllowedMlDay = 0.0f;
-        }
-    }
-
-    const char* action = "NO_CHANGE";
-    const char* limitReason = "none";
-    float addedMlDay = 0.0f;
-
-    if (deficitDkhDay > 0.0005f && routePumpIndex >= 0 &&
-        isfinite(routeStrength) && routeStrength > 0.0f) {
-        const float requiredAddedMlDay = deficitDkhDay / routeStrength;
-        float correctedRouteMlDay = max(0.0f, routeEngineMlDay) + requiredAddedMlDay;
-
-        if (correctedRouteMlDay > routeAllowedMlDay) {
-            correctedRouteMlDay = routeAllowedMlDay;
-            const float aiCap = useNaohRoute ? aiMaxNaohDayMl : aiMaxAlkDayMl;
-            limitReason = (aiCap <= pumpMaxDayMl[routePumpIndex])
-                ? (useNaohRoute ? "AI_NAOH_DAILY_CAP" : "AI_ALK_DAILY_CAP")
-                : "PUMP_DAILY_CAP";
-        }
-
-        if (correctedRouteMlDay > routeEngineMlDay + 0.01f) {
-            addedMlDay = correctedRouteMlDay - routeEngineMlDay;
-            if (useNaohRoute) ai.currentPlan.naoh = correctedRouteMlDay;
-            else ai.currentPlan.alk = correctedRouteMlDay;
-            action = "INCREASED";
-        } else {
-            action = "AT_CAP";
-        }
-    }
-
-    const float finalAlkDkhDay = validAlkStrength
-        ? max(0.0f, ai.currentPlan.alk) * alkStrength : 0.0f;
-    const float finalNaohDkhDay = validNaohStrength
-        ? max(0.0f, ai.currentPlan.naoh) * naohStrength : 0.0f;
-    const float finalCorrectionDkhDay = finalAlkDkhDay + finalNaohDkhDay;
-
-    Serial.printf(
-        "ALK ROUTE GUARD [%s]: requested=%.3f dKH/day engine=%.3f "
-        "(alk=%.3f naoh=%.3f) deficit=%.3f route=%s P%d "
-        "added=%.2f ml/day final=%.3f dKH/day action=%s limit=%s\n",
-        sourceLabel ? sourceLabel : "AI",
-        requestedDkhDay,
-        engineCorrectionDkhDay,
-        engineAlkDkhDay,
-        engineNaohDkhDay,
-        max(0.0f, deficitDkhDay),
-        routeName,
-        routePumpIndex + 1,
-        addedMlDay,
-        finalCorrectionDkhDay,
-        action,
-        limitReason
-    );
-    logger.printf(
-        "ALK ROUTE GUARD [%s]: requested=%.3f dKH/day engine=%.3f "
-        "(alk=%.3f naoh=%.3f) deficit=%.3f route=%s P%d "
-        "added=%.2f ml/day final=%.3f dKH/day action=%s limit=%s\n",
-        sourceLabel ? sourceLabel : "AI",
-        requestedDkhDay,
-        engineCorrectionDkhDay,
-        engineAlkDkhDay,
-        engineNaohDkhDay,
-        max(0.0f, deficitDkhDay),
-        routeName,
-        routePumpIndex + 1,
-        addedMlDay,
-        finalCorrectionDkhDay,
-        action,
-        limitReason
-    );
+// §1/§3.2 manual-test-prompt applicability. Confirmed working visually on
+// reefDoser3 on 2026-07-25 (a temporary debug override forced this true for
+// that check -- removed now that it's confirmed; see MIGRATION_NOTES.md-
+// style history in git/chat log if this needs revisiting).
+bool isManualOnlyTank() {
+    return !apexEnabled && !useApexLogEmulatorForThisDevice();
 }
 
-
-// Final all-mode net recovery guard.
-// The AI plan must replace learned daily consumption AND provide the requested
-// net rise. This runs after the engine/fast learner and before bucket slicing.
-void enforceAllModeNetRecovery(float measuredAlk, float measuredCa, float measuredPh,
-                               const char* sourceLabel) {
-    const float alkGap = max(0.0f, targetAlk - measuredAlk);
-    const float caGap = max(0.0f, targetCa - measuredCa);
-    const float learnedAlk = max(0.0f, alkDemandStore.recommendedDailyDemandDkh);
-    const float learnedCa = max(0.0f, calciumDemandStore.recommendedDailyDemandPpm);
-    const float netAlkRise = min(alkGap, aiMaxAlkRiseDkhDay);
-    const float netCaRise = min(caGap, aiMaxCaRisePpmDay);
-    const float requiredAlk = learnedAlk + netAlkRise;
-    const float requiredCa = learnedCa + netCaRise;
-
-    const float kalkCap = min(aiMaxKalkDayMl, pumpMaxDayMl[0]);
-    ai.currentPlan.kalk = constrain(ai.currentPlan.kalk, 0.0f, max(0.0f, kalkCap));
-
-    // Clamp every planned route to the physical pump used by the selected mode
-    // before calculating supplied chemistry. This keeps the recovery log honest:
-    // "final" is what the scheduler can actually deliver, not an over-limit plan.
-    switch (dosingMode) {
-        case 1:
-            ai.currentPlan.kalk = min(ai.currentPlan.kalk, pumpMaxDayMl[0]);
+// Conservative on purpose: the LEAST mature of Alk/Ca/Mg governs the
+// recommended interval, not an average -- the system is only as proven as
+// its least-confident parameter. Mg is excluded here in the common case
+// where no active chemical touches it (see the earlier §5.2 sufficiency-
+// check fix) -- an unaddressable parameter's permanently-low maturity
+// would otherwise force this to always report "day 1" regardless of how
+// well-proven Alk/Ca actually are.
+//
+// Uses provenMaturity(), not maturity(). Fixed 2026-07-27: maturity()
+// legitimately decays between measurements (correct for its original
+// dosing-caution purpose, see AI_EngineV2.h), but that meant a customer
+// could watch this number go from 10% back to 0% a few hours after a good
+// test, with no new bad data -- just time passing. For a customer-facing
+// "the system has proven itself" signal, that's confusing and undermines
+// trust in the recommendation. provenMaturity() is a genuine ratchet:
+// tracks the best this filter has ever demonstrated, never regresses on
+// its own.
+float manualTestGoverningMaturity() {
+    float m = fminf(ai.filters[P_ALK].provenMaturity(), ai.filters[P_CA].provenMaturity());
+    bool mgAddressable = false;
+    for (int i = 0; i < declaredChemicalCount; i++) {
+        if (declaredChemicals[i].active && declaredChemicals[i].potencyMgPerMl != 0.0f) {
+            mgAddressable = true;
             break;
-        case 2:
-            ai.currentPlan.afr = constrain(ai.currentPlan.afr, 0.0f, pumpMaxDayMl[0]);
-            break;
-        case 3:
-            ai.currentPlan.afr = constrain(ai.currentPlan.afr, 0.0f, pumpMaxDayMl[1]);
-            break;
-        case 4:
-            ai.currentPlan.alk = constrain(ai.currentPlan.alk, 0.0f, min(aiMaxAlkDayMl, pumpMaxDayMl[0]));
-            ai.currentPlan.cacl2 = constrain(ai.currentPlan.cacl2, 0.0f, pumpMaxDayMl[1]);
-            break;
-        case 5:
-            ai.currentPlan.alk = constrain(ai.currentPlan.alk, 0.0f, min(aiMaxAlkDayMl, pumpMaxDayMl[1]));
-            ai.currentPlan.cacl2 = constrain(ai.currentPlan.cacl2, 0.0f, pumpMaxDayMl[2]);
-            break;
-        case 6:
-            ai.currentPlan.cacl2 = constrain(ai.currentPlan.cacl2, 0.0f, pumpMaxDayMl[1]);
-            ai.currentPlan.naoh = constrain(ai.currentPlan.naoh, 0.0f, min(aiMaxNaohDayMl, pumpMaxDayMl[2]));
-            break;
-        case 7:
-            ai.currentPlan.cacl2 = constrain(ai.currentPlan.cacl2, 0.0f, pumpMaxDayMl[1]);
-            ai.currentPlan.naoh = constrain(ai.currentPlan.naoh, 0.0f, min(aiMaxNaohDayMl, pumpMaxDayMl[2]));
-            ai.currentPlan.alk = constrain(ai.currentPlan.alk, 0.0f, min(aiMaxAlkDayMl, pumpMaxDayMl[3]));
-            break;
-        case 8:
-            ai.currentPlan.cacl2 = constrain(ai.currentPlan.cacl2, 0.0f, pumpMaxDayMl[1]);
-            ai.currentPlan.naoh = constrain(ai.currentPlan.naoh, 0.0f, min(aiMaxNaohDayMl, pumpMaxDayMl[2]));
-            break;
+        }
     }
-
-    auto alkSupplied = [&]() {
-        return max(0.0f, ai.currentPlan.kalk) * ai.getDkhPerMlKalk() +
-               max(0.0f, ai.currentPlan.afr) * ai.getDkhPerMlAfr() +
-               max(0.0f, ai.currentPlan.alk) * ai.getDkhPerMlAlk() +
-               max(0.0f, ai.currentPlan.naoh) * ai.getDkhPerMlNaoh();
-    };
-    auto caSupplied = [&]() {
-        return (max(0.0f, ai.currentPlan.kalk) * ai.getDkhPerMlKalk() +
-                max(0.0f, ai.currentPlan.afr) * ai.getDkhPerMlAfr()) * CA_PPM_PER_DKH_KALK +
-               max(0.0f, ai.currentPlan.cacl2) * ai.getCaPerMlCacl2();
-    };
-
-    float alkBefore = alkSupplied();
-    float alkDeficit = max(0.0f, requiredAlk - alkBefore);
-    const bool naohAllowed = measuredPh <= 0.0f || measuredPh < mode7NaohMaxPh;
-
-    auto addMl = [&](float &planMl, float strength, float capMl, float neededUnits) {
-        if (neededUnits <= 0.0f || strength <= 0.0f || capMl <= planMl) return 0.0f;
-        float add = min(neededUnits / strength, capMl - planMl);
-        if (add > 0.0f) planMl += add;
-        return add * strength;
-    };
-
-    switch (dosingMode) {
-        case 1:
-            alkDeficit -= addMl(ai.currentPlan.kalk, ai.getDkhPerMlKalk(), kalkCap, alkDeficit);
-            break;
-        case 2:
-            alkDeficit -= addMl(ai.currentPlan.afr, ai.getDkhPerMlAfr(), pumpMaxDayMl[0], alkDeficit);
-            break;
-        case 3:
-            alkDeficit -= addMl(ai.currentPlan.afr, ai.getDkhPerMlAfr(), pumpMaxDayMl[1], alkDeficit);
-            alkDeficit -= addMl(ai.currentPlan.kalk, ai.getDkhPerMlKalk(), kalkCap, alkDeficit);
-            break;
-        case 4:
-            alkDeficit -= addMl(ai.currentPlan.alk, ai.getDkhPerMlAlk(),
-                                min(aiMaxAlkDayMl, pumpMaxDayMl[0]), alkDeficit);
-            break;
-        case 5:
-            alkDeficit -= addMl(ai.currentPlan.alk, ai.getDkhPerMlAlk(),
-                                min(aiMaxAlkDayMl, pumpMaxDayMl[1]), alkDeficit);
-            break;
-        case 6:
-            if (naohAllowed)
-                alkDeficit -= addMl(ai.currentPlan.naoh, ai.getDkhPerMlNaoh(),
-                                    min(aiMaxNaohDayMl, pumpMaxDayMl[2]), alkDeficit);
-            alkDeficit -= addMl(ai.currentPlan.kalk, ai.getDkhPerMlKalk(), kalkCap, alkDeficit);
-            break;
-        case 7:
-            alkDeficit -= addMl(ai.currentPlan.alk, ai.getDkhPerMlAlk(),
-                                min(aiMaxAlkDayMl, pumpMaxDayMl[3]), alkDeficit);
-            if (naohAllowed)
-                alkDeficit -= addMl(ai.currentPlan.naoh, ai.getDkhPerMlNaoh(),
-                                    min(aiMaxNaohDayMl, pumpMaxDayMl[2]), alkDeficit);
-            break;
-        case 8:
-            if (naohAllowed)
-                alkDeficit -= addMl(ai.currentPlan.naoh, ai.getDkhPerMlNaoh(),
-                                    min(aiMaxNaohDayMl, pumpMaxDayMl[2]), alkDeficit);
-            alkDeficit -= addMl(ai.currentPlan.kalk, ai.getDkhPerMlKalk(), kalkCap, alkDeficit);
-            break;
-    }
-
-    float caBefore = caSupplied();
-    float caDeficit = max(0.0f, requiredCa - caBefore);
-    switch (dosingMode) {
-        case 1:
-            caDeficit -= addMl(ai.currentPlan.kalk,
-                               ai.getDkhPerMlKalk() * CA_PPM_PER_DKH_KALK,
-                               kalkCap, caDeficit);
-            break;
-        case 2:
-            caDeficit -= addMl(ai.currentPlan.afr,
-                               ai.getDkhPerMlAfr() * CA_PPM_PER_DKH_KALK,
-                               pumpMaxDayMl[0], caDeficit);
-            break;
-        case 3:
-            caDeficit -= addMl(ai.currentPlan.afr,
-                               ai.getDkhPerMlAfr() * CA_PPM_PER_DKH_KALK,
-                               pumpMaxDayMl[1], caDeficit);
-            caDeficit -= addMl(ai.currentPlan.kalk,
-                               ai.getDkhPerMlKalk() * CA_PPM_PER_DKH_KALK,
-                               kalkCap, caDeficit);
-            break;
-        case 4:
-        case 6:
-        case 7:
-        case 8:
-            caDeficit -= addMl(ai.currentPlan.cacl2, ai.getCaPerMlCacl2(),
-                               pumpMaxDayMl[1], caDeficit);
-            break;
-        case 5:
-            caDeficit -= addMl(ai.currentPlan.cacl2, ai.getCaPerMlCacl2(),
-                               pumpMaxDayMl[2], caDeficit);
-            break;
-    }
-
-    const float finalAlk = alkSupplied();
-    const float finalCa = caSupplied();
-    Serial.printf("NET RECOVERY [%s] mode=%d Alk measured=%.2f learned=%.3f netRise=%.3f required=%.3f before=%.3f final=%.3f remaining=%.3f | Ca measured=%.1f learned=%.3f netRise=%.3f required=%.3f before=%.3f final=%.3f remaining=%.3f\n",
-                  sourceLabel ? sourceLabel : "AI", dosingMode,
-                  measuredAlk, learnedAlk, netAlkRise, requiredAlk, alkBefore, finalAlk, max(0.0f, requiredAlk-finalAlk),
-                  measuredCa, learnedCa, netCaRise, requiredCa, caBefore, finalCa, max(0.0f, requiredCa-finalCa));
-    logger.printf("NET RECOVERY [%s] mode=%d Alk measured=%.2f learned=%.3f netRise=%.3f required=%.3f before=%.3f final=%.3f remaining=%.3f | Ca measured=%.1f learned=%.3f netRise=%.3f required=%.3f before=%.3f final=%.3f remaining=%.3f\n",
-                  sourceLabel ? sourceLabel : "AI", dosingMode,
-                  measuredAlk, learnedAlk, netAlkRise, requiredAlk, alkBefore, finalAlk, max(0.0f, requiredAlk-finalAlk),
-                  measuredCa, learnedCa, netCaRise, requiredCa, caBefore, finalCa, max(0.0f, requiredCa-finalCa));
+    if (mgAddressable) m = fminf(m, ai.filters[P_MG].provenMaturity());
+    return m;
 }
 
-void calculateAiFromBestChemistry(const char* sourceLabel) {
+// Fixed 2026-07-25: previously a smooth 1-7 day linear ramp with maturity --
+// technically matched the spec's literal wording ("starting daily -> toward
+// weekly") but didn't map onto three clean, nameable stages a customer can
+// actually reason about ("test every 4 days" isn't daily, every-other-day,
+// OR weekly). Owner's actual mental model is three discrete tiers, so this
+// now returns one of exactly three values instead of a continuum.
+// Thresholds (0.33/0.66 of maturity) are a reasonable starting split, not
+// fleet-validated -- same caveat as every other derived-not-measured number
+// in this codebase.
+int recommendedManualTestIntervalDays() {
+    float m = manualTestGoverningMaturity();
+    if (m < 0.33f) return 1; // daily
+    if (m < 0.66f) return 2; // every other day
+    return 7;                // weekly
+}
+
+// Returns -1 if no manual test has ever been recorded with valid synced
+// time (caller should treat that as "prompt immediately," not "0 days").
+int daysSinceLastManualTest() {
+    if (lastManualTestEpochSec == 0) return -1;
+    time_t now = time(nullptr);
+    if (now < 1700000000) return -1; // this device's own clock isn't synced yet either
+    long deltaSec = (long)now - (long)lastManualTestEpochSec;
+    if (deltaSec < 0) return -1; // clock stepped backward (fresh NTP sync); don't report nonsense
+    return (int)(deltaSec / 86400L);
+}
+
+// ============================================================================
+// v2 recalculation pipeline
+// ----------------------------------------------------------------------------
+// REMOVED (v1 -> v2 migration): enforceFastAlkPlanConversion() and
+// enforceAllModeNetRecovery() are gone. Those were two of the "stacked
+// override layers" MIGRATION_NOTES.md calls out by name — extra passes that
+// ran AFTER AI_Engine's own calculation and could silently re-adjust a plan
+// the engine had already produced (that's the exact Mode 7 bug class the v2
+// spec was written to eliminate structurally). v2 replaces both of them with
+// a single call: Allocator::solve() inside AIEngineV2::recalculate() builds
+// the desired-correction vector, the weighted cross-effect matrix (including
+// day/night + pH derating), runs one NNLS solve, and applies one uniform
+// safety-cap scale-down. Nothing downstream is allowed to touch the plan
+// again — see Allocator.h's precedence-order comment block.
+//
+// Net effect on behavior, called out explicitly rather than left implicit:
+//   - The v1 "learned daily consumption + net rise" baseline-replacement
+//     idea (enforceAllModeNetRecovery, fed by alkDemandStore/baselineKalkMlDay
+//     etc.) has no direct v2 equivalent. v2's per-parameter Kalman filter
+//     (level + trend) is meant to capture ongoing consumption the same way,
+//     automatically, from repeated real measurements, WITHOUT a separately
+//     maintained baseline number (MIGRATION_NOTES.md row "addBaselineDemand").
+//     alkDemandStore/calciumDemandStore and baselineKalkMlDay/etc. are left
+//     fully intact below (DemandLearning.h/.cpp is a separate lib this
+//     migration does not touch, and may still use them for
+//     dashboard/Firebase reporting) but they no longer feed dosing math.
+//   - v1's customer-configurable Mode 7 day/night ALK-vs-NaOH split
+//     PERCENTAGES (mode7DayNaohPct/mode7DayAlkPct/mode7NightNaohPct/
+//     mode7NightAlkPct) have no v2 equivalent either: AIEngineV2 has no
+//     setMode7DayNightSplit()-shaped API. v2's Allocator instead applies a
+//     fixed, non-configurable lights-off assist (1.15x, capped by the same
+//     pH taper) to any phSensitive chemical (Allocator.cpp). The percentage
+//     Preferences/dashboard fields are left in place below (harmless to keep
+//     reading/saving) but are no longer wired to anything that doses.
+//   - v1's customer-configurable NaOH pH ceiling (mode7NaohMaxPh, default
+//     8.45) is still loaded/saved for the dashboard, but Allocator.cpp
+//     currently hardcodes its own ceiling (8.60) rather than accepting one
+//     from the caller -- its own comment marks this as "until wired to the
+//     per-tank Recommendable." That's a gap in the delivered engine, not
+//     something this main.cpp-only migration can safely patch by guessing
+//     at the intended API shape; flagging here so it isn't missed.
+// ============================================================================
+
+CoralLoad coralLoadFromBaselineString(const String& s) {
+    if (s == "light") return CoralLoad::Light;
+    if (s == "heavy") return CoralLoad::Heavy;
+    if (s == "sps" || s == "sps_dominant") return CoralLoad::SPSDominant;
+    return CoralLoad::Moderate; // "moderate", "custom", or unrecognized
+}
+
+// v1 exposed a per-mode hardware wiring table only through
+// pumpKeyForPhysicalIndex() (used for buckets/Firebase aliasing). Reusing it
+// here as the single source of truth for "which legacy chemical, if any, is
+// on physical pump idx in the CURRENT dosingMode" avoids describing the same
+// hardware wiring twice in two places that could drift apart.
+int physicalPumpIndexForLegacySlot(LegacyChemSlot slot) {
+    static const char* kSlotKey[kLegacyChemCount] = { "kalk", "afr", "alk", "cacl2", "naoh", "mg" };
+    const char* wantKey = kSlotKey[slot];
+    for (int idx = 0; idx < 4; idx++) {
+        const char* key = pumpKeyForPhysicalIndex(idx);
+        if (strcmp(key, wantKey) == 0) return idx;
+        // Modes 4/5 wire CaCl2 through pumpKeyForPhysicalIndex's "ca" alias.
+        if (slot == SLOT_CACL2 && strcmp(key, "ca") == 0) return idx;
+    }
+    return -1;
+}
+
+// Rebuilds AIEngineV2's chemical declarations from declaredChemicals[]
+// (§5 free chemical declaration -- replaces the old mode/SlotSpec-keyed
+// version). Call before every recalculate() -- cheap (<=4 declarations)
+// and keeps this the single place a chemical add/edit/remove takes
+// effect, instead of pushing individual setters into the engine from half
+// a dozen call sites.
+//
+// INDEX CORRESPONDENCE IS LOAD-BEARING: ai.chemicals[i] must always match
+// declaredChemicals[i] by index (same loop order, nothing skipped) so that
+// DosingPlanV2::mlPerDay[i] (produced by ai.recalculate()) can be read
+// back by the bucket scheduler as "declaredChemicals[i].pumpIndex should
+// receive this many mL/day" without a second lookup. Do not skip inactive
+// entries here -- add them with chem.active=false/maxMlPerDay=0 instead
+// (matches how Allocator::solve() already treats an inactive chemical),
+// or the index correspondence breaks and doses go to the wrong pump.
+void rebuildAiChemicalDeclarations() {
+    ai.numChemicals = 0;
+    for (int i = 0; i < declaredChemicalCount; i++) {
+        const DeclaredChemical& d = declaredChemicals[i];
+
+        ChemicalDeclaration chem;
+        strncpy(chem.name, d.name.c_str(), sizeof(chem.name) - 1);
+        chem.potencyPerMl[P_ALK] = d.potencyAlkPerMl;
+        chem.potencyPerMl[P_CA]  = d.potencyCaPerMl;
+        chem.potencyPerMl[P_MG]  = d.potencyMgPerMl;
+        // Fixed 2026-08-04: was unconditionally 0.0f for every chemical,
+        // meaning the allocator's NNLS solve had no real number to weigh
+        // pH against when choosing between chemicals for the same Alk/Ca
+        // correction -- e.g. NaOH vs. baking soda for an Alk deficit, a
+        // real reef-keeping tradeoff (baking soda has a documented mild,
+        // sometimes slightly NEGATIVE pH effect at typical seawater pH;
+        // NaOH's own real effect is comparatively small too, but that's a
+        // relative judgment for whoever declares real per-chemical values
+        // here, not something this line should assert). Now reads the
+        // real per-chemical value (see DeclaredChemical::potencyPhPerMl) --
+        // still 0.0f by default until explicitly set, same honest "not yet
+        // declared" default every other potency field already uses.
+        chem.potencyPerMl[P_PH]  = d.potencyPhPerMl;
+        chem.phSensitive = d.phSensitive;
+        chem.daytimeSuppressPercent = d.daytimeSuppressPercent;
+        chem.active = d.active;
+        chem.maxMlPerDay = d.active ? d.maxMlPerDay : 0.0f;
+
+        // Seeded from stoichiometry (§5.2): full confidence on every
+        // parameter this chemical actually moves. Confidence LEARNING from
+        // real dose/response data is not implemented yet (see
+        // MIGRATION_NOTES.md) -- unchanged by this rewrite.
+        for (int p = 0; p < kNumParams; p++) {
+            chem.confidence[p] = (chem.potencyPerMl[p] != 0.0f) ? 1.0f : 0.0f;
+        }
+
+        ai.addChemical(chem);
+    }
+}
+
+int findDeclaredChemicalIndexById(const String& id) {
+    for (int i = 0; i < declaredChemicalCount; i++) {
+        if (declaredChemicals[i].id == id) return i;
+    }
+    return -1;
+}
+
+bool isPumpIndexTaken(int pumpIndex, const String& excludeId) {
+    for (int i = 0; i < declaredChemicalCount; i++) {
+        if (declaredChemicals[i].pumpIndex == pumpIndex && declaredChemicals[i].id != excludeId) {
+            return true;
+        }
+    }
+    return false;
+}
+
+String generateChemicalId() {
+    // Simple, sufficiently-unique id: millis() + a monotonic counter. No
+    // need for anything fancier at a hardware-capped max of 4 entries.
+    static uint32_t counter = 0;
+    counter++;
+    return "chem_" + String(millis()) + "_" + String(counter);
+}
+
+static const char* CHEMICALS_CONFIG_PATH = "/chemicals.json";
+static const char* CHEMICALS_CONFIG_TMP_PATH = "/chemicals.tmp";
+
+bool loadDeclaredChemicals() {
+    File f = LittleFS.open(CHEMICALS_CONFIG_PATH, "r");
+    if (!f) return false; // not an error -- true first boot, or pre-migration
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, f);
+    f.close();
+    if (err) {
+        Serial.printf("CHEMICALS CONFIG ERROR: parse failed: %s\n", err.c_str());
+        logger.printf("CHEMICALS CONFIG ERROR: parse failed: %s\n", err.c_str());
+        return false;
+    }
+
+    JsonArray arr = doc["chemicals"].as<JsonArray>();
+    declaredChemicalCount = 0;
+    for (JsonObject o : arr) {
+        if (declaredChemicalCount >= kMaxDeclaredChemicals) break;
+        DeclaredChemical& d = declaredChemicals[declaredChemicalCount];
+        d.id               = o["id"]               | "";
+        d.name             = o["name"]              | "";
+        d.presetId         = o["presetId"]          | -1;
+        d.potencyAlkPerMl  = o["potencyAlkPerMl"]   | 0.0f;
+        d.potencyCaPerMl   = o["potencyCaPerMl"]    | 0.0f;
+        d.potencyMgPerMl   = o["potencyMgPerMl"]    | 0.0f;
+        // Added 2026-08-04: same "0.0f is honest, safe, and means not-yet-
+        // declared" default as bucketThresholdMl/maxSingleDoseMl below --
+        // an old chemicals.json saved before this field existed loads
+        // safely, just with no pH cross-effect known for that chemical
+        // until explicitly set (same as its actual real behavior always
+        // was before this field existed at all).
+        d.potencyPhPerMl   = o["potencyPhPerMl"]    | 0.0f;
+        d.phSensitive      = o["phSensitive"]       | false;
+        d.pumpIndex        = o["pumpIndex"]         | -1;
+        d.maxMlPerDay      = o["maxMlPerDay"]       | 0.0f;
+        // Added 2026-08-04: 0.0f default matches struct default and is
+        // correctly treated as "not yet configured, fall back to this
+        // pump's array-based value" by the getters in main.cpp -- so an
+        // old chemicals.json saved before this field existed loads safely
+        // with no behavior change until explicitly set.
+        d.bucketThresholdMl = o["bucketThresholdMl"] | 0.0f;
+        d.maxSingleDoseMl   = o["maxSingleDoseMl"]    | 0.0f;
+        d.active           = o["active"]            | true;
+        declaredChemicalCount++;
+    }
+
+    Serial.printf("CHEMICALS CONFIG LOADED: %d declared chemicals\n", declaredChemicalCount);
+    logger.printf("CHEMICALS CONFIG LOADED: %d declared chemicals\n", declaredChemicalCount);
+    return true;
+}
+
+bool saveDeclaredChemicals() {
+    JsonDocument doc;
+    JsonArray arr = doc["chemicals"].to<JsonArray>();
+    for (int i = 0; i < declaredChemicalCount; i++) {
+        const DeclaredChemical& d = declaredChemicals[i];
+        JsonObject o = arr.add<JsonObject>();
+        o["id"] = d.id;
+        o["name"] = d.name;
+        o["presetId"] = d.presetId;
+        o["potencyAlkPerMl"] = d.potencyAlkPerMl;
+        o["potencyCaPerMl"] = d.potencyCaPerMl;
+        o["potencyMgPerMl"] = d.potencyMgPerMl;
+        o["potencyPhPerMl"] = d.potencyPhPerMl;
+        o["phSensitive"] = d.phSensitive;
+        o["pumpIndex"] = d.pumpIndex;
+        o["maxMlPerDay"] = d.maxMlPerDay;
+        o["bucketThresholdMl"] = d.bucketThresholdMl;
+        o["maxSingleDoseMl"] = d.maxSingleDoseMl;
+        o["active"] = d.active;
+    }
+
+    File f = LittleFS.open(CHEMICALS_CONFIG_TMP_PATH, "w");
+    if (!f) {
+        Serial.println("CHEMICALS CONFIG ERROR: could not open temp file for writing");
+        logger.println("CHEMICALS CONFIG ERROR: could not open temp file for writing");
+        return false;
+    }
+    serializeJson(doc, f);
+    f.close();
+
+    if (LittleFS.exists(CHEMICALS_CONFIG_PATH)) {
+        LittleFS.remove(CHEMICALS_CONFIG_PATH); // harmless if this races with a concurrent read; rename below is the atomic step
+    }
+    if (!LittleFS.rename(CHEMICALS_CONFIG_TMP_PATH, CHEMICALS_CONFIG_PATH)) {
+        Serial.println("CHEMICALS CONFIG ERROR: rename failed");
+        logger.println("CHEMICALS CONFIG ERROR: rename failed");
+        return false;
+    }
+    return true;
+}
+
+// Builds declaredChemicals[]/declaredChemicalCount from a legacy
+// dosingMode number. Reuses pumpKeyForPhysicalIndex() (the existing
+// mode->pump->chemical-identity table) as the ONE-TIME/shim conversion
+// source, rather than inventing yet a fourth copy of the same wiring
+// knowledge (dashboard JS's DOSING_MODES and this function's predecessor,
+// the SlotSpec table above, were already two independent copies -- see
+// DASHBOARD_MIGRATION_PLAN.md). This function is NOT part of the ongoing
+// dosing-execution path -- that's rebuildAiChemicalDeclarations()/the
+// bucket scheduler now, both fully mode-agnostic. Used for: (1) the
+// one-time boot migration when chemicals.json doesn't exist yet, and (2)
+// the /api/dosing-mode compatibility shim while the old dashboard is
+// still in use during the Phase 1-3 transition.
+// Added 2026-08-04: pH-cost-per-dKH factors used to seed potencyPhPerMl
+// below. Relative ordering only, not precise physical measurements --
+// same "reasoned estimate, not fleet-validated" caveat as every other
+// unvalidated constant in this codebase (see e.g. MathEngine's process-
+// noise fraction, or Allocator.cpp's pH taper band).
+//
+// Grounded in real acid-base chemistry (NaOH and Ca(OH)2/kalkwasser are
+// both strong bases with essentially complete dissociation, carbonate-
+// based products like soda ash/AFR are meaningfully weaker bases) BUT
+// kNaohPhCostPerDkh below is deliberately set LOW despite that raw
+// chemistry fact -- corrected at the owner's direct, explicit real-world
+// observation (2026-08-04): "[NaOH] has very little pH effect" in actual
+// practice on their systems. Real-world per-mL pH impact depends heavily
+// on the specific solution's concentration and how it's actually dosed
+// (slowly, in small increments, day/night-routed), not just the raw
+// chemistry of the base itself -- deferred to direct operator experience
+// over abstract chemistry here, which is why NaOH sits at the LOW end
+// despite being, in isolation, as strong a base as kalkwasser.
+static constexpr float kNaohPhCostPerDkh = 0.005f;
+static constexpr float kKalkPhCostPerDkh = 0.030f;
+static constexpr float kCarbonateBasedPhCostPerDkh = 0.015f; // soda ash, AFR
+
+void buildDeclaredChemicalsFromLegacyMode(int mode) {
+    int savedMode = dosingMode;
+    dosingMode = mode; // pumpKeyForPhysicalIndex() reads the global directly
+
+    declaredChemicalCount = 0;
+    for (int idx = 0; idx < 4 && declaredChemicalCount < kMaxDeclaredChemicals; idx++) {
+        const char* key = pumpKeyForPhysicalIndex(idx);
+        if (strcmp(key, "unused") == 0) continue;
+
+        DeclaredChemical chem;
+        chem.id = generateChemicalId();
+        chem.pumpIndex = idx;
+        chem.presetId = -1; // custom -- migrated from raw strength globals, not a named preset
+        chem.active = true;
+        chem.maxMlPerDay = pumpMaxDayMl[idx]; // matches this slot's existing pump-level cap
+
+        if (strcmp(key, "kalk") == 0) {
+            chem.name = "Kalkwasser";
+            chem.potencyAlkPerMl = kalkStrengthDkhPerMl;
+            chem.potencyCaPerMl = kalkStrengthDkhPerMl * CA_PPM_PER_DKH_KALK;
+            // Added 2026-08-04, see potencyPhPerMl's comment block below
+            // this if/else chain for the full reasoning and caveats.
+            chem.potencyPhPerMl = kalkStrengthDkhPerMl * kKalkPhCostPerDkh;
+            // Matches handlePostAddChemical()'s same default for the
+            // Kalkwasser preset (see DeclaredChemical::nightFraction) --
+            // V1 has always applied this 75/25 split to every Mode 7
+            // customer's Kalk pump, this migration path should carry the
+            // same default forward, not silently drop to flat/even just
+            // because it went through a different code path.
+            chem.nightFraction = 75.0f;
+        } else if (strcmp(key, "afr") == 0) {
+            chem.name = "AFR";
+            chem.potencyAlkPerMl = afrStrengthDkhPerMl;
+            chem.potencyCaPerMl = afrStrengthDkhPerMl * CA_PPM_PER_DKH_KALK;
+            chem.potencyPhPerMl = afrStrengthDkhPerMl * kCarbonateBasedPhCostPerDkh;
+        } else if (strcmp(key, "alk") == 0) {
+            chem.name = "Alk (soda ash)";
+            chem.potencyAlkPerMl = alkStrengthDkhPerMl;
+            chem.potencyPhPerMl = alkStrengthDkhPerMl * kCarbonateBasedPhCostPerDkh;
+        } else if (strcmp(key, "cacl2") == 0 || strcmp(key, "ca") == 0) {
+            chem.name = "CaCl2";
+            chem.potencyCaPerMl = cacl2StrengthPpmPerMl;
+            // No potencyPhPerMl term -- CaCl2 delivers no Alk and is a
+            // chemically neutral salt with no material pH side-effect.
+        } else if (strcmp(key, "naoh") == 0) {
+            chem.name = "NaOH";
+            chem.potencyAlkPerMl = naohStrengthDkhPerMl;
+            chem.phSensitive = true;
+            chem.potencyPhPerMl = naohStrengthDkhPerMl * kNaohPhCostPerDkh;
+        } else if (strcmp(key, "mg") == 0) {
+            chem.name = "Mg";
+            chem.potencyMgPerMl = mgStrengthPpmPerMl;
+            // No potencyPhPerMl term -- no material pH effect declared for
+            // the Mg products this migration path covers.
+        } else {
+            continue; // unrecognized key, skip defensively
+        }
+
+        declaredChemicals[declaredChemicalCount++] = chem;
+    }
+
+    dosingMode = savedMode; // restore -- this function must have no side effect on the live mode
+
+    saveDeclaredChemicals();
+    Serial.printf("CHEMICAL MIGRATION: built %d declared chemicals from legacy dosingMode=%d\n",
+                  declaredChemicalCount, mode);
+    logger.printf("CHEMICAL MIGRATION: built %d declared chemicals from legacy dosingMode=%d\n",
+                  declaredChemicalCount, mode);
+}
+
+// Mirrors DosingPlanV2 (indexed by declared-chemical index, matching
+// declaredChemicals[]/ai.chemicals[] exactly -- see
+// rebuildAiChemicalDeclarations()'s comment on index correspondence) into
+// two places:
+//   1. planMlPerDayByIndex[] -- the real, mode-agnostic source of truth
+//      the AI bucket scheduler reads to decide physical pump volume.
+//   2. currentPlan's legacy named fields (.kalk/.afr/.alk/.cacl2/.naoh/.mg)
+//      -- kept for now for Firebase/status reporting during the Phase 1-3
+//      transition. Best-effort NAME matching (not slot-index assumption,
+//      since a customer's declared chemical is no longer guaranteed to be
+//      one of these six) -- degrades gracefully to 0 for a freely-named
+//      chemical that doesn't match any legacy name. Remove once Phase 2's
+//      pump-indexed reporting (plan/pump1..4) fully replaces this.
+void syncLegacyPlanFromV2(const DosingPlanV2& plan) {
+    for (int c = 0; c < kMaxDeclaredChemicals; c++) {
+        planMlPerDayByIndex[c] = (plan.numChemicals > c) ? plan.mlPerDay[c] : 0.0f;
+    }
+
+    currentPlan.kalk = currentPlan.afr = currentPlan.alk = 0.0f;
+    currentPlan.cacl2 = currentPlan.naoh = currentPlan.mg = 0.0f;
+    for (int c = 0; c < declaredChemicalCount && c < kMaxDeclaredChemicals; c++) {
+        String n = declaredChemicals[c].name;
+        n.toLowerCase();
+        float v = planMlPerDayByIndex[c];
+        if (n.indexOf("kalk") >= 0) currentPlan.kalk += v;
+        else if (n.indexOf("afr") >= 0 || n.indexOf("all-for-reef") >= 0 || n.indexOf("all for reef") >= 0) currentPlan.afr += v;
+        else if (n.indexOf("naoh") >= 0 || n.indexOf("hydroxide") >= 0) currentPlan.naoh += v;
+        // Fixed 2026-08-02: only matched "cacl2" / "calcium chloride" --
+        // silently dropped any calcium chemical declared under a shorter
+        // customer-facing name like plain "Calcium" (confirmed root cause
+        // of reefDoser12 always logging cacl2=0.00 despite the allocator's
+        // real solved x=100 for that slot -- caught via the temporary
+        // Allocator diagnostic dump, name never matched any branch here,
+        // so its value was silently discarded rather than added to any
+        // legacy field). Added "calcium" as a standalone match. Order
+        // matters: the "mg"/"magnesium" check below is moved ABOVE this
+        // one so a hypothetical name like "Calcium/Magnesium Blend" still
+        // routes to .mg first, not misclassified as pure calcium just
+        // because "calcium" happens to appear earlier in the string.
+        else if (n.indexOf("mg") >= 0 || n.indexOf("magnesium") >= 0) currentPlan.mg += v;
+        else if (n.indexOf("cacl2") >= 0 || n.indexOf("calcium chloride") >= 0 || n.indexOf("calcium") >= 0) currentPlan.cacl2 += v;
+        else if (n.indexOf("alk") >= 0 || n.indexOf("soda ash") >= 0 || n.indexOf("bicarbonate") >= 0) currentPlan.alk += v;
+    }
+    currentPlan.active = true;
+
+    Serial.printf("V2 ALLOCATOR [%s]\n", plan.explanation);
+    logger.printf("V2 ALLOCATOR [%s]\n", plan.explanation);
+}
+
+// Tracks elapsed real time between recalculation cycles so advanceTime()'s
+// predict step (including the known-dose-effect input, §4.4/§4.5) gets a
+// correct dt. Fixed 2026-07-24: ai.advanceTime() was never called anywhere
+// in this file -- the Kalman filter's predict step (and today's
+// control-input fix for the trend-estimation bug) had zero effect on real
+// hardware despite being correct and simulator-verified, because nothing
+// ever invoked it in production. Found from a field observation: Apex
+// polls far more often than reefDoser2 actually completes a new Trident
+// test, and v1 deliberately didn't feed unchanged readings back in --
+// investigating why led directly to this gap.
+static unsigned long lastAiRecalcMillis = 0;
+
+// v1 -> v2 replacement for ai.calculateNextPlan(). Feeds the latest
+// measurement into each parameter's Kalman filter, then lets
+// AIEngineV2::recalculate() (one NNLS solve, one safety scale-down) produce
+// the plan directly -- see the block comment above this section for exactly
+// what v1 behavior does and does not carry over.
+//
+// isNewMeasurement gates the three ai.ingestMeasurement() calls only --
+// advanceTime() (the predict step) always runs when real time has elapsed,
+// regardless. Fixed 2026-07-24, same investigation as above: previously
+// every call to this function fed whatever useAlk/useCa/useMg happened to
+// be current into the Kalman filter, even when a config change (chemical
+// added, safety cap edited) or a repeated Apex poll of the SAME unchanged
+// Trident result triggered it -- inflating maturity/confidence from
+// duplicate "observations" that were not actually new information. Pass
+// true only from call sites that represent a genuinely new physical
+// measurement (manual test entry, a real Apex/Trident result change);
+// config-change and Hourly-reevaluation call sites default to false, which
+// still recomputes the dosing plan against current settings/filter state,
+// just without re-ingesting stale data as if it were fresh.
+void runAiRecalculation(float useAlk, float useCa, float useMg, float usePh,
+                         bool lightsOnNow, MeasurementSource measurementSource,
+                         bool isNewMeasurement = false) {
+    ai.tank.tankVolumeLiters = TANK_VOLUME_L;
+    ai.tank.coralLoad = coralLoadFromBaselineString(baselineCoralLoad);
+
+    loadChemicalStrengths();
+    rebuildAiChemicalDeclarations();
+
+    ai.targetAlkDkh.updateSuggestion(targetAlk);
+    ai.targetCaPpm.updateSuggestion(targetCa);
+    ai.targetMgPpm.updateSuggestion(targetMg);
+
+    // §7 safety envelope -- the ONE place a rise-per-day gets capped now.
+    ai.safety.maxAlkRisePerDayDkh.updateSuggestion(aiMaxAlkRiseDkhDay);
+    ai.safety.maxCaRisePerDayPpm.updateSuggestion(aiMaxCaRisePpmDay);
+    // TODO(migration): v1 had no direct Mg ppm/day rise cap, only an mL/day
+    // cap (aiMaxMgCorrectionDayMl). Approximated via configured Mg strength;
+    // confirm this matches the intended customer-facing behavior.
+    ai.safety.maxMgRisePerDayPpm.updateSuggestion(aiMaxMgCorrectionDayMl * mgStrengthPpmPerMl);
+    ai.safety.maxPhRisePerDay.updateSuggestion(0.0f); // 0 = uncapped; v1 never capped pH rise directly
+    // Resolved 2026-07-24: was previously a hardcoded 8.60 inside
+    // Allocator.cpp with a comment marking it "until wired to the per-tank
+    // Recommendable" -- now it reads this customer-configurable value
+    // (v1's own mode7NaohMaxPh, still loaded/saved for the dashboard
+    // elsewhere in this file) instead of a fixed constant.
+    ai.safety.naohPhCeiling.updateSuggestion(mode7NaohMaxPh);
+    // TEMP DIAGNOSTIC (2026-08-05): confirming the actual live ceiling
+    // value driving Allocator.cpp's phDerateWeight, since NaOH showed up
+    // fully suppressed (A_col=0) on reefDoser3 at pH 8.21 -- a value that
+    // shouldn't fully suppress it under either the 8.60 comment-claimed
+    // default or the real 8.45 mode7NaohMaxPh default. Printed here (not
+    // just visible via the dashboard) so it shows up in the crash-loop
+    // window without needing the dashboard UI. Remove once resolved.
+    Serial.printf("NAOH PH CEILING DIAGNOSTIC: mode7NaohMaxPh=%.3f naohPhCeiling.value=%.3f\n",
+                  mode7NaohMaxPh, ai.safety.naohPhCeiling.value);
+    logger.printf("NAOH PH CEILING DIAGNOSTIC: mode7NaohMaxPh=%.3f naohPhCeiling.value=%.3f\n",
+                  mode7NaohMaxPh, ai.safety.naohPhCeiling.value);
+
+    // Predict step: always runs when real time has elapsed, independent of
+    // whether this cycle also has a new measurement. First-ever call (no
+    // prior timestamp) skips advancing -- there's no meaningful elapsed
+    // interval yet -- and just establishes the baseline. Capped at 1.0 day
+    // per call (matches the bucket scheduler's own catch-up cap pattern
+    // elsewhere in this file) so a long WiFi/reboot gap can't shove one
+    // huge, unrealistic dt into the filter at once.
+    unsigned long nowMs = millis();
+    if (lastAiRecalcMillis != 0) {
+        float dtDays = (float)(nowMs - lastAiRecalcMillis) / 86400000.0f;
+        if (dtDays > 1.0f) dtDays = 1.0f;
+        if (dtDays > 0.0f) ai.advanceTime(dtDays);
+    }
+    lastAiRecalcMillis = nowMs;
+
+    if (isNewMeasurement) {
+        if (isfinite(useAlk) && useAlk > 0.0f) ai.ingestMeasurement(P_ALK, useAlk, measurementSource);
+        if (isfinite(useCa)  && useCa  > 0.0f) ai.ingestMeasurement(P_CA,  useCa,  measurementSource);
+        if (isfinite(useMg)  && useMg  > 0.0f) ai.ingestMeasurement(P_MG,  useMg,  measurementSource);
+
+        // Added 2026-08-04, §4.4: a measurement whose real outcome didn't
+        // plausibly match what the currently-declared chemicals should
+        // have produced used to just silently skip confidence learning,
+        // with nothing surfaced anywhere -- exactly the failure mode the
+        // spec's own words warn about: "a miss bigger than the mature-
+        // phase correction cap would allow gets flagged as an anomaly to
+        // the customer... rather than silently folded into the next
+        // dose." This is that flag, finally real instead of silent.
+        const char* paramNames[kNumParams] = {"Alk", "pH", "Ca", "Mg"};
+        for (int p = 0; p < kNumParams; p++) {
+            if (p == P_PH) continue; // pH is never ingested into a filter, see comment below
+            if (ai.wasAnomaly((WaterParam)p)) {
+                Serial.printf("ANOMALY DETECTED [%s]: measured result did not plausibly match what "
+                              "the declared chemicals should have produced. Possible causes: an "
+                              "unlogged water change or livestock addition (see §3.5 event logging), "
+                              "pump drift, a chemical strength that's changed, or a bad reading.\n",
+                              paramNames[p]);
+                logger.printf("ANOMALY DETECTED [%s]: measured result did not plausibly match what "
+                              "the declared chemicals should have produced. Possible causes: an "
+                              "unlogged water change or livestock addition (see §3.5 event logging), "
+                              "pump drift, a chemical strength that's changed, or a bad reading.\n",
+                              paramNames[p]);
+            }
+        }
+    }
+    // pH is intentionally never ingested into a filter: v1 never dosed
+    // toward a pH target, only gated NaOH on the CURRENT pH reading, which
+    // recalculate()'s `usePh` argument already covers via phDerateWeight.
+
+    DosingPlanV2 plan = ai.recalculate(lightsOnNow, usePh);
+    syncLegacyPlanFromV2(plan);
+    currentPlan.active = true;
+
+    // Added 2026-08-04, §4.2/§4.3: separate, clearly-labeled block rather
+    // than folded into the existing ALLOCATOR DIAGNOSTIC (that block lives
+    // in Allocator.cpp, not touched this session -- kept this independent
+    // rather than risk reconstructing that file from memory). Only prints
+    // a parameter once it has enough real history for the window in
+    // question (hasWeekData/hasMonthData) -- a device with only hours of
+    // real data genuinely has nothing meaningful to report yet, and
+    // printing a trend computed from too little data would be worse than
+    // not printing anything.
+    {
+        const char* paramNames[kNumParams] = {"Alk", "pH", "Ca", "Mg"};
+        bool anyData = false;
+        for (int p = 0; p < kNumParams; p++) {
+            if (p == P_PH) continue; // never ingested into a filter, see comment above
+            if (ai.hasWeekData((WaterParam)p) || ai.hasMonthData((WaterParam)p)) { anyData = true; break; }
+        }
+        if (anyData) {
+            Serial.println("--- WEEK/MONTH TREND ---");
+            logger.println("--- WEEK/MONTH TREND ---");
+            for (int p = 0; p < kNumParams; p++) {
+                if (p == P_PH) continue;
+                WaterParam wp = (WaterParam)p;
+                if (!ai.hasWeekData(wp) && !ai.hasMonthData(wp)) continue;
+                char weekStr[24] = "not enough data";
+                char monthStr[24] = "not enough data";
+                if (ai.hasWeekData(wp)) snprintf(weekStr, sizeof(weekStr), "%.4f/day", ai.getWeekTrend(wp));
+                if (ai.hasMonthData(wp)) snprintf(monthStr, sizeof(monthStr), "%.4f/day", ai.getMonthTrend(wp));
+                bool drifting = ai.isDrifting(wp);
+                Serial.printf("  %s: week=%s month=%s%s\n", paramNames[p], weekStr, monthStr,
+                              drifting ? " [DRIFTING]" : "");
+                logger.printf("  %s: week=%s month=%s%s\n", paramNames[p], weekStr, monthStr,
+                              drifting ? " [DRIFTING]" : "");
+            }
+            Serial.println("--- END WEEK/MONTH TREND ---");
+            logger.println("--- END WEEK/MONTH TREND ---");
+        }
+    }
+
+    // §4.5 persistence: save learned Kalman state after every recalculation
+    // driven by a real new measurement. This function only runs from
+    // calculateAiFromBestChemistry() on the hourly/Apex-poll/manual-test
+    // cadence (guarded upstream by isfinite/>0 checks on the ingested
+    // values), not on some faster internal tick -- exactly the "meaningful
+    // update, not every advanceTime() step" cadence called for in
+    // AI_EngineV2.h's saveState() comment. Non-fatal if it fails; dosing
+    // must not block on persistence succeeding.
+    if (!ai.saveState()) {
+        Serial.println("AI ENGINE V2: WARNING - saveState() failed (non-fatal, dosing continues).");
+        logger.println("AI ENGINE V2: WARNING - saveState() failed (non-fatal, dosing continues).");
+    }
+}
+
+void calculateAiFromBestChemistry(const char* sourceLabel, bool isNewMeasurement) {
     float useAlk = 0.0f;
     float useCa  = 0.0f;
     float useMg  = 0.0f;
     float usePh  = 0.0f;
     const char* chemistrySource = "none";
+    MeasurementSource measurementSource = MeasurementSource::ManualTest;
 
     // Apex/live chemistry is authoritative when present. This prevents the
     // hourly AI task from using stale manual pH/Ca and creating bogus NaOH/CaCl2
@@ -2039,35 +2230,30 @@ void calculateAiFromBestChemistry(const char* sourceLabel) {
         useMg  = currentMg;
         usePh  = currentPh;
         chemistrySource = "live";
+        measurementSource = MeasurementSource::ApexTrident;
     } else if (hasValidSavedManualChemistry()) {
         useAlk = lastLocalTest.alk;
         useCa  = lastLocalTest.ca;
         useMg  = lastLocalTest.mg;
         usePh  = lastLocalTest.ph;
         chemistrySource = "manual";
+        measurementSource = MeasurementSource::ManualTest;
     } else {
         Serial.printf("AI skipped [%s]: no valid chemistry yet.\n", sourceLabel ? sourceLabel : "AI");
         logger.printf("AI skipped [%s]: no valid chemistry yet.\n", sourceLabel ? sourceLabel : "AI");
         return;
     }
 
-    ai.setTankVolumeGallons(TANK_VOLUME_L / 3.78541f);
-    loadChemicalStrengths();
-    applyAiBaselineToEngine();
-    applyMode7DayNightSplitToEngine();
     const bool lightsOnNow = isLightsOn();
-    ai.calculateNextPlan(dosingMode, targetAlk - useAlk, targetCa - useCa, targetMg - useMg, usePh, lightsOnNow);
-    enforceFastAlkPlanConversion(sourceLabel, lightsOnNow);
-    enforceAllModeNetRecovery(useAlk, useCa, usePh, sourceLabel);
-    ai.currentPlan.active = true;
-    saveFastAlkLearnerStateIfChanged();
+    runAiRecalculation(useAlk, useCa, useMg, usePh, lightsOnNow, measurementSource, isNewMeasurement);
 
-    Serial.printf("AI chemistry [%s]: source=%s Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f\n",
-                  sourceLabel ? sourceLabel : "AI", chemistrySource, useAlk, useCa, useMg, usePh);
-    logger.printf("AI chemistry [%s]: source=%s Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f\n",
-                  sourceLabel ? sourceLabel : "AI", chemistrySource, useAlk, useCa, useMg, usePh);
+    Serial.printf("AI chemistry [%s]: source=%s Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f%s\n",
+                  sourceLabel ? sourceLabel : "AI", chemistrySource, useAlk, useCa, useMg, usePh,
+                  isNewMeasurement ? " [new measurement ingested]" : " [plan re-evaluated only]");
+    logger.printf("AI chemistry [%s]: source=%s Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f%s\n",
+                  sourceLabel ? sourceLabel : "AI", chemistrySource, useAlk, useCa, useMg, usePh,
+                  isNewMeasurement ? " [new measurement ingested]" : " [plan re-evaluated only]");
 }
-
 const char* resetReasonToString(esp_reset_reason_t reason) {
   switch (reason) {
     case ESP_RST_UNKNOWN:   return "UNKNOWN";
@@ -2188,66 +2374,29 @@ void printSavedBootHistory() {
     logger.println("================================");
 }
 
-void loadFastAlkLearnerState() {
-    prefs.begin("doser-settings", true);
-    fastAlkBoostDkhDay = prefs.getFloat("alkfast_boost", 0.0f);
-    fastAlkLowSamples = prefs.getUShort("alkfast_low", 0);
-    fastAlkStableSamples = prefs.getUShort("alkfast_ok", 0);
-    prefs.end();
+// REMOVED (v1 -> v2 migration): loadFastAlkLearnerState()/
+// saveFastAlkLearnerStateIfChanged() are gone along with the rest of the
+// fastAlk-learner machinery -- see the block comment above
+// runAiRecalculation() for what replaces it. baselineKalkMlDay/
+// baselineCacl2MlDay/baselineNaohMlDay/baselineMgMlDay globals and their
+// Preferences load/save in loadLocalSettings() are left in place
+// (DemandLearning/dashboard may still read them) but are no longer pushed
+// into the AI engine.
 
-    if (!isfinite(fastAlkBoostDkhDay) || fastAlkBoostDkhDay < 0.0f || fastAlkBoostDkhDay > 0.40f) {
-        fastAlkBoostDkhDay = 0.0f;
-    }
-
-    ai.setFastAlkLearnerState(fastAlkBoostDkhDay, fastAlkLowSamples, fastAlkStableSamples);
-    lastSavedFastAlkBoostDkhDay = fastAlkBoostDkhDay;
-    lastSavedFastAlkLowSamples = fastAlkLowSamples;
-    lastSavedFastAlkStableSamples = fastAlkStableSamples;
-
-    Serial.printf("FAST ALK LEARNER RESTORED: boost=%.3f dKH/day lowSamples=%u stableSamples=%u\n",
-                  fastAlkBoostDkhDay, fastAlkLowSamples, fastAlkStableSamples);
-    logger.printf("FAST ALK LEARNER RESTORED: boost=%.3f dKH/day lowSamples=%u stableSamples=%u\n",
-                  fastAlkBoostDkhDay, fastAlkLowSamples, fastAlkStableSamples);
-}
-
-void saveFastAlkLearnerStateIfChanged() {
-    fastAlkBoostDkhDay = ai.getFastAlkBoostDkhDay();
-    fastAlkLowSamples = ai.getFastAlkLowSamples();
-    fastAlkStableSamples = ai.getFastAlkStableSamples();
-
-    const bool changed =
-        fabsf(fastAlkBoostDkhDay - lastSavedFastAlkBoostDkhDay) >= 0.001f ||
-        fastAlkLowSamples != lastSavedFastAlkLowSamples ||
-        fastAlkStableSamples != lastSavedFastAlkStableSamples;
-    if (!changed) return;
-
-    prefs.begin("doser-settings", false);
-    prefs.putFloat("alkfast_boost", fastAlkBoostDkhDay);
-    prefs.putUShort("alkfast_low", fastAlkLowSamples);
-    prefs.putUShort("alkfast_ok", fastAlkStableSamples);
-    prefs.end();
-
-    lastSavedFastAlkBoostDkhDay = fastAlkBoostDkhDay;
-    lastSavedFastAlkLowSamples = fastAlkLowSamples;
-    lastSavedFastAlkStableSamples = fastAlkStableSamples;
-
-    logger.printf("FAST ALK LEARNER SAVED: boost=%.3f dKH/day immediate=%.3f lowSamples=%u stableSamples=%u\n",
-                  fastAlkBoostDkhDay,
-                  ai.getImmediateAlkCatchupDkhDay(),
-                  fastAlkLowSamples,
-                  fastAlkStableSamples);
-}
-
+// v1 -> v2 migration: intentionally a no-op now, same reasoning as
+// applyMode7DayNightSplitToEngine()/applyAiChemistrySafetiesToEngine()
+// above -- v2 has no setBaselineDemand()-shaped API, and
+// rebuildAiChemicalDeclarations()/runAiRecalculation() don't consume a
+// separate baseline-demand number at all (see the removal comment above).
+// Kept as a function (not deleted outright) because WebRoutes.cpp
+// (handlePostAiBaseline(), registerWebRoutes()) and
+// DemandLearning.cpp (recordCompletedDayAndLearn()) still call it --
+// deleting the function itself, rather than just what it used to do
+// internally, breaks the link step for those two files without touching
+// them. baselineKalkMlDay/etc. Preferences plumbing is untouched by this;
+// only the push into the (now-gone) engine setter is removed.
 void applyAiBaselineToEngine() {
-
-float fourthPumpBaseline = baselineMgMlDay;
-
-    ai.setBaselineDemand(
-        baselineKalkMlDay,
-        baselineCacl2MlDay,
-        baselineNaohMlDay,
-        fourthPumpBaseline
-    );
+    // Intentionally empty post-migration -- see comment above.
 }
 
 
@@ -2292,121 +2441,38 @@ void loadChemicalStrengths() {
     loadChemicalRecipes();
     prefs.begin("doser-settings", true);
 
-    float kalkStrength  = prefs.getFloat("str_kalk",  ai.getDkhPerMlKalk());
-    float afrStrength   = prefs.getFloat("str_afr",   ai.getDkhPerMlAfr());
-    float alkStrength   = prefs.getFloat("str_alk",   ai.getDkhPerMlAlk());
-    float naohStrength  = prefs.getFloat("str_naoh",  ai.getDkhPerMlNaoh());
-    float mgStrength    = prefs.getFloat("str_mg",    ai.getMgPerMlMg());
-    float cacl2Strength = prefs.getFloat("str_cacl2", ai.getCaPerMlCacl2());
+    float kalkStrength  = prefs.getFloat("str_kalk",  kalkStrengthDkhPerMl);
+    float afrStrength   = prefs.getFloat("str_afr",   afrStrengthDkhPerMl);
+    float alkStrength   = prefs.getFloat("str_alk",   alkStrengthDkhPerMl);
+    float naohStrength  = prefs.getFloat("str_naoh",  naohStrengthDkhPerMl);
+    float mgStrength    = prefs.getFloat("str_mg",    mgStrengthPpmPerMl);
+    float cacl2Strength = prefs.getFloat("str_cacl2", cacl2StrengthPpmPerMl);
 
     prefs.end();
 
-    ai.setChemicalStrengths(
-        kalkStrength,
-        afrStrength,
-        alkStrength,
-        naohStrength,
-        mgStrength,
-        cacl2Strength
-    );
+    // v1 -> v2: strengths now live directly in main.cpp's own globals
+    // (kalkStrengthDkhPerMl/etc.) instead of being cached inside AIEngine.
+    kalkStrengthDkhPerMl  = kalkStrength;
+    afrStrengthDkhPerMl   = afrStrength;
+    alkStrengthDkhPerMl   = alkStrength;
+    naohStrengthDkhPerMl  = naohStrength;
+    mgStrengthPpmPerMl    = mgStrength;
+    cacl2StrengthPpmPerMl = cacl2Strength;
 
     // Boot-safe proof of the ACTUAL strengths loaded into the AI.
     // Keep each line short and use Serial only. LocalFirstLogger may use a
     // fixed formatting buffer, so one long six-float logger.printf during
     // setup can corrupt memory before the dashboard/network is available.
     Serial.println("CHEMICAL STRENGTHS LOADED:");
-    Serial.printf("  Kalk  = %.9f dKH/ml\n", ai.getDkhPerMlKalk());
-    Serial.printf("  AFR   = %.9f dKH/ml\n", ai.getDkhPerMlAfr());
-    Serial.printf("  Alk   = %.9f dKH/ml\n", ai.getDkhPerMlAlk());
-    Serial.printf("  NaOH  = %.9f dKH/ml\n", ai.getDkhPerMlNaoh());
-    Serial.printf("  Mg    = %.9f ppm/ml\n", ai.getMgPerMlMg());
-    Serial.printf("  CaCl2 = %.9f ppm/ml\n", ai.getCaPerMlCacl2());
+    Serial.printf("  Kalk  = %.9f dKH/ml\n", kalkStrengthDkhPerMl);
+    Serial.printf("  AFR   = %.9f dKH/ml\n", afrStrengthDkhPerMl);
+    Serial.printf("  Alk   = %.9f dKH/ml\n", alkStrengthDkhPerMl);
+    Serial.printf("  NaOH  = %.9f dKH/ml\n", naohStrengthDkhPerMl);
+    Serial.printf("  Mg    = %.9f ppm/ml\n", mgStrengthPpmPerMl);
+    Serial.printf("  CaCl2 = %.9f ppm/ml\n", cacl2StrengthPpmPerMl);
 }
 
-void handlePostChemicalStrengths() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    float kalkStrength  = doc["kalk"]  | ai.getDkhPerMlKalk();
-    float afrStrength   = doc["afr"]   | ai.getDkhPerMlAfr();
-    float alkStrength   = doc["alk"]   | ai.getDkhPerMlAlk();
-    float naohStrength  = doc["naoh"]  | ai.getDkhPerMlNaoh();
-    float mgStrength    = doc["mg"]    | ai.getMgPerMlMg();
-    float cacl2Strength = doc["cacl2"] | ai.getCaPerMlCacl2();
-
-    // Optional customer-facing recipe fields from dashboard.
-    recipeKalkGpg  = doc["recipe"]["kalkGpg"]  | recipeKalkGpg;
-    recipeAfrGpg   = doc["recipe"]["afrGpg"]   | recipeAfrGpg;
-    recipeAlkGpg   = doc["recipe"]["alkGpg"]   | recipeAlkGpg;
-    recipeNaohGpg  = doc["recipe"]["naohGpg"]  | recipeNaohGpg;
-    recipeMgGpg    = doc["recipe"]["mgGpg"]    | recipeMgGpg;
-    recipeCacl2Gpg = doc["recipe"]["cacl2Gpg"] | recipeCacl2Gpg;
-    recipeAfrType   = doc["recipe"]["afrType"]   | recipeAfrType;
-    recipeAlkType   = doc["recipe"]["alkType"]   | recipeAlkType;
-    recipeMgType    = doc["recipe"]["mgType"]    | recipeMgType;
-    recipeCacl2Type = doc["recipe"]["cacl2Type"] | recipeCacl2Type;
-
-    if (!isfinite(recipeKalkGpg)  || recipeKalkGpg  < 0.0f || recipeKalkGpg  > 5000.0f ||
-        !isfinite(recipeAfrGpg)   || recipeAfrGpg   < 0.0f || recipeAfrGpg   > 5000.0f ||
-        !isfinite(recipeAlkGpg)   || recipeAlkGpg   < 0.0f || recipeAlkGpg   > 5000.0f ||
-        !isfinite(recipeNaohGpg)  || recipeNaohGpg  < 0.0f || recipeNaohGpg  > 5000.0f ||
-        !isfinite(recipeMgGpg)    || recipeMgGpg    < 0.0f || recipeMgGpg    > 5000.0f ||
-        !isfinite(recipeCacl2Gpg) || recipeCacl2Gpg < 0.0f || recipeCacl2Gpg > 5000.0f) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid recipe gram-per-gallon values\"}");
-        return;
-    }
-
-    if (!isfinite(kalkStrength) || kalkStrength <= 0.0f || kalkStrength > 1.0f ||
-        !isfinite(afrStrength) || afrStrength <= 0.0f || afrStrength > 1.0f ||
-        !isfinite(alkStrength) || alkStrength <= 0.0f || alkStrength > 1.0f ||
-        !isfinite(naohStrength) || naohStrength <= 0.0f || naohStrength > 1.0f ||
-        !isfinite(mgStrength) || mgStrength <= 0.0f || mgStrength > 100.0f ||
-        !isfinite(cacl2Strength) || cacl2Strength <= 0.0f || cacl2Strength > 100.0f) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid chemical strength values\"}");
-        return;
-    }
-
-    ai.setChemicalStrengths(
-        kalkStrength,
-        afrStrength,
-        alkStrength,
-        naohStrength,
-        mgStrength,
-        cacl2Strength
-    );
-
-    prefs.begin("doser-settings", false);
-    prefs.putFloat("str_kalk", ai.getDkhPerMlKalk());
-    prefs.putFloat("str_afr", ai.getDkhPerMlAfr());
-    prefs.putFloat("str_alk", ai.getDkhPerMlAlk());
-    prefs.putFloat("str_naoh", ai.getDkhPerMlNaoh());
-    prefs.putFloat("str_mg", ai.getMgPerMlMg());
-    prefs.putFloat("str_cacl2", ai.getCaPerMlCacl2());
-    prefs.end();
-
-    saveChemicalRecipes();
-
-    Serial.printf("CHEMICAL STRENGTHS UPDATED: kalk=%.7f afr=%.7f alk=%.7f naoh=%.7f mg=%.7f cacl2=%.7f\n",
-                  ai.getDkhPerMlKalk(), ai.getDkhPerMlAfr(), ai.getDkhPerMlAlk(),
-                  ai.getDkhPerMlNaoh(), ai.getMgPerMlMg(), ai.getCaPerMlCacl2());
-    logger.printf("CHEMICAL STRENGTHS UPDATED: kalk=%.7f afr=%.7f alk=%.7f naoh=%.7f mg=%.7f cacl2=%.7f\n",
-                  ai.getDkhPerMlKalk(), ai.getDkhPerMlAfr(), ai.getDkhPerMlAlk(),
-                  ai.getDkhPerMlNaoh(), ai.getMgPerMlMg(), ai.getCaPerMlCacl2());
-
-    calculateAiFromBestChemistry("StrengthConfig");
-    publishAiPlanIfNeeded("StrengthConfig", true);
-
-    server.send(200, "application/json", "{\"ok\":true}");
-}
+// handlePostChemicalStrengths() moved to lib/WebRoutes/WebRoutes.cpp
 
 
 void tokenStatusCallback(TokenInfo info) {
@@ -2574,32 +2640,61 @@ bool planPublishChangeIsSignificant(float oldVal, float newVal) {
     return (fabsf(newVal - oldVal) / denom) >= PLAN_PUBLISH_CHANGE_FRACTION;
 }
 
+// Fixed 2026-08-02: previously published/logged from `currentPlan`'s six
+// legacy named fields (.kalk/.afr/.alk/.cacl2/.naoh/.mg), populated by
+// syncLegacyPlanFromV2()'s best-effort keyword matching against whatever
+// name a customer typed for a chemical. That matching is inherently
+// incomplete for freely-named chemicals (confirmed root cause of
+// reefDoser12 silently dropping a chemical named "Calcium" -- it matched
+// none of the six keyword branches and its real, correctly-solved dose was
+// discarded with no warning). Root problem: a fixed vocabulary of legacy
+// chemical-type names can never cover an arbitrary customer-typed name,
+// no matter how many keywords get added -- any new name is one dashboard
+// wizard entry away from hitting the same gap again.
+//
+// Real fix, not another keyword: publish BY PHYSICAL PUMP INDEX instead,
+// same proven pattern WebRoutes.cpp's handleGetStatus() already uses for
+// the local dashboard's `dosingMlPerDayByPump` field (which the dashboard
+// JS already prefers over the legacy keys -- see Dashboard.h's
+// `s.dosingMlPerDayByPump || s.dosingMlPerDay || ...` fallback chain).
+// Pump index is never ambiguous -- it doesn't depend on what anyone typed,
+// so it can't have this class of bug regardless of future chemical names.
+// Also publishes pumpAssignments (chemical name per pump) so a Firebase/
+// cloud-side viewer without local network access can still label pumps
+// correctly, matching what /api/chemicals already gives the local
+// dashboard for free.
+//
+// currentPlan / syncLegacyPlanFromV2() are left in place for now (other
+// call sites -- baseline displays, chemicalStrengths, etc. -- still read
+// them) but are no longer the source of truth for what actually gets
+// dosed or published. Removing them entirely is the next cleanup step
+// once nothing else depends on the six-name shape.
 void publishAiPlanIfNeeded(const char* source, bool force) {
     if (apexTlsReservedOrCoolingDown()) return;
     if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !Firebase.ready()) return;
 
-    float planVals[6] = {
-        ai.currentPlan.kalk,
-        ai.currentPlan.afr,
-        ai.currentPlan.alk,
-        ai.currentPlan.cacl2,
-        ai.currentPlan.naoh,
-        ai.currentPlan.mg
-    };
-
-    // Do not let a boot-time/empty AI plan overwrite a good cloud plan with zeros.
-    bool anyNonZero = false;
-    for (int i = 0; i < 6; ++i) {
-        if (fabsf(planVals[i]) >= 0.01f) {
-            anyNonZero = true;
-            break;
+    // Same computation as handleGetStatus()'s dosingMlPerDayByPump --
+    // deliberately identical logic, not re-derived, so local and cloud
+    // views can never silently disagree with each other again.
+    float pumpPlanMl[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    String pumpChemName[4] = {"", "", "", ""};
+    for (int c = 0; c < declaredChemicalCount && c < kMaxDeclaredChemicals; c++) {
+        int pumpIdx = declaredChemicals[c].pumpIndex;
+        if (pumpIdx >= 0 && pumpIdx < 4) {
+            pumpPlanMl[pumpIdx] = planMlPerDayByIndex[c];
+            pumpChemName[pumpIdx] = declaredChemicals[c].name;
         }
+    }
+
+    bool anyNonZero = false;
+    for (int i = 0; i < 4; ++i) {
+        if (fabsf(pumpPlanMl[i]) >= 0.01f) { anyNonZero = true; break; }
     }
     if (!anyNonZero && !force) return;
 
     bool changed = force;
-    for (int i = 0; i < 6; ++i) {
-        if (planPublishChangeIsSignificant(lastPublishedPlanMlDay[i], planVals[i])) {
+    for (int i = 0; i < 4; ++i) {
+        if (planPublishChangeIsSignificant(lastPublishedPumpMlDay[i], pumpPlanMl[i])) {
             changed = true;
             break;
         }
@@ -2615,27 +2710,89 @@ void publishAiPlanIfNeeded(const char* source, bool force) {
     if (!changed) return;
 
     FirebaseJson json;
-    json.set("kalk", planVals[0]);
-    json.set("afr", planVals[1]);
-    json.set("alk", planVals[2]);
-    json.set("cacl2", planVals[3]);
-    json.set("naoh", planVals[4]);
-    json.set("mg", planVals[5]);
+    json.set("pump1", pumpPlanMl[0]);
+    json.set("pump2", pumpPlanMl[1]);
+    json.set("pump3", pumpPlanMl[2]);
+    json.set("pump4", pumpPlanMl[3]);
     json.set("updatedAt", (uint32_t)(millis() / 1000UL));
     json.set("source", source ? source : "AI");
 
-    String path = "/devices/" + deviceID + "/state/dosingMlPerDay";
-    if (Firebase.updateNode(writeFbdo, path.c_str(), json)) {
-        for (int i = 0; i < 6; ++i) lastPublishedPlanMlDay[i] = planVals[i];
+    FirebaseJson assignJson;
+    assignJson.set("pump1", pumpChemName[0]);
+    assignJson.set("pump2", pumpChemName[1]);
+    assignJson.set("pump3", pumpChemName[2]);
+    assignJson.set("pump4", pumpChemName[3]);
+
+    String path = "/devices/" + deviceID + "/state/dosingMlPerDayByPump";
+    String assignPath = "/devices/" + deviceID + "/state/pumpAssignments";
+    bool ok = Firebase.updateNode(writeFbdo, path.c_str(), json);
+    if (ok) {
+        // Best-effort -- assignment names change rarely, a missed write
+        // here doesn't affect dosing or the mL/day values above at all.
+        Firebase.updateNode(writeFbdo, assignPath.c_str(), assignJson);
+
+        for (int i = 0; i < 4; ++i) lastPublishedPumpMlDay[i] = pumpPlanMl[i];
         if (strlen(today) > 0) lastPlanPublishDate = String(today);
-        Serial.printf("Firebase plan OK [%s]: kalk=%.2f afr=%.2f alk=%.2f cacl2=%.2f naoh=%.2f mg=%.2f\n",
-                      source ? source : "AI", planVals[0], planVals[1], planVals[2], planVals[3], planVals[4], planVals[5]);
-        logger.printf("Firebase plan OK [%s]: kalk=%.2f afr=%.2f alk=%.2f cacl2=%.2f naoh=%.2f mg=%.2f\n",
-                         source ? source : "AI", planVals[0], planVals[1], planVals[2], planVals[3], planVals[4], planVals[5]);
+        Serial.printf("Firebase plan OK [%s]: pump1(%s)=%.2f pump2(%s)=%.2f pump3(%s)=%.2f pump4(%s)=%.2f\n",
+                      source ? source : "AI",
+                      pumpChemName[0].c_str(), pumpPlanMl[0],
+                      pumpChemName[1].c_str(), pumpPlanMl[1],
+                      pumpChemName[2].c_str(), pumpPlanMl[2],
+                      pumpChemName[3].c_str(), pumpPlanMl[3]);
+        logger.printf("Firebase plan OK [%s]: pump1(%s)=%.2f pump2(%s)=%.2f pump3(%s)=%.2f pump4(%s)=%.2f\n",
+                         source ? source : "AI",
+                         pumpChemName[0].c_str(), pumpPlanMl[0],
+                         pumpChemName[1].c_str(), pumpPlanMl[1],
+                         pumpChemName[2].c_str(), pumpPlanMl[2],
+                         pumpChemName[3].c_str(), pumpPlanMl[3]);
     } else {
         Serial.printf("Firebase plan skipped/failed [%s]: %s\n", source ? source : "AI", writeFbdo.errorReason().c_str());
         logger.printf("Firebase plan skipped/failed [%s]: %s\n", source ? source : "AI", writeFbdo.errorReason().c_str());
     }
+}
+
+// ============================================================================
+// NIGHT-WEIGHTED DOSING (generalized across all dosing, any chemical)
+// ----------------------------------------------------------------------------
+// Direct generalization of V1's proven getKalkDayNightSliceMultiplier()/
+// getBalancedKalkSliceMl(), which only ever applied to one hardcoded
+// chemical. Same principle here, parameterized by each declared chemical's
+// own nightFraction instead: keep the AI's daily total for that chemical
+// completely unchanged (the allocator's NNLS solve and §7 safety caps are
+// not touched at all), but redistribute WHEN within the day it's actually
+// dispensed. nightFraction=50 (the default) reproduces today's flat, even
+// distribution exactly; anything else weights slices toward day or night
+// while still summing to the exact same daily total across all 144 slices.
+float nightWeightedSliceMultiplier(float nightFraction, bool lightsOn) {
+    int startHour = lightConfig.start;
+    int endHour = lightConfig.end;
+    if (startHour < 0 || startHour > 23) startHour = 8;
+    if (endHour < 0 || endHour > 23) endHour = 20;
+
+    int lightHours = endHour - startHour;
+    if (lightHours <= 0) lightHours += 24;
+    if (lightHours <= 0 || lightHours >= 24) lightHours = 12;
+    const int darkHours = 24 - lightHours;
+
+    float nf = nightFraction;
+    if (!isfinite(nf) || nf < 0.0f) nf = 0.0f;
+    if (nf > 100.0f) nf = 100.0f;
+    const float nightDailyFraction = nf / 100.0f;
+    const float dayDailyFraction = 1.0f - nightDailyFraction;
+
+    const float lightSlices = static_cast<float>(lightHours * 6);
+    const float darkSlices = static_cast<float>(darkHours * 6);
+    if (lightSlices <= 0.0f || darkSlices <= 0.0f) return 1.0f; // defensive; shouldn't happen given the clamps above
+
+    if (lightsOn) {
+        return (dayDailyFraction * 144.0f) / lightSlices;
+    }
+    return (nightDailyFraction * 144.0f) / darkSlices;
+}
+
+float getNightWeightedSliceMl(float dailyMl, float nightFraction, bool lightsOn) {
+    if (!isfinite(dailyMl) || dailyMl <= 0.0f) return 0.0f;
+    return (dailyMl / 144.0f) * nightWeightedSliceMultiplier(nightFraction, lightsOn);
 }
 
 void addCurrentAiPlanToBuckets(const char* source, bool force) {
@@ -2685,59 +2842,33 @@ void addCurrentAiPlanToBuckets(const char* source, bool force) {
         lastAiBucketAddMs = nowMs - (slicesToAdd * AI_BUCKET_INTERVAL_MS);
     }
 
+    // §5 free chemical declaration: replaces the old 8-case
+    // switch(dosingMode) default-case guard. No mode to be "invalid" now --
+    // the only real failure state is having nothing declared at all.
+    if (declaredChemicalCount == 0) {
+        Serial.println("AI BUCKET SCHEDULER: no chemicals declared, nothing to dose.");
+        logger.println("AI BUCKET SCHEDULER: no chemicals declared, nothing to dose.");
+        return;
+    }
+
+    // Single snapshot for this whole batch, matching V1's same level of
+    // precision -- lights state could in principle change mid-batch during
+    // a large catch-up gap, but that's a rare edge case, not normal
+    // operation, and not worth the complexity of per-slice light checks.
+    const bool lightsOnForThisBatch = isLightsOn();
+
     for (unsigned long slice = 0; slice < slicesToAdd; ++slice) {
-        switch (dosingMode) {
-            case 1:
-                pumpBuckets[0] += ai.currentPlan.kalk / 144.0f;
-                break;
-
-            case 2:
-                pumpBuckets[0] += ai.currentPlan.afr / 144.0f;
-                break;
-
-            case 3:
-                pumpBuckets[0] += ai.currentPlan.kalk / 144.0f;
-                pumpBuckets[1] += ai.currentPlan.afr  / 144.0f;
-                pumpBuckets[2] += ai.currentPlan.mg   / 144.0f;
-                break;
-
-            case 4:
-                pumpBuckets[0] += ai.currentPlan.alk   / 144.0f;
-                pumpBuckets[1] += ai.currentPlan.cacl2 / 144.0f;
-                pumpBuckets[2] += ai.currentPlan.mg    / 144.0f;
-                break;
-
-            case 5:
-                pumpBuckets[0] += ai.currentPlan.kalk  / 144.0f;
-                pumpBuckets[1] += ai.currentPlan.alk   / 144.0f;
-                pumpBuckets[2] += ai.currentPlan.cacl2 / 144.0f;
-                pumpBuckets[3] += ai.currentPlan.mg    / 144.0f;
-                break;
-
-            case 6:
-                pumpBuckets[0] += ai.currentPlan.kalk  / 144.0f;
-                pumpBuckets[1] += ai.currentPlan.cacl2 / 144.0f;
-                pumpBuckets[2] += ai.currentPlan.naoh  / 144.0f;
-                pumpBuckets[3] += ai.currentPlan.mg    / 144.0f;
-                break;
-
-            case 7: // P1 Kalk, P2 CaCl2, P3 NaOH, P4 Alk solution
-                pumpBuckets[0] += ai.currentPlan.kalk  / 144.0f;
-                pumpBuckets[1] += ai.currentPlan.cacl2 / 144.0f;
-                pumpBuckets[2] += ai.currentPlan.naoh  / 144.0f;
-                pumpBuckets[3] += ai.currentPlan.alk   / 144.0f;
-                break;
-
-            case 8: // P1 Kalk, P2 CaCl2, P3 NaOH, P4 unused
-                pumpBuckets[0] += ai.currentPlan.kalk  / 144.0f;
-                pumpBuckets[1] += ai.currentPlan.cacl2 / 144.0f;
-                pumpBuckets[2] += ai.currentPlan.naoh  / 144.0f;
-                break;
-
-            default:
-                Serial.printf("AI BUCKET SCHEDULER BLOCKED: invalid dosingMode=%d\n", dosingMode);
-                logger.printf("AI BUCKET SCHEDULER BLOCKED: invalid dosingMode=%d\n", dosingMode);
-                return;
+        // Each declared chemical carries its own pumpIndex now (always
+        // assigned, see WebRoutesShared.h's DeclaredChemical comment), so
+        // this loop works identically for any declared chemical set, not
+        // just the eight legacy configurations. planMlPerDayByIndex[c] and
+        // declaredChemicals[c] are index-aligned by construction (see
+        // rebuildAiChemicalDeclarations()'s comment on why that matters).
+        for (int c = 0; c < declaredChemicalCount && c < kMaxDeclaredChemicals; c++) {
+            int pumpIdx = declaredChemicals[c].pumpIndex;
+            if (pumpIdx < 0 || pumpIdx >= 4) continue; // defensive; shouldn't happen, pump is always assigned
+            pumpBuckets[pumpIdx] += getNightWeightedSliceMl(
+                planMlPerDayByIndex[c], declaredChemicals[c].nightFraction, lightsOnForThisBatch);
         }
 
         lastAiBucketAddMs += AI_BUCKET_INTERVAL_MS;
@@ -2748,22 +2879,22 @@ void addCurrentAiPlanToBuckets(const char* source, bool force) {
     Serial.printf("AI BUCKET SLICE [%s]: added=%lu plan(kalk=%.2f afr=%.2f alk=%.2f ca=%.2f naoh=%.2f mg=%.2f) buckets(P1=%.2f P2=%.2f P3=%.2f P4=%.2f)\n",
                   source ? source : "Scheduler",
                   slicesToAdd,
-                  ai.currentPlan.kalk,
-                  ai.currentPlan.afr,
-                  ai.currentPlan.alk,
-                  ai.currentPlan.cacl2,
-                  ai.currentPlan.naoh,
-                  ai.currentPlan.mg,
+                  currentPlan.kalk,
+                  currentPlan.afr,
+                  currentPlan.alk,
+                  currentPlan.cacl2,
+                  currentPlan.naoh,
+                  currentPlan.mg,
                   pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3]);
     logger.printf("AI BUCKET SLICE [%s]: added=%lu plan(kalk=%.2f afr=%.2f alk=%.2f ca=%.2f naoh=%.2f mg=%.2f) buckets(P1=%.2f P2=%.2f P3=%.2f P4=%.2f)\n",
                   source ? source : "Scheduler",
                   slicesToAdd,
-                  ai.currentPlan.kalk,
-                  ai.currentPlan.afr,
-                  ai.currentPlan.alk,
-                  ai.currentPlan.cacl2,
-                  ai.currentPlan.naoh,
-                  ai.currentPlan.mg,
+                  currentPlan.kalk,
+                  currentPlan.afr,
+                  currentPlan.alk,
+                  currentPlan.cacl2,
+                  currentPlan.naoh,
+                  currentPlan.mg,
                   pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3]);
 }
 
@@ -3161,7 +3292,7 @@ void streamCallback(StreamData data) {
             hasSavedManualTest = true;
 
             acceptNewChemistryMeasurement("CloudManual", "", true);
-            calculateAiFromBestChemistry("CloudManual");
+            calculateAiFromBestChemistry("CloudManual", true);
             addCurrentAiPlanToBuckets("CloudManual", true);
             publishAiPlanIfNeeded("CloudManual", true);
 
@@ -3213,6 +3344,16 @@ void saveManualTestLocally(float alk, float ca, float mg, float ph) {
     prefs.putFloat("last_mg", mg);
     prefs.putFloat("last_ph", ph);
     prefs.putULong("last_ts", millis() / 1000UL);
+
+    // §3.2 manual-test-prompt feature: only record if this device's clock
+    // is actually synced yet (see daysSinceLastManualTest()'s comment) --
+    // otherwise leave whatever was last persisted alone rather than write
+    // a meaningless pre-NTP timestamp over a real one.
+    time_t nowEpoch = time(nullptr);
+    if (nowEpoch > 1700000000) {
+        lastManualTestEpochSec = (uint32_t)nowEpoch;
+        prefs.putUInt("mtest_epoch", lastManualTestEpochSec);
+    }
     prefs.end();
 
     lastLocalTest.alk = alk;
@@ -3225,6 +3366,7 @@ void loadManualTestLocally() {
     prefs.begin("doser-truth", true);
 
     unsigned long lastTs = prefs.getULong("last_ts", 0);
+    lastManualTestEpochSec = prefs.getUInt("mtest_epoch", 0);
 
     lastLocalTest.alk = prefs.getFloat("last_alk", 0.0f);
     lastLocalTest.ca  = prefs.getFloat("last_ca", 0.0f);
@@ -3253,6 +3395,64 @@ void loadManualTestLocally() {
         Serial.println("No valid saved manual test found yet; live stats will wait for manual/Apex values.");
         logger.println("No valid saved manual test found yet; live stats will wait for manual/Apex values.");
     }
+}
+
+// §8/§8.5 setup wizard persistence.
+void loadSetupWizardCompleted() {
+    prefs.begin("doser-settings", true);
+    setupWizardCompleted = prefs.getBool("wizard_done", false);
+    prefs.end();
+}
+
+void saveSetupWizardCompleted(bool completed) {
+    setupWizardCompleted = completed;
+    prefs.begin("doser-settings", false);
+    prefs.putBool("wizard_done", completed);
+    prefs.end();
+    Serial.printf("SETUP WIZARD: marked %s\n", completed ? "complete" : "incomplete (reset)");
+    logger.printf("SETUP WIZARD: marked %s\n", completed ? "complete" : "incomplete (reset)");
+}
+
+// Shows the wizard for a genuinely fresh/never-actually-used device --
+// distinguishing "has declared chemicals" from "has actually been used" is
+// the important part. Fixed 2026-07-25: dosingMode has a compiled-in
+// default (not loaded from NVS, so it survives a full flash erase), which
+// makes the legacy migration silently create 1 declared chemical from that
+// default before this check ever runs -- so a fully-wiped test chip still
+// showed declaredChemicalCount > 0 and never triggered the wizard. A real,
+// already-configured customer has both declared chemicals AND a real
+// manual test on record; a device with only the auto-migrated default and
+// zero test history is still fresh, whatever declaredChemicalCount says.
+bool shouldShowSetupWizard() {
+    if (setupWizardCompleted) return false;
+    if (declaredChemicalCount > 0 && hasSavedManualTest) return false;
+    return true;
+}
+
+// §8.5 chemistry targets persistence. Fixed 2026-07-25: previously these
+// were hardcoded compile-time constants with literally no customer-facing
+// way to change them -- a real functional gap, not just a missing wizard
+// step. targetAlk/targetCa/targetMg's own initializers above remain the
+// fallback defaults for a device that's never had this saved.
+void loadChemistryTargets() {
+    prefs.begin("doser-settings", true);
+    targetAlk = prefs.getFloat("tgt_alk", targetAlk);
+    targetCa  = prefs.getFloat("tgt_ca", targetCa);
+    targetMg  = prefs.getFloat("tgt_mg", targetMg);
+    prefs.end();
+}
+
+void saveChemistryTargets(float alk, float ca, float mg) {
+    targetAlk = alk;
+    targetCa = ca;
+    targetMg = mg;
+    prefs.begin("doser-settings", false);
+    prefs.putFloat("tgt_alk", alk);
+    prefs.putFloat("tgt_ca", ca);
+    prefs.putFloat("tgt_mg", mg);
+    prefs.end();
+    Serial.printf("CHEMISTRY TARGETS SAVED: Alk=%.2f Ca=%.1f Mg=%.1f\n", alk, ca, mg);
+    logger.printf("CHEMISTRY TARGETS SAVED: Alk=%.2f Ca=%.1f Mg=%.1f\n", alk, ca, mg);
 }
 
 void loadFlowRates() {
@@ -3417,8 +3617,12 @@ void loadLocalSettings() {
     loadMode7DayNightSplit();
     loadAiChemistrySafeties();
 
-    ai.setTankVolumeGallons(TANK_VOLUME_L / 3.78541f);
-    applyAiBaselineToEngine();
+    // v1 -> v2: tank volume/coral-load now live directly on ai.tank (also
+    // refreshed every cycle in runAiRecalculation()). baselineKalkMlDay/etc.
+    // are no longer pushed into the engine -- see comment near
+    // runAiRecalculation() for why.
+    ai.tank.tankVolumeLiters = TANK_VOLUME_L;
+    ai.tank.coralLoad = coralLoadFromBaselineString(baselineCoralLoad);
 
     if (!isValidSystemMode(systemMode)) systemMode = 1;
     if (!isValidDosingMode(dosingMode)) dosingMode = 1;
@@ -3429,6 +3633,8 @@ void loadLocalSettings() {
 
     loadFlowRates();
     loadManualTestLocally();
+    loadSetupWizardCompleted();
+    loadChemistryTargets();
 }
 
 bool publishTankVolumeToFirebase(const char* source) {
@@ -3535,445 +3741,26 @@ bool mirrorStatusToFirebase() {
     }
 }
 
-void handleGetStatus() {
-    JsonDocument doc;
-    doc["ok"] = true;
-    doc["deviceId"] = deviceID;
-    doc["notificationLevel"] = notificationLevel;
-    doc["alertState"]["active"] = currentAlertActive;
-    doc["alertState"]["level"] = currentAlertLevel;
-    doc["alertState"]["code"] = currentAlertCode;
-    doc["alertState"]["message"] = currentAlertMessage;
-    doc["wifiConnected"] = WiFi.status() == WL_CONNECTED;
-    doc["mode"] = systemMode;
-    doc["dosingMode"] = dosingMode;
-    doc["stop"] = emergencyStop;
-    doc["temp"] = currentTempF;
-    doc["cond"] = currentCond;
-    doc["ph"] = currentPh;
-    doc["alk"] = currentAlk;
-    doc["ca"] = currentCa;
-    doc["mg"] = currentMg;
-    doc["ppt"] = currentPpt;
-    doc["sg"] = currentSg;
-    doc["apexEnabled"] = apexEnabled;
-    doc["apexIp"] = apexIp;
-    doc["apexEmulator"]["enabled"] = useApexLogEmulatorForThisDevice();
-    doc["apexEmulator"]["urlConfigured"] = String(APEX_EMULATOR_URL).indexOf("YOUR_DEPLOYMENT_ID") < 0;
-    doc["apexEmulator"]["lastPollMs"] = apexEmu.lastPollMs();
-    doc["apexEmulator"]["lastGoodMs"] = apexEmu.lastGoodMs();
-    doc["apexEmulator"]["sourceDevice"] = apexEmu.chemistry().deviceId;
-    doc["apexEmulator"]["logTime"] = apexEmu.chemistry().logTime;
-    doc["apexEmulator"]["error"] = apexEmu.chemistry().error;
-    doc["lightConfig"]["source"] = lightConfig.source;
-    doc["lightConfig"]["start"] = lightConfig.start;
-    doc["lightConfig"]["end"] = lightConfig.end;
-    doc["lightConfig"]["outlet"] = lightConfig.outlet;
-    doc["aiBaseline"]["kalk"] = baselineKalkMlDay;
-    doc["aiBaseline"]["cacl2"] = baselineCacl2MlDay;
-    doc["aiBaseline"]["naoh"] = baselineNaohMlDay;
-    doc["aiBaseline"]["mg"] = baselineMgMlDay;
-    doc["aiBaseline"]["coralLoad"] = baselineCoralLoad;
-    doc["alkDemandLearning"]["enabled"] = automaticDemandLearningEnabled;
-    doc["alkDemandLearning"]["daysCollected"] = (int)min((uint8_t)7, alkDemandStore.count);
-    doc["alkDemandLearning"]["ready"] = alkDemandStore.count >= 7;
-    doc["alkDemandLearning"]["recommendedDemandDkhDay"] = alkDemandStore.recommendedDailyDemandDkh;
-    doc["alkDemandLearning"]["recommendedP4MlDay"] = alkDemandStore.lastRecommendedP4MlDay;
-    doc["alkDemandLearning"]["currentP4MlDay"] = baselineMgMlDay;
-    doc["calciumDemandLearning"]["enabled"] = automaticCalciumLearningEnabled;
-    doc["calciumDemandLearning"]["daysCollected"] = (int)calciumDemandStore.count;
-    doc["calciumDemandLearning"]["ready"] = calciumDemandStore.count >= 7;
-    doc["calciumDemandLearning"]["recommendedDemandPpmDay"] = calciumDemandStore.recommendedDailyDemandPpm;
-    doc["calciumDemandLearning"]["recommendedP2MlDay"] = calciumDemandStore.lastRecommendedP2MlDay;
-    doc["calciumDemandLearning"]["currentP2MlDay"] = baselineCacl2MlDay;
-    doc["chemicalStrengths"]["kalk"] = ai.getDkhPerMlKalk();
-    doc["chemicalStrengths"]["afr"] = ai.getDkhPerMlAfr();
-    doc["chemicalStrengths"]["alk"] = ai.getDkhPerMlAlk();
-    doc["chemicalStrengths"]["naoh"] = ai.getDkhPerMlNaoh();
-    doc["chemicalStrengths"]["mg"] = ai.getMgPerMlMg();
-    doc["chemicalStrengths"]["cacl2"] = ai.getCaPerMlCacl2();
+// handleGetStatus() moved to lib/WebRoutes/WebRoutes.cpp
 
-    doc["chemicalRecipes"]["kalkGpg"] = recipeKalkGpg;
-    doc["chemicalRecipes"]["afrGpg"] = recipeAfrGpg;
-    doc["chemicalRecipes"]["afrType"] = recipeAfrType;
-    doc["chemicalRecipes"]["alkGpg"] = recipeAlkGpg;
-    doc["chemicalRecipes"]["naohGpg"] = recipeNaohGpg;
-    doc["chemicalRecipes"]["mgGpg"] = recipeMgGpg;
-    doc["chemicalRecipes"]["cacl2Gpg"] = recipeCacl2Gpg;
-    doc["chemicalRecipes"]["alkType"] = recipeAlkType;
-    doc["chemicalRecipes"]["mgType"] = recipeMgType;
-    doc["chemicalRecipes"]["cacl2Type"] = recipeCacl2Type;
-    doc["dosingMlPerDay"]["kalk"] = ai.currentPlan.kalk;
-    doc["dosingMlPerDay"]["afr"] = ai.currentPlan.afr;
-    doc["dosingMlPerDay"]["alk"] = ai.currentPlan.alk;
-    doc["dosingMlPerDay"]["cacl2"] = ai.currentPlan.cacl2;
-    doc["dosingMlPerDay"]["naoh"] = ai.currentPlan.naoh;
-    doc["dosingMlPerDay"]["mg"] = ai.currentPlan.mg;
-    doc["tankLiters"] = TANK_VOLUME_L;
-    doc["tankGallons"] = TANK_VOLUME_L / 3.78541f;
+// handlePostVolume() moved to lib/WebRoutes/WebRoutes.cpp
 
-    // Report both physical pump flows and the active chemical mapping.
-    // This keeps the dashboard correct when Mg moves from Pump 3 to Pump 4 in modes 5/6.
-    doc["flowMlPerMin"]["p1"] = pumpFlowRates[0];
-    doc["flowMlPerMin"]["p2"] = pumpFlowRates[1];
-    doc["flowMlPerMin"]["p3"] = pumpFlowRates[2];
-    doc["flowMlPerMin"]["p4"] = pumpFlowRates[3];
-    for (int i = 0; i < 4; ++i) {
-        const char* key = pumpKeyForPhysicalIndex(i);
-        if (strcmp(key, "unused") != 0) {
-            doc["flowMlPerMin"][key] = pumpFlowRates[i];
-        }
-    }
-    // Backward-compatible generic aliases for older dashboard code.
-    doc["flowMlPerMin"]["tbd"] = pumpFlowRates[3];
+// handleGetMode() moved to lib/WebRoutes/WebRoutes.cpp
 
-    doc["buckets"]["p1"] = pumpBuckets[0];
-    doc["buckets"]["p2"] = pumpBuckets[1];
-    doc["buckets"]["p3"] = pumpBuckets[2];
-    doc["buckets"]["p4"] = pumpBuckets[3];
-    doc["buckets"]["kalk"] = pumpBuckets[0];
-    doc["buckets"]["cacl2"] = pumpBuckets[1];
-    doc["buckets"]["naoh"] = pumpBuckets[2];
-    if (dosingMode == 7) {
-        doc["buckets"]["alk"] = pumpBuckets[3];
-        doc["buckets"]["mg"] = 0.0f;
-    } else if (dosingMode == 8) {
-        doc["buckets"]["alk"] = 0.0f;
-        doc["buckets"]["mg"] = 0.0f;
-    } else {
-        doc["buckets"]["alk"] = alkBucket;
-        doc["buckets"]["mg"] = pumpBuckets[3];
-    }
-    doc["buckets"]["ca"] = pumpBuckets[1];
+// handlePostMode() moved to lib/WebRoutes/WebRoutes.cpp
 
-    doc["dosingThreshold"] = DOSING_THRESHOLD;
-    doc["dosingThresholds"]["p1"] = getPumpDoseThresholdMl(0);
-    doc["dosingThresholds"]["p2"] = getPumpDoseThresholdMl(1);
-    doc["dosingThresholds"]["p3"] = getPumpDoseThresholdMl(2);
-    doc["dosingThresholds"]["p4"] = getPumpDoseThresholdMl(3);
-    doc["maxHourlyLimit"] = maxDoseLimit;
-    for (int i = 0; i < 4; ++i) {
-        String p = "p" + String(i + 1);
-        doc["pumpSafeties"][p]["thresholdMl"] = getPumpDoseThresholdMl(i);
-        doc["pumpSafeties"][p]["maxDoseMl"] = getPumpMaxDoseMl(i);
-        doc["pumpSafeties"][p]["maxDayMl"] = getPumpMaxDayMl(i);
-        doc["pumpSafeties"][p]["usedTodayMl"] = dailyDoseTotals[i];
-        doc["pumpSafeties"][p]["remainingTodayMl"] = getPumpDailyRemainingMl(i);
-    }
+// handleGetDosingMode() moved to lib/WebRoutes/WebRoutes.cpp
 
-    doc["mode7DayNightSplit"]["enabled"] = mode7DayNightSplitEnabled;
-    doc["mode7DayNightSplit"]["dayNaohPct"] = mode7DayNaohPct;
-    doc["mode7DayNightSplit"]["dayAlkPct"] = mode7DayAlkPct;
-    doc["mode7DayNightSplit"]["nightNaohPct"] = mode7NightNaohPct;
-    doc["mode7DayNightSplit"]["nightAlkPct"] = mode7NightAlkPct;
-    doc["mode7DayNightSplit"]["naohMaxPh"] = mode7NaohMaxPh;
-    doc["mode7DayNightSplit"]["lightsActive"] = isLightsOn();
+// handlePostDosingMode() moved to lib/WebRoutes/WebRoutes.cpp
 
-    doc["aiChemistrySafeties"]["maxKalkDayMl"] = aiMaxKalkDayMl;
-    doc["aiChemistrySafeties"]["maxNaohDayMl"] = aiMaxNaohDayMl;
-    doc["aiChemistrySafeties"]["maxAlkDayMl"] = aiMaxAlkDayMl;
-    doc["aiChemistrySafeties"]["maxAlkRiseDkhDay"] = aiMaxAlkRiseDkhDay;
-    doc["aiChemistrySafeties"]["maxMgCorrectionDayMl"] = aiMaxMgCorrectionDayMl;
-    doc["aiChemistrySafeties"]["maxMgDayMl"] = aiMaxMgDayMl;
-    doc["aiChemistrySafeties"]["mgDeadbandPpm"] = aiMgDeadbandPpm;
+// handlePostApexLocal() moved to lib/WebRoutes/WebRoutes.cpp
 
-    for (int i = 0; i < 4; ++i) {
-        String pump = "p" + String(i + 1);
-        JsonObject reservoir = doc["chemicalLevels"][pump].to<JsonObject>();
-        reservoir["capacityGal"] = chemicalCapacityGal[i];
-        reservoir["remainingMl"] = chemicalRemainingMl[i];
-        reservoir["remainingGal"] = chemicalRemainingMl[i] / ML_PER_GALLON;
-        reservoir["remainingPct"] = (chemicalCapacityGal[i] > 0.0f)
-            ? (chemicalRemainingMl[i] / (chemicalCapacityGal[i] * ML_PER_GALLON)) * 100.0f
-            : 0.0f;
-        reservoir["enabled"] = chemicalCapacityGal[i] > 0.0f;
-        reservoir["warning"] = chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= ML_PER_GALLON;
-        reservoir["severe"] = chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= (0.5f * ML_PER_GALLON);
-    }
-    
-    String response;
-    serializeJson(doc, response);
-    server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-    server.sendHeader("Pragma", "no-cache");
-    server.sendHeader("Expires", "0");
-    server.send(200, "application/json", response);
-}
-
-void handlePostVolume() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false}");
-        return;
-    }
-
-    JsonDocument doc;
-    deserializeJson(doc, server.arg("plain"));
-
-    float newVol = doc["volume"] | 1135.6f;
-
-    // Save to global and NVS
-    TANK_VOLUME_L = newVol;
-    prefs.begin("doser-settings", false);
-    prefs.putFloat("t_vol", TANK_VOLUME_L);
-    prefs.end();
-
-    Serial.printf("AI Geometry Updated: Volume = %.1f L\n", TANK_VOLUME_L);
-    logger.printf("AI Geometry Updated: Volume = %.1f L\n", TANK_VOLUME_L);
-    
-    // Immediately tell the AI engine about the new size
-    ai.setTankVolumeGallons(TANK_VOLUME_L / 3.78541f);
-
-    // Push volume only when it changes. If Firebase is not ready yet,
-    // the one-shot boot publisher below will publish the latest saved value.
-    if (publishTankVolumeToFirebase("VolumeChange")) {
-        tankVolumePublishedThisBoot = true;
-    } else {
-        tankVolumePublishedThisBoot = false;
-        Serial.println("Firebase volume push deferred: Firebase not ready yet.");
-        logger.println("Firebase volume push deferred: Firebase not ready yet.");
-    }
-
-    server.send(200, "application/json", "{\"ok\":true}");
-}
-
-void handleGetMode() {
-    JsonDocument doc;
-    doc["mode"] = systemMode;
-    String response;
-    serializeJson(doc, response);
-    server.send(200, "application/json", response);
-}
-
-void handlePostMode() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    int newMode = doc["mode"] | 1;
-    if (!isValidSystemMode(newMode)) newMode = 1;
-
-    systemMode = newMode;
-    prefs.begin("doser-settings", false);
-    prefs.putInt("system_mode", systemMode);
-    prefs.end();
-
-    Serial.print("Local operating mode changed to: ");
-    Serial.println(systemMode == 0 ? "OFF" : systemMode == 1 ? "AUTO" : "MAN");
-    logger.print("Local operating mode changed to: ");
-    logger.println(systemMode == 0 ? "OFF" : systemMode == 1 ? "AUTO" : "MAN");
-
-    server.send(200, "application/json", "{\"ok\":true}");
-}
-
-void handleGetDosingMode() {
-    JsonDocument doc;
-    doc["dosingMode"] = dosingMode;
-    String response;
-    serializeJson(doc, response);
-    server.send(200, "application/json", response);
-}
-
-void handlePostDosingMode() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    int newMode = doc["dosingMode"] | (doc["mode"] | 1);
-    if (!isValidDosingMode(newMode)) newMode = 1;
-
-    dosingMode = newMode;
-    prefs.begin("doser-settings", false);
-    prefs.putInt("dosing_mode", dosingMode);
-    prefs.end();
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Firebase.setInt(writeFbdo, ("/devices/" + deviceID + "/settings/dosingMode").c_str(), dosingMode);
-        Firebase.setInt(writeFbdo, ("/devices/" + deviceID + "/state/dosingMode").c_str(), dosingMode);
-    }
-
-    Serial.printf("Local dosing implementation changed to: %d\n", dosingMode);
-    logger.printf("Local dosing implementation changed to: %d\n", dosingMode);
-    server.send(200, "application/json", "{\"ok\":true}");
-}
-
-void handlePostApexLocal() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    apexEnabled = doc["enabled"] | false;
-    String ip = doc["ip"] | "";
-
-    prefs.begin("doser-settings", false);
-    prefs.putBool("apex_en", apexEnabled);
-    if (ip.length() > 0) {
-        prefs.putString("apex_ip", ip);
-        apexIp = ip;
-        apex.setIpAddr(ip);
-    }
-    prefs.end();
-
-    Serial.println("Local Apex Config Saved: " + ip);
-    logger.println("Local Apex Config Saved: " + ip);
-    if (apexEnabled && ip.length() > 7) {
-        syncAllTruths();
-    }
-
-    server.send(200, "application/json", "{\"ok\":true}");
-}
-
-void handlePostCalibration() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    int pumpIndex = doc["pumpIndex"] | -1;
-    float flowMlPerMin = doc["flowMlPerMin"] | 0.0f;
-
-    if (pumpIndex < 0 || pumpIndex > 3 || flowMlPerMin <= 0.0f) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid pumpIndex or flowMlPerMin\"}");
-        return;
-    }
-
-    saveFlowRate(pumpIndex, flowMlPerMin);
-
-    if (WiFi.status() == WL_CONNECTED) {
-        String key = pumpKeyForPhysicalIndex(pumpIndex);
-        Firebase.setFloat(writeFbdo, ("/devices/" + deviceID + "/state/flowMlPerMin/" + key).c_str(), flowMlPerMin);
-    }
-
-    Serial.printf("Saved local flow calibration: pump %d = %.2f ml/min\n", pumpIndex + 1, flowMlPerMin);
-    logger.printf("Saved local flow calibration: pump %d = %.2f ml/min\n", pumpIndex + 1, flowMlPerMin);
-
-    JsonDocument out;
-    out["ok"] = true;
-    out["pumpIndex"] = pumpIndex;
-    out["pump"] = pumpKeyForPhysicalIndex(pumpIndex);
-    out["flowMlPerMin"] = flowMlPerMin;
-    String response;
-    serializeJson(out, response);
-    server.send(200, "application/json", response);
-}
+// handlePostCalibration() moved to lib/WebRoutes/WebRoutes.cpp
 
 
-void handlePostCalibrationRun() {
-    if (otaInProgress) {
-        doser.stopAllPumps();
-        server.send(423, "application/json", "{\"ok\":false,\"error\":\"OTA in progress; calibration blocked\"}");
-        return;
-    }
+// handlePostCalibrationRun() moved to lib/WebRoutes/WebRoutes.cpp
 
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-    if (emergencyStop) {
-        server.send(423, "application/json", "{\"ok\":false,\"error\":\"Emergency stop is active\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    int pumpIndex = doc["pumpIndex"] | (doc["pump"] | -1);
-    float seconds = doc["seconds"] | 0.0f;
-
-    if (pumpIndex < 0 || pumpIndex >= pumpCountForCurrentDosingMode() || seconds <= 0.0f || seconds > 300.0f) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid pumpIndex or seconds\"}");
-        return;
-    }
-
-    doser.stopManualRun(pumpIndex);
-    doser.startManualRun(pumpIndex);
-    calibrationRunActive[pumpIndex] = true;
-    calibrationRunUntilMs[pumpIndex] = millis() + (unsigned long)(seconds * 1000.0f);
-    armPumpRuntimeDeadlineMs(
-        pumpIndex,
-        (unsigned long)(seconds * 1000.0f),
-        "Calibration"
-    );
-
-    Serial.printf("Calibration timed run: pump %d for %.1f seconds\n", pumpIndex + 1, seconds);
-    logger.printf("Calibration timed run: pump %d for %.1f seconds\n", pumpIndex + 1, seconds);
-
-    JsonDocument out;
-    out["ok"] = true;
-    out["pumpIndex"] = pumpIndex;
-    out["seconds"] = seconds;
-    String response;
-    serializeJson(out, response);
-    server.send(200, "application/json", response);
-}
-
-void handlePostLightConfig() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    // Update your global lightConfig struct
-    lightConfig.source = doc["source"] | 0;
-    lightConfig.start = doc["start"] | 8;
-    lightConfig.end = doc["end"] | 20;
-    lightConfig.outlet = doc["outlet"].as<String>();
-
-    // Save to Preferences so it stays after a reboot
-    prefs.begin("doser-settings", false);
-    prefs.putInt("l_src", lightConfig.source);
-    prefs.putInt("l_start", lightConfig.start);
-    prefs.putInt("l_end", lightConfig.end);
-    prefs.putString("l_out", lightConfig.outlet);
-    prefs.end();
-
-    Serial.printf("AI Light Sync: Source=%d, Start=%d, End=%d\n", 
-                  lightConfig.source, lightConfig.start, lightConfig.end);
-    logger.printf("AI Light Sync: Source=%d, Start=%d, End=%d\n", 
-                  lightConfig.source, lightConfig.start, lightConfig.end);
-
-    server.send(200, "application/json", "{\"ok\":true}");
-}
+// handlePostLightConfig() moved to lib/WebRoutes/WebRoutes.cpp
 
 // Call this every time you get new sensor data (e.g., in syncAllTruths)
 void updateDailyAverages() {
@@ -3987,210 +3774,14 @@ void updateDailyAverages() {
     }
 }
 
-void handlePostLiveDose() {
-    if (otaInProgress) {
-        doser.stopAllPumps();
-        server.send(423, "application/json", "{\"ok\":false,\"error\":\"OTA in progress; live dose blocked\"}");
-        return;
-    }
-
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-    if (emergencyStop) {
-        server.send(423, "application/json", "{\"ok\":false,\"error\":\"Emergency stop is active\"}");
-        return;
-    }
-
-    if (anyDoserPumpRunning()) {
-        server.send(423, "application/json", "{\"ok\":false,\"error\":\"Another pump is currently dosing\"}");
-        return;
-    }
-
-    unsigned long interPumpRemainingMs = 0;
-    if (!interPumpDelayReady(&interPumpRemainingMs)) {
-        const unsigned long remainingSec = (interPumpRemainingMs + 999UL) / 1000UL;
-        String response = "{\"ok\":false,\"error\":\"Five-minute inter-pump delay active\",\"remainingSeconds\":" +
-                          String(remainingSec) + "}";
-        server.send(423, "application/json", response);
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    int pumpIndex = doc["pumpIndex"] | (doc["pump"] | -1);
-    float ml = doc["ml"] | 0.0f;
-
-    if (pumpIndex < 0 || pumpIndex >= pumpCountForCurrentDosingMode() || ml <= 0.0f) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid pumpIndex or ml\"}");
-        return;
-    }
-
-    float safeMl = applyPumpSafetyCaps(pumpIndex, ml, "LiveDose");
-    if (safeMl <= 0.0f) {
-        server.send(423, "application/json", "{\"ok\":false,\"error\":\"Pump safety blocked dose\"}");
-        return;
-    }
-
-    // Arm the fail-safe before starting the pump so the runtime supervisor
-    // can never observe a running pump without an active deadline.
-    armPumpRuntimeDeadlineForMl(pumpIndex, safeMl, "LiveDose");
-
-    float actualMl = doser.doseMl(pumpIndex, safeMl);
-    if (actualMl <= 0.0f) {
-        clearPumpRuntimeDeadline();
-        Serial.printf("Local live dose failed to start: physical pump %d, requested %.2f ml, safety %.2f ml\n",
-                      pumpIndex + 1, ml, safeMl);
-        logger.printf("Local live dose failed to start: physical pump %d, requested %.2f ml, safety %.2f ml\n",
-                      pumpIndex + 1, ml, safeMl);
-        server.send(500, "application/json", "{\"ok\":false,\"error\":\"Dose failed to start\"}");
-        return;
-    }
-
-    noteInterPumpDoseStarted(pumpIndex, "LiveDose");
-    recordChemicalDispense(pumpIndex, actualMl, "LiveDose");
-    evaluateAlertState("ChemicalLevel", true);
-    Serial.printf("Local live dose: physical pump %d, requested %.2f ml, safety %.2f ml, actual %.2f ml\n", pumpIndex + 1, ml, safeMl, actualMl);
-    logger.printf("Local live dose: physical pump %d, requested %.2f ml, safety %.2f ml, actual %.2f ml\n", pumpIndex + 1, ml, safeMl, actualMl);
-     server.send(200, "application/json", "{\"ok\":true}");
-}
+// handlePostLiveDose() moved to lib/WebRoutes/WebRoutes.cpp
 
 
-void handleGetChemicalLevels() {
-    JsonDocument doc;
-    doc["ok"] = true;
-    for (int i = 0; i < 4; ++i) {
-        String pump = "p" + String(i + 1);
-        JsonObject reservoir = doc["chemicalLevels"][pump].to<JsonObject>();
-        reservoir["capacityGal"] = chemicalCapacityGal[i];
-        reservoir["remainingMl"] = chemicalRemainingMl[i];
-        reservoir["remainingGal"] = chemicalRemainingMl[i] / ML_PER_GALLON;
-        reservoir["remainingPct"] = (chemicalCapacityGal[i] > 0.0f)
-            ? (chemicalRemainingMl[i] / (chemicalCapacityGal[i] * ML_PER_GALLON)) * 100.0f
-            : 0.0f;
-        reservoir["enabled"] = chemicalCapacityGal[i] > 0.0f;
-        reservoir["warning"] = chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= ML_PER_GALLON;
-        reservoir["severe"] = chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= (0.5f * ML_PER_GALLON);
-    }
+// handleGetChemicalLevels() moved to lib/WebRoutes/WebRoutes.cpp
 
-    String response;
-    serializeJson(doc, response);
-    server.send(200, "application/json", response);
-}
+// handlePostChemicalLevels() moved to lib/WebRoutes/WebRoutes.cpp
 
-void handlePostChemicalLevels() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    // resetRemaining=true means "Fill to Full".
-    // setCurrent=true means dashboard is sending actual current gallons for partial refills.
-    bool resetRemaining = doc["resetRemaining"] | false;
-    bool setCurrent = doc["setCurrent"] | false;
-
-    for (int i = 0; i < 4; ++i) {
-        String galKey = "p" + String(i + 1) + "Gal";
-        String currentGalKey = "p" + String(i + 1) + "CurrentGal";
-        String pumpKey = "p" + String(i + 1);
-
-        float oldCapGal = chemicalCapacityGal[i];
-        float gal = oldCapGal;
-
-        if (doc[galKey].is<float>() || doc[galKey].is<int>()) {
-            gal = doc[galKey] | oldCapGal;
-        } else if (doc[pumpKey]["capacityGal"].is<float>() || doc[pumpKey]["capacityGal"].is<int>()) {
-            gal = doc[pumpKey]["capacityGal"] | oldCapGal;
-        }
-
-        if (!isfinite(gal) || gal < 0.0f) gal = 0.0f;
-        if (gal > 20.0f) gal = 20.0f; // sanity limit
-
-        chemicalCapacityGal[i] = gal;
-        float maxMl = gal * ML_PER_GALLON;
-
-        if (gal <= 0.0f) {
-            chemicalRemainingMl[i] = 0.0f;
-            continue;
-        }
-
-        if (resetRemaining) {
-            // Fill to Full
-            chemicalRemainingMl[i] = maxMl;
-        } else if (setCurrent) {
-            // Partial refill / manually set actual current amount.
-            // Supports either top-level p1CurrentGal or nested p1.currentGal.
-            bool hasCurrent = false;
-            float currentGal = chemicalRemainingMl[i] / ML_PER_GALLON;
-
-            if (doc[currentGalKey].is<float>() || doc[currentGalKey].is<int>()) {
-                currentGal = doc[currentGalKey] | currentGal;
-                hasCurrent = true;
-            } else if (doc[pumpKey]["currentGal"].is<float>() || doc[pumpKey]["currentGal"].is<int>()) {
-                currentGal = doc[pumpKey]["currentGal"] | currentGal;
-                hasCurrent = true;
-            } else if (doc[pumpKey]["remainingGal"].is<float>() || doc[pumpKey]["remainingGal"].is<int>()) {
-                currentGal = doc[pumpKey]["remainingGal"] | currentGal;
-                hasCurrent = true;
-            }
-
-            if (hasCurrent) {
-                if (!isfinite(currentGal) || currentGal < 0.0f) currentGal = 0.0f;
-                if (currentGal > gal) currentGal = gal;
-                chemicalRemainingMl[i] = currentGal * ML_PER_GALLON;
-            } else {
-                if (chemicalRemainingMl[i] > maxMl) chemicalRemainingMl[i] = maxMl;
-                if (chemicalRemainingMl[i] < 0.0f) chemicalRemainingMl[i] = 0.0f;
-            }
-        } else {
-            // Save Capacity only: never assume refill.
-            // Preserve actual remaining amount, clamped to new capacity.
-            if (chemicalRemainingMl[i] > maxMl) chemicalRemainingMl[i] = maxMl;
-            if (chemicalRemainingMl[i] < 0.0f) chemicalRemainingMl[i] = 0.0f;
-        }
-    }
-
-    saveChemicalReservoirs();
-    evaluateAlertState("ChemicalLevel", true);
-
-    Serial.println("Chemical reservoir levels saved locally.");
-    logger.println("Chemical reservoir levels saved locally.");
-
-    handleGetChemicalLevels();
-}
-
-void handlePostEmergencyStop() {
-    if (!emergencyStop) {
-        triggerEmergencyStop("Emergency Stop button pressed on local dashboard", "LocalDashboard");
-    } else {
-        emergencyStop = false;
-        emergencyStopReason = "";
-        clearPumpRuntimeDeadline();
-        Serial.println("EMERGENCY STOP CLEARED [LocalDashboard]");
-        logger.println("EMERGENCY STOP CLEARED [LocalDashboard]");
-
-        if (WiFi.status() == WL_CONNECTED) {
-            Firebase.setBool(writeFbdo, ("/devices/" + deviceID + "/state/emergencyStop").c_str(), false);
-            Firebase.setString(writeFbdo, ("/devices/" + deviceID + "/state/emergencyStopReason").c_str(), "Cleared from local dashboard");
-        }
-        publishAlertState("info", "EMERGENCY_STOP", "Emergency Stop cleared from local dashboard", false, "LocalDashboard", true);
-    }
-
-    server.send(200, "application/json", "{\"ok\":true}");
-}
+// handlePostEmergencyStop() moved to lib/WebRoutes/WebRoutes.cpp
 
 
 unsigned long alertRepeatMsForLevel(const String& level) {
@@ -4321,308 +3912,21 @@ void evaluateAlertState(const char* source, bool force) {
     publishAlertState(level, code, message, active, source, force);
 }
 
-void handleGetNotificationSettings() {
-    JsonDocument doc;
-    doc["ok"] = true;
-    doc["notificationLevel"] = notificationLevel;
-    doc["alertState"]["active"] = currentAlertActive;
-    doc["alertState"]["level"] = currentAlertLevel;
-    doc["alertState"]["code"] = currentAlertCode;
-    doc["alertState"]["message"] = currentAlertMessage;
-    String response;
-    serializeJson(doc, response);
-    server.send(200, "application/json", response);
-}
+// handleGetNotificationSettings() moved to lib/WebRoutes/WebRoutes.cpp
 
-void handlePostNotificationSettings() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
+// handlePostNotificationSettings() moved to lib/WebRoutes/WebRoutes.cpp
 
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    String requested = doc["notificationLevel"] | notificationLevel;
-    if (!isValidNotificationLevel(requested)) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid notificationLevel\"}");
-        return;
-    }
-
-    notificationLevel = requested;
-    prefs.begin("doser-settings", false);
-    prefs.putString("notif_level", notificationLevel);
-    prefs.end();
-
-    if (WiFi.status() == WL_CONNECTED && firebaseStarted && Firebase.ready()) {
-        Firebase.setString(writeFbdo, ("/devices/" + deviceID + "/settings/notificationLevel").c_str(), notificationLevel);
-    }
-
-    Serial.println("Notification level changed to: " + notificationLevel);
-    logger.println("Notification level changed to: " + notificationLevel);
-
-    JsonDocument out;
-    out["ok"] = true;
-    out["notificationLevel"] = notificationLevel;
-    String response;
-    serializeJson(out, response);
-    server.send(200, "application/json", response);
-}
-
-void handlePostResetWifi() {
-    prefs.begin("doser-settings", false);
-    prefs.remove("ssid");
-    prefs.remove("pass");
-    prefs.end();
-
-    server.send(200, "application/json", "{\"ok\":true,\"restarting\":true}");
-    delay(400);
-    ESP.restart();
-}
+// handlePostResetWifi() moved to lib/WebRoutes/WebRoutes.cpp
 
 
-void handlePostAiBaseline() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    float kalk  = doc["kalk"]  | baselineKalkMlDay;
-    float cacl2 = doc["cacl2"] | baselineCacl2MlDay;
-    float naoh  = doc["naoh"]  | baselineNaohMlDay;
-    float mg    = doc["mg"]    | baselineMgMlDay;
-    String load = doc["coralLoad"] | baselineCoralLoad;
-
-    if (!isfinite(kalk) || kalk < 0.0f || kalk > 100000.0f ||
-        !isfinite(cacl2) || cacl2 < 0.0f || cacl2 > 10000.0f ||
-        !isfinite(naoh) || naoh < 0.0f || naoh > 10000.0f ||
-        !isfinite(mg) || mg < 0.0f || mg > 10000.0f) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid baseline values\"}");
-        return;
-    }
-
-    baselineKalkMlDay = kalk;
-    baselineCacl2MlDay = cacl2;
-    baselineNaohMlDay = naoh;
-    baselineMgMlDay = mg;
-    baselineCoralLoad = load.length() ? load : "custom";
-
-    prefs.begin("doser-settings", false);
-    prefs.putFloat("base_kalk", baselineKalkMlDay);
-    prefs.putFloat("base_cacl2", baselineCacl2MlDay);
-    prefs.putFloat("base_naoh", baselineNaohMlDay);
-    prefs.putFloat("base_mg", baselineMgMlDay);
-    prefs.putString("base_load", baselineCoralLoad);
-    prefs.end();
-
-    applyAiBaselineToEngine();
-
-    Serial.printf("AI Baseline Updated: Kalk=%.2f Cacl2=%.2f NaOH=%.2f Mg=%.2f load=%s\n",
-                  baselineKalkMlDay, baselineCacl2MlDay, baselineNaohMlDay, baselineMgMlDay, baselineCoralLoad.c_str());
-    logger.printf("AI Baseline Updated: Kalk=%.2f Cacl2=%.2f NaOH=%.2f Mg=%.2f load=%s\n",
-                     baselineKalkMlDay, baselineCacl2MlDay, baselineNaohMlDay, baselineMgMlDay, baselineCoralLoad.c_str());
-
-    server.send(200, "application/json", "{\"ok\":true}");
-}
+// handlePostAiBaseline() moved to lib/WebRoutes/WebRoutes.cpp
 
 
-void handlePostMode7DayNightSplit() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
+// handlePostMode7DayNightSplit() moved to lib/WebRoutes/WebRoutes.cpp
 
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
+// handlePostAiChemistrySafeties() moved to lib/WebRoutes/WebRoutes.cpp
 
-    bool enabled = doc["enabled"] | mode7DayNightSplitEnabled;
-    float dayNaoh = sanitizePercent(doc["dayNaohPct"] | mode7DayNaohPct, mode7DayNaohPct);
-    float dayAlk = sanitizePercent(doc["dayAlkPct"] | mode7DayAlkPct, mode7DayAlkPct);
-    float nightNaoh = sanitizePercent(doc["nightNaohPct"] | mode7NightNaohPct, mode7NightNaohPct);
-    float nightAlk = sanitizePercent(doc["nightAlkPct"] | mode7NightAlkPct, mode7NightAlkPct);
-    float naohMaxPh = sanitizePhCutoff(doc["naohMaxPh"] | mode7NaohMaxPh, mode7NaohMaxPh);
-
-    if ((dayNaoh + dayAlk) <= 0.0f || (nightNaoh + nightAlk) <= 0.0f) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Day and night split totals must be greater than zero\"}");
-        return;
-    }
-
-    mode7DayNightSplitEnabled = enabled;
-    mode7DayNaohPct = dayNaoh;
-    mode7DayAlkPct = dayAlk;
-    mode7NightNaohPct = nightNaoh;
-    mode7NightAlkPct = nightAlk;
-    mode7NaohMaxPh = naohMaxPh;
-
-    saveMode7DayNightSplit();
-    applyMode7DayNightSplitToEngine();
-
-    Serial.printf("Mode7 Day/Night Split Updated: enabled=%d day NaOH=%.1f Alk=%.1f night NaOH=%.1f Alk=%.1f NaOH cutoff=%.2f\n",
-                  mode7DayNightSplitEnabled ? 1 : 0,
-                  mode7DayNaohPct, mode7DayAlkPct,
-                  mode7NightNaohPct, mode7NightAlkPct,
-                  mode7NaohMaxPh);
-    logger.printf("Mode7 Day/Night Split Updated: enabled=%d day NaOH=%.1f Alk=%.1f night NaOH=%.1f Alk=%.1f NaOH cutoff=%.2f\n",
-                  mode7DayNightSplitEnabled ? 1 : 0,
-                  mode7DayNaohPct, mode7DayAlkPct,
-                  mode7NightNaohPct, mode7NightAlkPct,
-                  mode7NaohMaxPh);
-
-    calculateAiFromBestChemistry("Mode7SplitConfig");
-    publishAiPlanIfNeeded("Mode7SplitConfig", true);
-
-    server.send(200, "application/json", "{\"ok\":true}");
-}
-
-void handlePostAiChemistrySafeties() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    float maxKalk = doc["maxKalkDayMl"] | aiMaxKalkDayMl;
-    float maxNaoh = doc["maxNaohDayMl"] | aiMaxNaohDayMl;
-    float maxAlk = doc["maxAlkDayMl"] | aiMaxAlkDayMl;
-    float maxAlkRise = doc["maxAlkRiseDkhDay"] | aiMaxAlkRiseDkhDay;
-    float maxCaRise = doc["maxCaRisePpmDay"] | aiMaxCaRisePpmDay;
-    float maxMgCorr = doc["maxMgCorrectionDayMl"] | aiMaxMgCorrectionDayMl;
-    float maxMg = doc["maxMgDayMl"] | aiMaxMgDayMl;
-    float mgDeadband = doc["mgDeadbandPpm"] | aiMgDeadbandPpm;
-
-    if (!isfinite(maxKalk) || maxKalk <= 0.0f || maxKalk > 250000.0f ||
-        !isfinite(maxNaoh) || maxNaoh <= 0.0f || maxNaoh > 250000.0f ||
-        !isfinite(maxAlk) || maxAlk <= 0.0f || maxAlk > 250000.0f ||
-        !isfinite(maxAlkRise) || maxAlkRise <= 0.0f || maxAlkRise > 5.0f ||
-        !isfinite(maxCaRise) || maxCaRise <= 0.0f || maxCaRise > 50.0f ||
-        !isfinite(maxMgCorr) || maxMgCorr < 0.0f || maxMgCorr > 250000.0f ||
-        !isfinite(maxMg) || maxMg <= 0.0f || maxMg > 250000.0f ||
-        !isfinite(mgDeadband) || mgDeadband < 0.0f || mgDeadband > 200.0f) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid AI chemistry safety values\"}");
-        return;
-    }
-
-    aiMaxKalkDayMl = maxKalk;
-    aiMaxNaohDayMl = maxNaoh;
-    aiMaxAlkDayMl = maxAlk;
-    aiMaxAlkRiseDkhDay = maxAlkRise;
-    aiMaxCaRisePpmDay = maxCaRise;
-    aiMaxMgCorrectionDayMl = maxMgCorr;
-    aiMaxMgDayMl = maxMg;
-    aiMgDeadbandPpm = mgDeadband;
-
-    saveAiChemistrySafeties();
-    applyAiChemistrySafetiesToEngine();
-
-    Serial.printf("AI Chemistry Safeties Updated: maxKalk=%.2f maxNaOH=%.2f maxAlk=%.2f maxAlkRise=%.2f maxMgCorr=%.2f maxMg=%.2f mgDeadband=%.2f\n",
-                  aiMaxKalkDayMl, aiMaxNaohDayMl, aiMaxAlkDayMl, aiMaxAlkRiseDkhDay,
-                  aiMaxMgCorrectionDayMl, aiMaxMgDayMl, aiMgDeadbandPpm);
-    logger.printf("AI Chemistry Safeties Updated: maxKalk=%.2f maxNaOH=%.2f maxAlk=%.2f maxAlkRise=%.2f maxMgCorr=%.2f maxMg=%.2f mgDeadband=%.2f\n",
-                  aiMaxKalkDayMl, aiMaxNaohDayMl, aiMaxAlkDayMl, aiMaxAlkRiseDkhDay,
-                  aiMaxMgCorrectionDayMl, aiMaxMgDayMl, aiMgDeadbandPpm);
-
-    calculateAiFromBestChemistry("AiChemSafetyConfig");
-    publishAiPlanIfNeeded("AiChemSafetyConfig", true);
-
-    server.send(200, "application/json", "{\"ok\":true}");
-}
-
-void handlePostDosingSafeties() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    // Backward-compatible old dashboard support: threshold/maxLimit apply to all pumps.
-    if (doc["threshold"].is<float>() || doc["threshold"].is<int>()) {
-        float threshold = doc["threshold"] | DOSING_THRESHOLD;
-        if (!isfinite(threshold) || threshold <= 0.0f || threshold > 10000.0f) {
-            server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid threshold\"}");
-            return;
-        }
-        for (int i = 0; i < 4; ++i) pumpDoseThresholdMl[i] = threshold;
-    }
-
-    if (doc["maxLimit"].is<float>() || doc["maxLimit"].is<int>()) {
-        float maxLimit = doc["maxLimit"] | maxDoseLimit;
-        if (!isfinite(maxLimit) || maxLimit <= 0.0f || maxLimit > 100000.0f) {
-            server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid max limit\"}");
-            return;
-        }
-        for (int i = 0; i < 4; ++i) pumpMaxDoseMl[i] = maxLimit;
-    }
-
-    // New dashboard support: pumpSafeties.p1/p2/p3/p4 each has thresholdMl/maxDoseMl/maxDayMl.
-    JsonObject safeties = doc["pumpSafeties"].as<JsonObject>();
-    if (!safeties.isNull()) {
-        for (int i = 0; i < 4; ++i) {
-            String p = "p" + String(i + 1);
-            JsonObject row = safeties[p].as<JsonObject>();
-            if (row.isNull()) continue;
-
-            float threshold = row["thresholdMl"] | pumpDoseThresholdMl[i];
-            float maxDose = row["maxDoseMl"] | pumpMaxDoseMl[i];
-            float maxDay = row["maxDayMl"] | pumpMaxDayMl[i];
-
-            if (!isfinite(threshold) || threshold <= 0.0f || threshold > 10000.0f ||
-                !isfinite(maxDose) || maxDose <= 0.0f || maxDose > 100000.0f ||
-                !isfinite(maxDay) || maxDay <= 0.0f || maxDay > 250000.0f) {
-                server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid per-pump safety values\"}");
-                return;
-            }
-
-            pumpDoseThresholdMl[i] = threshold;
-            pumpMaxDoseMl[i] = maxDose;
-            pumpMaxDayMl[i] = maxDay;
-        }
-    }
-
-    // Keep global aliases on P1 for older UI/status fields.
-    DOSING_THRESHOLD = pumpDoseThresholdMl[0];
-    maxDoseLimit = pumpMaxDoseMl[0];
-    savePumpSafeties();
-
-    Serial.printf("Pump Safeties Updated: P1 thr=%.2f max=%.2f day=%.2f | P2 thr=%.2f max=%.2f day=%.2f | P3 thr=%.2f max=%.2f day=%.2f | P4 thr=%.2f max=%.2f day=%.2f\n",
-                  pumpDoseThresholdMl[0], pumpMaxDoseMl[0], pumpMaxDayMl[0],
-                  pumpDoseThresholdMl[1], pumpMaxDoseMl[1], pumpMaxDayMl[1],
-                  pumpDoseThresholdMl[2], pumpMaxDoseMl[2], pumpMaxDayMl[2],
-                  pumpDoseThresholdMl[3], pumpMaxDoseMl[3], pumpMaxDayMl[3]);
-    logger.printf("Pump Safeties Updated: P1 thr=%.2f max=%.2f day=%.2f | P2 thr=%.2f max=%.2f day=%.2f | P3 thr=%.2f max=%.2f day=%.2f | P4 thr=%.2f max=%.2f day=%.2f\n",
-                  pumpDoseThresholdMl[0], pumpMaxDoseMl[0], pumpMaxDayMl[0],
-                  pumpDoseThresholdMl[1], pumpMaxDoseMl[1], pumpMaxDayMl[1],
-                  pumpDoseThresholdMl[2], pumpMaxDoseMl[2], pumpMaxDayMl[2],
-                  pumpDoseThresholdMl[3], pumpMaxDoseMl[3], pumpMaxDayMl[3]);
-
-    server.send(200, "application/json", "{\"ok\":true}");
-}
+// handlePostDosingSafeties() moved to lib/WebRoutes/WebRoutes.cpp
 
 // Accept one learner event for each genuinely new chemistry measurement.
 // Apex/Trident uses a timestamp when available or an Alk/Ca/Mg fingerprint
@@ -4669,7 +3973,19 @@ bool acceptNewChemistryMeasurement(const char* source, const String& measurement
                       source ? source : "Unknown", currentAlk, currentCa, currentMg);
     }
 
-    ai.setFastAlkNewMeasurement(isNew);
+    // v1 -> v2: this used to tell the fastAlk learner "count this as a
+    // genuinely new sample" (ai.setFastAlkNewMeasurement), which is gone.
+    // `isNew` is still returned/used by callers for daily-stats dedup.
+    // TODO(migration): runAiRecalculation()'s ai.ingestMeasurement() calls
+    // are NOT currently gated on this dedup flag -- every AI recalculation
+    // cycle feeds the Kalman filter whatever currentAlk/currentCa/currentMg
+    // are at that moment, even if it's a repeated poll of the same Trident
+    // result. Feeding an unchanged value repeatedly is not dangerous (the
+    // filter just sees zero innovation), but it will shrink that
+    // parameter's covariance (maturity) faster than genuinely-new-data
+    // would justify. Wiring `isNew` through to gate ingestMeasurement() is
+    // a reasonable follow-up, not done here to avoid re-threading this flag
+    // through every calculateAiFromBestChemistry() call site blind.
     return isNew;
 }
 
@@ -4679,7 +3995,15 @@ bool acceptNewTridentMeasurement(const char* source, const String& testTime = ""
 }
 
 // 3. The "Trigger" logic (run when Apex data arrives)
-void onNewDataArrived(float rawAlk) {
+// Fixed 2026-07-24: isNewMeasurement now actually reaches
+// calculateAiFromBestChemistry() -- previously acceptNewTridentMeasurement()'s
+// return value was computed correctly (the "CHEMISTRY REPEAT POLL" vs
+// "NEW MEASUREMENT ACCEPTED" log messages were already right) but then
+// discarded at both call sites below, so every Apex poll re-ingested
+// whatever the current reading was regardless, even a repeat of the same
+// unchanged Trident result. See runAiRecalculation()'s comment for the
+// full explanation of why that matters.
+void onNewDataArrived(float rawAlk, bool isNewMeasurement) {
     alkHistory[alkIdx] = rawAlk;
     alkIdx = (alkIdx + 1) % 5;
 
@@ -4698,7 +4022,7 @@ void onNewDataArrived(float rawAlk) {
         return;
     }
 
-    calculateAiFromBestChemistry("Apex");
+    calculateAiFromBestChemistry("Apex", isNewMeasurement);
     addCurrentAiPlanToBuckets("Apex", false);
     publishAiPlanIfNeeded("Apex", true);
 }
@@ -4842,8 +4166,8 @@ bool serviceApexEmulatorResult() {
     logger.printf("APEX EMU ASYNC OK [%s]: Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f logTime=%s\n",
                   source, currentAlk, currentCa, currentMg, currentPh, logTime);
 
-    acceptNewTridentMeasurement("ApexEmulator", String(logTime));
-    onNewDataArrived(currentAlk);
+    bool isNewTridentResult = acceptNewTridentMeasurement("ApexEmulator", String(logTime));
+    onNewDataArrived(currentAlk, isNewTridentResult);
     return true;
 }
 
@@ -4898,12 +4222,17 @@ void syncAllTruths() {
         currentCond  = nextCond;
 
         // Distinguish a genuinely new Trident test from a repeated Apex poll.
-        // The AI plan still recalculates every poll, but learning advances only
-        // when Alk/Ca/Mg identify a new completed Trident result.
-        acceptNewTridentMeasurement("Apex");
+        // The AI plan still recalculates every poll (settings/targets may
+        // have changed), but the Kalman filter is only fed a new
+        // measurement when Alk/Ca/Mg identify an actually-changed Trident
+        // result. Fixed 2026-07-24: this comment described the intended
+        // behavior correctly, but the code didn't actually do it --
+        // acceptNewTridentMeasurement()'s return value was discarded here,
+        // so every poll re-ingested the current reading regardless.
+        bool isNewTridentResult = acceptNewTridentMeasurement("Apex");
 
         // Recalculate AI after all Apex values are current, then publish the plan to Firebase.
-        onNewDataArrived(currentAlk);
+        onNewDataArrived(currentAlk, isNewTridentResult);
 
         // Apex status.json Cond/Salt value is already salinity in PPT for this probe.
         // Do NOT multiply by 0.67 here; 37.0 from Apex should display as 37.0 PPT,
@@ -5022,9 +4351,7 @@ void connectToFirebase() {
     );
 }
 
-void handleRoot() {
-    server.send_P(200, "text/html", kIndexHtml);
-}
+// handleRoot() moved to lib/WebRoutes/WebRoutes.cpp
 
 uint32_t localDayKeyWithOffsetDays(int offsetDays) {
     struct tm timeinfo;
@@ -5036,529 +4363,28 @@ uint32_t localDayKeyWithOffsetDays(int offsetDays) {
            (uint32_t)timeinfo.tm_mday;
 }
 
-bool saveAlkDemandHistory() {
-    File f = LittleFS.open(ALK_DEMAND_HISTORY_FILE, "w");
-    if (!f) {
-        Serial.println("ALK 7-DAY: failed to open LittleFS history for write.");
-        logger.println("ALK 7-DAY: failed to open LittleFS history for write.");
-        return false;
-    }
-    size_t wrote = f.write(reinterpret_cast<const uint8_t*>(&alkDemandStore), sizeof(alkDemandStore));
-    f.close();
-    return wrote == sizeof(alkDemandStore);
-}
+// saveAlkDemandHistory() moved to lib/DemandLearning/DemandLearning.cpp
 
-void loadAlkDemandHistory() {
-    memset(&alkDemandStore, 0, sizeof(alkDemandStore));
-    alkDemandStore.magic = ALK_DEMAND_MAGIC;
-    alkDemandStore.version = ALK_DEMAND_VERSION;
+// loadAlkDemandHistory() moved to lib/DemandLearning/DemandLearning.cpp
 
-    const bool fileExists = LittleFS.exists(ALK_DEMAND_HISTORY_FILE);
-    File f = LittleFS.open(ALK_DEMAND_HISTORY_FILE, "r");
-    bool valid = false;
-    if (f && f.size() == sizeof(alkDemandStore)) {
-        size_t got = f.read(reinterpret_cast<uint8_t*>(&alkDemandStore), sizeof(alkDemandStore));
-        valid = got == sizeof(alkDemandStore) &&
-                alkDemandStore.magic == ALK_DEMAND_MAGIC &&
-                alkDemandStore.version == ALK_DEMAND_VERSION &&
-                alkDemandStore.count <= ALK_DEMAND_MAX_DAYS;
-    }
-    if (f) f.close();
-
-    if (!valid) {
-        memset(&alkDemandStore, 0, sizeof(alkDemandStore));
-        alkDemandStore.magic = ALK_DEMAND_MAGIC;
-        alkDemandStore.version = ALK_DEMAND_VERSION;
-        saveAlkDemandHistory();
-    }
-
-    Serial.printf("ALK 7-DAY INIT: file=%s valid=%s records=%u mode=%d device=%s\n",
-                  fileExists ? "found" : "created",
-                  valid ? "yes" : "new",
-                  alkDemandStore.count,
-                  dosingMode,
-                  deviceID.c_str());
-    logger.printf("ALK 7-DAY INIT: file=%s valid=%s records=%u mode=%d device=%s\n",
-                  fileExists ? "found" : "created",
-                  valid ? "yes" : "new",
-                  alkDemandStore.count,
-                  dosingMode,
-                  deviceID.c_str());
-
-    // Seed only reefDoser2 with the manually reviewed preceding week. This is
-    // recommendation-only: it never changes a baseline or starts a pump.
-}
-
-void printAlkDemandRecommendation(const char* source) {
-    float demand = alkDemandStore.recommendedDailyDemandDkh;
-
-    Serial.println("========== ALK 7-DAY DEMAND ==========");
-    Serial.printf("Source: %s\n", source ? source : "status");
-    Serial.printf("History file: %s\n", LittleFS.exists(ALK_DEMAND_HISTORY_FILE) ? "FOUND" : "MISSING");
-    Serial.printf("Completed daily records: %u / 7 required\n", alkDemandStore.count);
-
-    if (demand <= 0.0f || !isfinite(demand)) {
-        Serial.println("Recommendation: waiting for seven completed daily records.");
-        Serial.printf("Automatic baseline changes: %s\n", automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
-        Serial.println("======================================");
-        return;
-    }
-
-    const float kalkStrength = ai.getDkhPerMlKalk();
-    const float naohStrength = ai.getDkhPerMlNaoh();
-    const float alkStrength = ai.getDkhPerMlAlk();
-    float fixedDkh = baselineKalkMlDay * kalkStrength + baselineNaohMlDay * naohStrength;
-    float recommendedP4 = 0.0f;
-    if (alkStrength > 0.0f) {
-        recommendedP4 = (demand - fixedDkh) / alkStrength;
-    }
-    if (!isfinite(recommendedP4) || recommendedP4 < 0.0f) recommendedP4 = 0.0f;
-    if (recommendedP4 > aiMaxAlkDayMl) recommendedP4 = aiMaxAlkDayMl;
-    alkDemandStore.lastRecommendedP4MlDay = recommendedP4;
-    saveAlkDemandHistory();
-
-    Serial.printf("Recommended total Alk demand: %.3f dKH/day\n", demand);
-    Serial.printf("Existing Kalk + NaOH baseline: %.3f dKH/day\n", fixedDkh);
-    Serial.printf("Current P4 Alk baseline: %.2f ml/day\n", baselineMgMlDay);
-    Serial.printf("Recommended P4 Alk baseline: %.2f ml/day\n", recommendedP4);
-    Serial.printf("Learning mode: %s\n",
-                  automaticDemandLearningEnabled ? "ENABLED - valid rolling calculations may adjust P4 baseline" :
-                                                   "RECOMMENDATION ONLY - no baseline change");
-    Serial.printf("Automatic baseline changes: %s\n", automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
-    Serial.println("======================================");
-
-    logger.printf("ALK 7-DAY RECOMMEND [%s]: demand=%.3f fixed=%.3f currentP4=%.2f recommendedP4=%.2f NOT_APPLIED\n",
-                  source ? source : "status", demand, fixedDkh,
-                  baselineMgMlDay, recommendedP4);
-}
+// printAlkDemandRecommendation() moved to lib/DemandLearning/DemandLearning.cpp
 
 
 
-bool publishAlkDemandStatusToFirebase(const char* source, bool force) {
-    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !Firebase.ready()) {
-        return false;
-    }
+// publishAlkDemandStatusToFirebase() moved to lib/DemandLearning/DemandLearning.cpp
 
-    static unsigned long lastPublishMs = 0;
-    const unsigned long nowMs = millis();
-    if (!force && lastPublishMs != 0 && (nowMs - lastPublishMs) < 300000UL) {
-        return false;
-    }
-
-    float demand = alkDemandStore.recommendedDailyDemandDkh;
-    float fixedDkh = baselineKalkMlDay * ai.getDkhPerMlKalk() +
-                     baselineNaohMlDay * ai.getDkhPerMlNaoh();
-    float recommendedP4 = alkDemandStore.lastRecommendedP4MlDay;
-    if ((!isfinite(recommendedP4) || recommendedP4 < 0.0f) && ai.getDkhPerMlAlk() > 0.0f && demand > 0.0f) {
-        recommendedP4 = (demand - fixedDkh) / ai.getDkhPerMlAlk();
-    }
-    if (!isfinite(recommendedP4) || recommendedP4 < 0.0f) recommendedP4 = 0.0f;
-    if (recommendedP4 > aiMaxAlkDayMl) recommendedP4 = aiMaxAlkDayMl;
-
-    float measuredDemand = 0.0f;
-    float startAlk = 0.0f;
-    float endAlk = 0.0f;
-    uint32_t windowStartDay = 0;
-    uint32_t windowEndDay = 0;
-
-    if (alkDemandStore.count >= 7) {
-        const uint8_t firstIndex = alkDemandStore.count - 7;
-        const AlkDemandDay& first = alkDemandStore.days[firstIndex];
-        const AlkDemandDay& last = alkDemandStore.days[alkDemandStore.count - 1];
-        float addedDkh = 0.0f;
-        for (uint8_t i = firstIndex; i < alkDemandStore.count; ++i) {
-            addedDkh += alkDemandStore.days[i].kalkMl * ai.getDkhPerMlKalk();
-            addedDkh += alkDemandStore.days[i].afrMl * ai.getDkhPerMlAfr();
-            addedDkh += alkDemandStore.days[i].naohMl * ai.getDkhPerMlNaoh();
-            addedDkh += alkDemandStore.days[i].alkMl * ai.getDkhPerMlAlk();
-        }
-        startAlk = first.avgAlk;
-        endAlk = last.avgAlk;
-        windowStartDay = first.dayKey;
-        windowEndDay = last.dayKey;
-        measuredDemand = (addedDkh - (endAlk - startAlk)) / 7.0f;
-        if (!isfinite(measuredDemand) || measuredDemand < 0.0f) measuredDemand = 0.0f;
-    }
-
-    FirebaseJson json;
-    json.set("source", source ? source : "alkDemand");
-    json.set("daysCollected", (int)min((uint8_t)7, alkDemandStore.count));
-    json.set("storedRecords", (int)alkDemandStore.count);
-    json.set("ready", alkDemandStore.count >= 7);
-    json.set("automaticChanges", automaticDemandLearningEnabled);
-    json.set("recommendedDemandDkhDay", demand);
-    json.set("measuredDemandDkhDay", measuredDemand);
-    json.set("currentKalkBaselineMlDay", baselineKalkMlDay);
-    json.set("currentNaohBaselineMlDay", baselineNaohMlDay);
-    json.set("currentP4BaselineMlDay", baselineMgMlDay);
-    json.set("fixedKalkNaohDkhDay", fixedDkh);
-    json.set("recommendedP4MlDay", recommendedP4);
-    json.set("startAlk", startAlk);
-    json.set("endAlk", endAlk);
-    json.set("windowStartDay", (uint32_t)windowStartDay);
-    json.set("windowEndDay", (uint32_t)windowEndDay);
-    json.set("updatedAtEpoch", (uint32_t)time(nullptr));
-
-    String path = "/devices/" + deviceID + "/alkDemand";
-    if (Firebase.updateNode(writeFbdo, path.c_str(), json)) {
-        lastPublishMs = nowMs;
-        logger.printf("ALK 7-DAY FIREBASE OK [%s]: days=%u demand=%.3f measured=%.3f recommendedP4=%.2f\n",
-                      source ? source : "alkDemand",
-                      min((uint8_t)7, alkDemandStore.count),
-                      demand, measuredDemand, recommendedP4);
-        return true;
-    }
-
-    logger.printf("ALK 7-DAY FIREBASE FAILED [%s]: %s\n",
-                  source ? source : "alkDemand", writeFbdo.errorReason().c_str());
-    return false;
-}
-
-void recordCompletedDayAndLearn(float avgAlk) {
-    if (dosingMode < 1 || dosingMode > 8 || !isfinite(avgAlk) || avgAlk <= 0.0f) return;
-
-    AlkDemandDay day;
-    day.dayKey = localDayKeyWithOffsetDays(-1);
-    day.avgAlk = avgAlk;
-    day.mode = (uint8_t)dosingMode;
-    // Convert physical pump totals into alkalinity-source totals for every mode.
-    switch (dosingMode) {
-        case 1: day.kalkMl = dailyDoseTotals[0]; break;
-        case 2: day.afrMl = dailyDoseTotals[0]; break;
-        case 3: day.kalkMl = dailyDoseTotals[0]; day.afrMl = dailyDoseTotals[1]; break;
-        case 4: day.alkMl = dailyDoseTotals[0]; break;
-        case 5: day.kalkMl = dailyDoseTotals[0]; day.alkMl = dailyDoseTotals[1]; break;
-        case 6: day.kalkMl = dailyDoseTotals[0]; day.naohMl = dailyDoseTotals[2]; break;
-        case 7: day.kalkMl = dailyDoseTotals[0]; day.naohMl = dailyDoseTotals[2]; day.alkMl = dailyDoseTotals[3]; break;
-        case 8: day.kalkMl = dailyDoseTotals[0]; day.naohMl = dailyDoseTotals[2]; break;
-    }
-
-    if (alkDemandStore.count > 0 && alkDemandStore.days[alkDemandStore.count - 1].dayKey == day.dayKey) {
-        alkDemandStore.days[alkDemandStore.count - 1] = day;
-    } else {
-        if (alkDemandStore.count >= ALK_DEMAND_MAX_DAYS) {
-            memmove(&alkDemandStore.days[0], &alkDemandStore.days[1],
-                    sizeof(AlkDemandDay) * (ALK_DEMAND_MAX_DAYS - 1));
-            alkDemandStore.count = ALK_DEMAND_MAX_DAYS - 1;
-        }
-        alkDemandStore.days[alkDemandStore.count++] = day;
-    }
-
-    Serial.printf("ALK 7-DAY DAILY RECORD: day=%lu avgAlk=%.3f kalk=%.2f naoh=%.2f alk=%.2f records=%u\n",
-                  (unsigned long)day.dayKey, day.avgAlk, day.kalkMl,
-                  day.naohMl, day.alkMl, alkDemandStore.count);
-    logger.println("========== ALK 7-DAY DAILY SUMMARY ==========");
-    logger.printf("Day: %lu\n", (unsigned long)day.dayKey);
-    logger.printf("Average Alk: %.3f dKH\n", day.avgAlk);
-    logger.printf("Mode: %u\n", day.mode);
-    logger.printf("Actual Kalk delivered: %.2f ml\n", day.kalkMl);
-    logger.printf("Actual AFR delivered: %.2f ml\n", day.afrMl);
-    logger.printf("Actual NaOH delivered: %.2f ml\n", day.naohMl);
-    logger.printf("Actual P4 Alk delivered: %.2f ml\n", day.alkMl);
-    logger.printf("Equivalent Alk added: Kalk=%.3f NaOH=%.3f P4=%.3f total=%.3f dKH\n",
-                  day.kalkMl * ai.getDkhPerMlKalk(),
-                  day.naohMl * ai.getDkhPerMlNaoh(),
-                  day.alkMl * ai.getDkhPerMlAlk(),
-                  day.kalkMl * ai.getDkhPerMlKalk() +
-                  day.afrMl * ai.getDkhPerMlAfr() +
-                  day.naohMl * ai.getDkhPerMlNaoh() +
-                  day.alkMl * ai.getDkhPerMlAlk());
-    logger.printf("LittleFS record count: %u / 7 required\n", alkDemandStore.count);
-    logger.printf("Automatic baseline changes: %s\n", automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
-    logger.println("==============================================");
-
-    if (alkDemandStore.count >= 7) {
-        const uint8_t firstIndex = alkDemandStore.count - 7;
-        const AlkDemandDay& first = alkDemandStore.days[firstIndex];
-        const AlkDemandDay& last = alkDemandStore.days[alkDemandStore.count - 1];
-
-        float addedDkh = 0.0f;
-        for (uint8_t i = firstIndex; i < alkDemandStore.count; ++i) {
-            addedDkh += alkDemandStore.days[i].kalkMl * ai.getDkhPerMlKalk();
-            addedDkh += alkDemandStore.days[i].afrMl * ai.getDkhPerMlAfr();
-            addedDkh += alkDemandStore.days[i].naohMl * ai.getDkhPerMlNaoh();
-            addedDkh += alkDemandStore.days[i].alkMl * ai.getDkhPerMlAlk();
-        }
-
-        float alkChange = last.avgAlk - first.avgAlk;
-        float measuredDemand = (addedDkh - alkChange) / 7.0f;
-        if (isfinite(measuredDemand) && measuredDemand >= 0.05f && measuredDemand <= aiMaxAlkRiseDkhDay) {
-            float oldRecommendation = alkDemandStore.recommendedDailyDemandDkh > 0.0f
-                                          ? alkDemandStore.recommendedDailyDemandDkh
-                                          : measuredDemand;
-            float proposed = oldRecommendation + (measuredDemand - oldRecommendation) * 0.25f;
-            float low = oldRecommendation * 0.90f;
-            float high = oldRecommendation * 1.10f;
-            proposed = constrain(proposed, low, high);
-            proposed = constrain(proposed, 0.05f, aiMaxAlkRiseDkhDay);
-            alkDemandStore.recommendedDailyDemandDkh = proposed;
-
-            bool applied = false;
-            float appliedP4Baseline = baselineMgMlDay;
-            float targetP4Baseline = 0.0f;
-            const float alkStrength = ai.getDkhPerMlAlk();
-            const float fixedDkh = baselineKalkMlDay * ai.getDkhPerMlKalk() +
-                                   baselineNaohMlDay * ai.getDkhPerMlNaoh();
-
-            if (alkStrength > 0.0f) {
-                targetP4Baseline = (proposed - fixedDkh) / alkStrength;
-            }
-            if (!isfinite(targetP4Baseline) || targetP4Baseline < 0.0f) targetP4Baseline = 0.0f;
-            if (targetP4Baseline > aiMaxAlkDayMl) targetP4Baseline = aiMaxAlkDayMl;
-            alkDemandStore.lastRecommendedP4MlDay = targetP4Baseline;
-
-            if (automaticDemandLearningEnabled && alkStrength > 0.0f) {
-                // Apply only a bounded step. Existing nonzero P4 baseline may move at most 10%.
-                // A zero baseline begins at only 10% of the calculated target, preventing a sudden start.
-                float lowP4 = baselineMgMlDay > 0.0f ? baselineMgMlDay * 0.90f : 0.0f;
-                float highP4 = baselineMgMlDay > 0.0f ? baselineMgMlDay * 1.10f : targetP4Baseline * 0.10f;
-                if (highP4 < 0.0f) highP4 = 0.0f;
-                appliedP4Baseline = constrain(targetP4Baseline, lowP4, highP4);
-                appliedP4Baseline = constrain(appliedP4Baseline, 0.0f, aiMaxAlkDayMl);
-
-                if (fabsf(appliedP4Baseline - baselineMgMlDay) >= 0.01f) {
-                    float oldP4Baseline = baselineMgMlDay;
-                    baselineMgMlDay = appliedP4Baseline;
-
-                    prefs.begin("doser-settings", false);
-                    prefs.putFloat("base_mg", baselineMgMlDay);
-                    prefs.end();
-
-                    applyAiBaselineToEngine();
-                    applied = true;
-
-                    Serial.printf("ALK 7-DAY APPLIED: P4 baseline %.2f -> %.2f ml/day target=%.2f ml/day\n",
-                                  oldP4Baseline, baselineMgMlDay, targetP4Baseline);
-                    logger.printf("ALK 7-DAY APPLIED: P4 baseline %.2f -> %.2f ml/day target=%.2f ml/day\n",
-                                  oldP4Baseline, baselineMgMlDay, targetP4Baseline);
-                } else {
-                    logger.printf("ALK 7-DAY ENABLED: recommendation required no P4 baseline change. current=%.2f target=%.2f\n",
-                                  baselineMgMlDay, targetP4Baseline);
-                }
-            }
-
-            Serial.printf("ALK 7-DAY CALC: measured=%.3f previousRecommendation=%.3f newRecommendation=%.3f added=%.3f alkChange=%+.3f applied=%s\n",
-                          measuredDemand, oldRecommendation, proposed, addedDkh, alkChange,
-                          applied ? "yes" : "no");
-            logger.println("========== ALK 7-DAY DEMAND ANALYSIS ==========");
-            logger.printf("Window: %lu through %lu\n",
-                          (unsigned long)first.dayKey, (unsigned long)last.dayKey);
-            logger.printf("Starting Alk: %.3f dKH\n", first.avgAlk);
-            logger.printf("Ending Alk: %.3f dKH\n", last.avgAlk);
-            logger.printf("Seven-day Alk change: %+.3f dKH\n", alkChange);
-            logger.printf("Total Alk added: %.3f dKH\n", addedDkh);
-            logger.printf("Measured tank demand: %.3f dKH/day\n", measuredDemand);
-            logger.printf("Previous recommendation: %.3f dKH/day\n", oldRecommendation);
-            logger.printf("New recommendation: %.3f dKH/day\n", proposed);
-            logger.printf("Calculated P4 target: %.2f ml/day\n", targetP4Baseline);
-            logger.printf("Current P4 baseline after calculation: %.2f ml/day\n", baselineMgMlDay);
-            logger.printf("Applied this calculation: %s\n", applied ? "YES" : "NO");
-            logger.printf("Automatic baseline changes: %s\n", automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
-            logger.println("===============================================");
-        } else {
-            Serial.printf("ALK 7-DAY REJECTED: calculated demand %.3f dKH/day outside safety range.\n",
-                          measuredDemand);
-            logger.printf("ALK 7-DAY REJECTED: calculated demand %.3f dKH/day outside safety range.\n",
-                          measuredDemand);
-        }
-    } else {
-        Serial.printf("ALK 7-DAY WAITING: %u more completed day(s) needed.\n",
-                      7U - alkDemandStore.count);
-        logger.printf("ALK 7-DAY WAITING: %u more completed day(s) needed.\n",
-                      7U - alkDemandStore.count);
-    }
-
-    saveAlkDemandHistory();
-    printAlkDemandRecommendation("midnight");
-    publishAlkDemandStatusToFirebase("midnight", true);
-}
+// recordCompletedDayAndLearn() moved to lib/DemandLearning/DemandLearning.cpp
 
 
-bool saveCalciumDemandHistory() {
-    File f = LittleFS.open(CA_DEMAND_HISTORY_FILE, "w");
-    if (!f) return false;
-    size_t wrote = f.write(reinterpret_cast<const uint8_t*>(&calciumDemandStore),
-                           sizeof(calciumDemandStore));
-    f.close();
-    return wrote == sizeof(calciumDemandStore);
-}
+// saveCalciumDemandHistory() moved to lib/DemandLearning/DemandLearning.cpp
 
-void loadCalciumDemandHistory() {
-    memset(&calciumDemandStore, 0, sizeof(calciumDemandStore));
-    calciumDemandStore.magic = CA_DEMAND_MAGIC;
-    calciumDemandStore.version = CA_DEMAND_VERSION;
+// loadCalciumDemandHistory() moved to lib/DemandLearning/DemandLearning.cpp
 
-    bool valid = false;
-    File f = LittleFS.open(CA_DEMAND_HISTORY_FILE, "r");
-    if (f && f.size() == sizeof(calciumDemandStore)) {
-        size_t got = f.read(reinterpret_cast<uint8_t*>(&calciumDemandStore),
-                            sizeof(calciumDemandStore));
-        valid = got == sizeof(calciumDemandStore) &&
-                calciumDemandStore.magic == CA_DEMAND_MAGIC &&
-                calciumDemandStore.version == CA_DEMAND_VERSION &&
-                calciumDemandStore.count <= CA_DEMAND_MAX_DAYS;
-    }
-    if (f) f.close();
+// printCalciumDemandRecommendation() moved to lib/DemandLearning/DemandLearning.cpp
 
-    if (!valid) {
-        memset(&calciumDemandStore, 0, sizeof(calciumDemandStore));
-        calciumDemandStore.magic = CA_DEMAND_MAGIC;
-        calciumDemandStore.version = CA_DEMAND_VERSION;
-        saveCalciumDemandHistory();
-    }
+// publishCalciumDemandStatusToFirebase() moved to lib/DemandLearning/DemandLearning.cpp
 
-    Serial.printf("CALCIUM 7-DAY INIT: file=%s valid=%s records=%u mode=%d device=%s\n",
-                  LittleFS.exists(CA_DEMAND_HISTORY_FILE) ? "found" : "missing",
-                  valid ? "yes" : "new",
-                  calciumDemandStore.count, dosingMode, deviceID.c_str());
-    logger.printf("CALCIUM 7-DAY INIT: file=%s valid=%s records=%u mode=%d device=%s\n",
-                  LittleFS.exists(CA_DEMAND_HISTORY_FILE) ? "found" : "missing",
-                  valid ? "yes" : "new",
-                  calciumDemandStore.count, dosingMode, deviceID.c_str());
-}
-
-void printCalciumDemandRecommendation(const char* source) {
-    Serial.println("========== CALCIUM 7-DAY DEMAND ==========");
-    Serial.printf("Source: %s\n", source ? source : "unknown");
-    Serial.printf("Completed daily records: %u / 7 required\n", calciumDemandStore.count);
-    if (calciumDemandStore.recommendedDailyDemandPpm > 0.0f) {
-        Serial.printf("Recommended Calcium demand: %.3f ppm/day\n",
-                      calciumDemandStore.recommendedDailyDemandPpm);
-        Serial.printf("Current P2 CaCl2 baseline: %.2f ml/day\n", baselineCacl2MlDay);
-        Serial.printf("Recommended P2 CaCl2 baseline: %.2f ml/day\n",
-                      calciumDemandStore.lastRecommendedP2MlDay);
-    } else {
-        Serial.println("Recommendation: waiting for seven completed daily records.");
-    }
-    Serial.printf("Automatic baseline changes: %s\n",
-                  automaticCalciumLearningEnabled ? "ENABLED" : "DISABLED");
-    Serial.println("==========================================");
-}
-
-bool publishCalciumDemandStatusToFirebase(const char* source, bool force) {
-    static uint32_t lastPublishMs = 0;
-    const uint32_t nowMs = millis();
-    if (!force && nowMs - lastPublishMs < 60000UL) return false;
-    if (!Firebase.ready()) return false;
-
-    float startCa = 0.0f;
-    float endCa = 0.0f;
-    float measuredDemand = 0.0f;
-    if (calciumDemandStore.count >= 7) {
-        const CalciumDemandDay& first = calciumDemandStore.days[0];
-        const CalciumDemandDay& last = calciumDemandStore.days[calciumDemandStore.count - 1];
-        startCa = first.avgCa;
-        endCa = last.avgCa;
-
-        float addedPpm = 0.0f;
-        for (uint8_t i = 0; i < calciumDemandStore.count; ++i) {
-            addedPpm += calciumDemandStore.days[i].cacl2Ml * ai.getCaPerMlCacl2();
-            addedPpm += calciumDemandStore.days[i].kalkMl *
-                        ai.getDkhPerMlKalk() * CA_PPM_PER_DKH_KALK;
-        }
-        measuredDemand = (addedPpm - (endCa - startCa)) / 7.0f;
-    }
-
-    FirebaseJson json;
-    json.set("source", source ? source : "calciumDemand");
-    json.set("daysCollected", (int)calciumDemandStore.count);
-    json.set("ready", calciumDemandStore.count >= 7);
-    json.set("automaticChanges", automaticCalciumLearningEnabled);
-    json.set("recommendedDemandPpmDay", calciumDemandStore.recommendedDailyDemandPpm);
-    json.set("measuredDemandPpmDay", measuredDemand);
-    json.set("currentP2BaselineMlDay", baselineCacl2MlDay);
-    json.set("recommendedP2MlDay", calciumDemandStore.lastRecommendedP2MlDay);
-    json.set("startCa", startCa);
-    json.set("endCa", endCa);
-    json.set("updatedAtEpoch", (uint32_t)time(nullptr));
-
-    String path = "/devices/" + deviceID + "/calciumDemand";
-    if (Firebase.updateNode(writeFbdo, path.c_str(), json)) {
-        lastPublishMs = nowMs;
-        logger.printf("CALCIUM 7-DAY FIREBASE OK [%s]: days=%u demand=%.3f measured=%.3f recommendedP2=%.2f\n",
-                      source ? source : "calciumDemand",
-                      calciumDemandStore.count,
-                      calciumDemandStore.recommendedDailyDemandPpm,
-                      measuredDemand,
-                      calciumDemandStore.lastRecommendedP2MlDay);
-        return true;
-    }
-
-    logger.printf("CALCIUM 7-DAY FIREBASE FAILED [%s]: %s\n",
-                  source ? source : "calciumDemand",
-                  writeFbdo.errorReason().c_str());
-    return false;
-}
-
-void recordCompletedCalciumDayAndLearn(float avgCa) {
-    if (dosingMode < 1 || dosingMode > 8 ||
-        !isfinite(avgCa) || avgCa < 250.0f || avgCa > 650.0f) return;
-
-    CalciumDemandDay day;
-    day.dayKey = localDayKeyWithOffsetDays(-1);
-    day.avgCa = avgCa;
-    day.mode = (uint8_t)dosingMode;
-
-    // Record actual delivered chemistry using the physical mapping for each mode.
-    switch (dosingMode) {
-        case 1: day.kalkMl = dailyDoseTotals[0]; break;
-        case 2: day.afrMl = dailyDoseTotals[0]; break;
-        case 3:
-            day.kalkMl = dailyDoseTotals[0];
-            day.afrMl = dailyDoseTotals[1];
-            break;
-        case 4: day.cacl2Ml = dailyDoseTotals[1]; break;
-        case 5:
-            day.kalkMl = dailyDoseTotals[0];
-            day.cacl2Ml = dailyDoseTotals[2];
-            break;
-        case 6:
-        case 7:
-        case 8:
-            day.kalkMl = dailyDoseTotals[0];
-            day.cacl2Ml = dailyDoseTotals[1];
-            break;
-    }
-
-    if (calciumDemandStore.count > 0 &&
-        calciumDemandStore.days[calciumDemandStore.count - 1].dayKey == day.dayKey) {
-        calciumDemandStore.days[calciumDemandStore.count - 1] = day;
-    } else {
-        if (calciumDemandStore.count >= CA_DEMAND_MAX_DAYS) {
-            memmove(&calciumDemandStore.days[0], &calciumDemandStore.days[1],
-                    sizeof(CalciumDemandDay) * (CA_DEMAND_MAX_DAYS - 1));
-            calciumDemandStore.count = CA_DEMAND_MAX_DAYS - 1;
-        }
-        calciumDemandStore.days[calciumDemandStore.count++] = day;
-    }
-
-    if (calciumDemandStore.count >= 7) {
-        const CalciumDemandDay& first = calciumDemandStore.days[0];
-        const CalciumDemandDay& last = calciumDemandStore.days[calciumDemandStore.count - 1];
-        float addedPpm = 0.0f;
-        for (uint8_t i = 0; i < calciumDemandStore.count; ++i) {
-            const CalciumDemandDay& x = calciumDemandStore.days[i];
-            addedPpm += x.cacl2Ml * ai.getCaPerMlCacl2();
-            addedPpm += (x.kalkMl * ai.getDkhPerMlKalk() +
-                         x.afrMl * ai.getDkhPerMlAfr()) * CA_PPM_PER_DKH_KALK;
-        }
-        const float measuredDemand = (addedPpm - (last.avgCa - first.avgCa)) / 7.0f;
-        if (isfinite(measuredDemand) && measuredDemand >= 0.0f && measuredDemand <= 50.0f) {
-            float oldRec = calciumDemandStore.recommendedDailyDemandPpm > 0.0f
-                         ? calciumDemandStore.recommendedDailyDemandPpm : measuredDemand;
-            float proposed = oldRec + (measuredDemand - oldRec) * 0.25f;
-            proposed = constrain(proposed, oldRec * 0.90f, oldRec * 1.10f);
-            calciumDemandStore.recommendedDailyDemandPpm = constrain(proposed, 0.0f, 50.0f);
-        }
-    }
-
-    saveCalciumDemandHistory();
-    printCalciumDemandRecommendation("midnight");
-    publishCalciumDemandStatusToFirebase("midnight", true);
-    logger.printf("CALCIUM LEARNER ALL-MODE: mode=%d avgCa=%.2f kalk=%.2f afr=%.2f cacl2=%.2f records=%u learned=%.3f ppm/day\n",
-                  dosingMode, day.avgCa, day.kalkMl, day.afrMl, day.cacl2Ml,
-                  calciumDemandStore.count, calciumDemandStore.recommendedDailyDemandPpm);
-}
+// recordCompletedCalciumDayAndLearn() moved to lib/DemandLearning/DemandLearning.cpp
 
 void pushDailyReport() {
     if (dailyStats.count == 0) {
@@ -5585,10 +4411,19 @@ void pushDailyReport() {
     float avgSg   = (dailyStats.sgSum  > 0.0f) ? (dailyStats.sgSum  / count) : currentSg;
     float totalDose = dailyDoseTotals[0] + dailyDoseTotals[1] + dailyDoseTotals[2] + dailyDoseTotals[3];
 
-    // Capture the completed day locally before cloud upload/reset. The function
-    // writes at most once per day and performs a rolling-week update when ready.
-    recordCompletedDayAndLearn(avgAlk);
-    recordCompletedCalciumDayAndLearn(avgCa);
+    // Removed 2026-08-02: recordCompletedDayAndLearn()/
+    // recordCompletedCalciumDayAndLearn() computed a real result and wrote
+    // it to a rolling LittleFS file every day, but nothing has read that
+    // output since applyAiBaselineToEngine() (confirmed empty stub) was
+    // the only consumer of it. Their corresponding dashboard cards were
+    // already removed from Dashboard.h for the same reason. Stopped here
+    // too rather than leaving them silently running -- this was genuine
+    // wasted daily flash wear/CPU for a value nothing uses. The function
+    // bodies themselves are left in lib/DemandLearning/DemandLearning.cpp
+    // untouched (harmless unreachable code now) rather than deleted, same
+    // conservative approach used elsewhere tonight.
+    // recordCompletedDayAndLearn(avgAlk);
+    // recordCompletedCalciumDayAndLearn(avgCa);
 
     FirebaseJson json;
 
@@ -5615,13 +4450,54 @@ void pushDailyReport() {
         }
     }
 
+    // Fixed 2026-08-02: the loop above keys purely off pumpKeyForPhysicalIndex(),
+    // which derives its label from the legacy `dosingMode` int (1-8) -- a
+    // completely separate, often-stale concept from what a v2 customer has
+    // actually declared via the free chemical-assignment wizard. For any
+    // pump whose real declared chemical doesn't match that legacy table
+    // (or where dosingMode itself is stale/default), this returns "unused"
+    // and the `if` guard above SILENTLY DROPS that day's real dispensed
+    // total from history entirely -- not mislabeled, just missing. Same
+    // root cause class as the live-plan bug fixed in publishAiPlanIfNeeded()
+    // (name/legacy-table matching can never cover an arbitrary customer
+    // assignment), just biting the actually-dispensed-volume side instead
+    // of the intended-plan side this time.
+    //
+    // Mirrors the already-correct plan/pump1..4 pattern a few lines below
+    // in this same function (added earlier for the intended-dose side) --
+    // NOT a double-count risk despite the comment above: Dashboard.h's
+    // historyValue() helper does a FALLBACK lookup across candidate keys
+    // (['p1','P1','pump1','0','kalk','afr','alk'], etc.), not a sum, so an
+    // additional pump-indexed key sits alongside the legacy alias without
+    // being added to it.
+    json.set("dosing/pump1", dailyDoseTotals[0]);
+    json.set("dosing/pump2", dailyDoseTotals[1]);
+    json.set("dosing/pump3", dailyDoseTotals[2]);
+    json.set("dosing/pump4", dailyDoseTotals[3]);
+
     // Daily copy of the latest plan, so the cloud UI can show what the controller intended.
-    json.set("plan/kalk", ai.currentPlan.kalk);
-    json.set("plan/afr", ai.currentPlan.afr);
-    json.set("plan/alk", ai.currentPlan.alk);
-    json.set("plan/cacl2", ai.currentPlan.cacl2);
-    json.set("plan/naoh", ai.currentPlan.naoh);
-    json.set("plan/mg", ai.currentPlan.mg);
+    // Legacy named-field mirror -- best-effort (see syncLegacyPlanFromV2()),
+    // kept during the Phase 1-3 transition for any existing cloud dashboard
+    // still reading these paths.
+    json.set("plan/kalk", currentPlan.kalk);
+    json.set("plan/afr", currentPlan.afr);
+    json.set("plan/alk", currentPlan.alk);
+    json.set("plan/cacl2", currentPlan.cacl2);
+    json.set("plan/naoh", currentPlan.naoh);
+    json.set("plan/mg", currentPlan.mg);
+    // §5 free chemical declaration: mode-agnostic mirror by physical pump
+    // index, correct for any declared chemical set (not just the six
+    // legacy names above). This is the one that should keep working once
+    // a customer declares something that isn't Kalk/AFR/Alk/CaCl2/NaOH/Mg.
+    float pumpPlanMl[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    for (int c = 0; c < declaredChemicalCount && c < kMaxDeclaredChemicals; c++) {
+        int pumpIdx = declaredChemicals[c].pumpIndex;
+        if (pumpIdx >= 0 && pumpIdx < 4) pumpPlanMl[pumpIdx] = planMlPerDayByIndex[c];
+    }
+    json.set("plan/pump1", pumpPlanMl[0]);
+    json.set("plan/pump2", pumpPlanMl[1]);
+    json.set("plan/pump3", pumpPlanMl[2]);
+    json.set("plan/pump4", pumpPlanMl[3]);
 
     // Path: devices/reefDoser1/history/2026-05/15
     String path = "/devices/" + deviceID + "/history/" + String(monthFolder) + "/" + String(dayFolder);
@@ -5642,57 +4518,7 @@ void pushDailyReport() {
     logger.println("Midnight: daily stats/totals cleared and saved.");
 }
 
-void handlePostManualTest() {
-    if (!server.hasArg("plain")) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
-        return;
-    }
-
-    StaticJsonDocument<200> doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    if (error) {
-        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
-        return;
-    }
-
-    float alk = doc["alk"] | 0.0f;
-    float ca  = doc["ca"]  | 0.0f;
-    float mg  = doc["mg"]  | 0.0f;
-    float ph  = doc["ph"]  | 0.0f;
-
-    // Reject impossible or dangerously mistyped manual values before they can
-    // enter learner history or change a dosing plan.
-    if (!isfinite(alk) || alk < 4.0f || alk > 15.0f ||
-        !isfinite(ca)  || ca  < 250.0f || ca > 700.0f ||
-        !isfinite(mg)  || mg  < 800.0f || mg > 1800.0f ||
-        !isfinite(ph)  || ph  < 6.50f || ph > 9.00f) {
-        server.send(400, "application/json",
-                    "{\"ok\":false,\"error\":\"Manual chemistry value outside safe validation range\"}");
-        return;
-    }
-
-    currentAlk = alk;
-    currentCa = ca;
-    currentMg = mg;
-    currentPh = ph;
-    saveManualTestLocally(alk, ca, mg, ph);
-    hasSavedManualTest = true;
-
-    // Every explicit manual submission is a new physical chemistry event.
-    // It therefore advances the same learner pipeline used by Apex/Trident.
-    acceptNewChemistryMeasurement("Manual", "", true);
-    calculateAiFromBestChemistry("Manual");
-    addCurrentAiPlanToBuckets("Manual", true);
-    publishAiPlanIfNeeded("Manual", true);
-
-    // Manual entry is already the new source of truth. Publish it immediately;
-    // do not call syncAllTruths() here because a live Apex poll can overwrite
-    // the just-entered values before either dashboard displays them.
-    bool firebaseUpdated = mirrorStatusToFirebase();
-    server.send(200, "application/json", firebaseUpdated
-        ? "{\"ok\":true,\"learningAccepted\":true,\"firebaseUpdated\":true}"
-        : "{\"ok\":true,\"learningAccepted\":true,\"firebaseUpdated\":false}");
-}
+// handlePostManualTest() moved to lib/WebRoutes/WebRoutes.cpp
 
 void setup() {
     // FIRST EXECUTABLE SAFETY ACTION:
@@ -5808,9 +4634,9 @@ if (root && root.isDirectory()) {
     loadLocalSettings();
     loadChemicalStrengths();
     loadAlkDemandLearningSetting();
-    loadFastAlkLearnerState();
+    // loadFastAlkLearnerState() removed (v1 -> v2): the fastAlk learner it
+    // restored no longer exists. See comment near runAiRecalculation().
     loadAlkDemandHistory();
-    applyOneTimeAlkDemandBootstrapIfNeeded();
     printAlkDemandRecommendation("boot");
     loadCalciumDemandLearningSetting();
     loadCalciumDemandHistory();
@@ -5898,162 +4724,8 @@ if (root && root.isDirectory()) {
             state.transitionTo(SystemState::PROVISIONING);
         }
     }
-    // ---------------- LOCAL DASHBOARD ROUTES ----------------
-    server.on("/", HTTP_GET, handleRoot);
-    server.on("/ping", HTTP_GET, []() {
-        server.send(200, "text/plain", "pong");
-    });
-
-    server.on("/api/config/volume", HTTP_POST, []() {
-        if (!server.hasArg("plain")) {
-            server.send(400, "text/plain", "Body missing");
-            return;
-        }
-        JsonDocument doc;
-        deserializeJson(doc, server.arg("plain"));
-
-        // Dashboard sends gallons and volume liters. Accept both to stay backward-compatible.
-        if (doc["gallons"].is<float>() || doc["gallons"].is<int>()) {
-            TANK_VOLUME_L = (doc["gallons"] | 300.0f) * 3.78541f;
-        } else {
-            TANK_VOLUME_L = doc["volume"] | 1135.6f;
-        }
-
-        prefs.begin("doser-settings", false);
-        prefs.putFloat("t_vol", TANK_VOLUME_L);
-        prefs.end();
-
-        ai.setTankVolumeGallons(TANK_VOLUME_L / 3.78541f);
-        applyAiBaselineToEngine();
-        Serial.printf("Tank Volume Updated: %.2f L (%.1f gal)\n", TANK_VOLUME_L, TANK_VOLUME_L / 3.78541f);
-        logger.printf("Tank Volume Updated: %.2f L (%.1f gal)\n", TANK_VOLUME_L, TANK_VOLUME_L / 3.78541f);
-        server.send(200, "application/json", "{\"status\":\"ok\"}");
-    });
-
-    server.on("/api/status", HTTP_GET, handleGetStatus);
-    server.on("/api/manual-test", HTTP_POST, handlePostManualTest);
-    server.on("/api/config/apex", HTTP_POST, handlePostApexLocal);
-
-    server.on("/api/mode", HTTP_GET, handleGetMode);
-    server.on("/api/mode", HTTP_POST, handlePostMode);
-
-    server.on("/api/dosing-mode", HTTP_GET, handleGetDosingMode);
-    server.on("/api/dosing-mode", HTTP_POST, handlePostDosingMode);
-
-    server.on("/api/calibration", HTTP_POST, handlePostCalibration);
-    server.on("/api/calibration-run", HTTP_POST, handlePostCalibrationRun);
-    server.on("/api/live-dose", HTTP_POST, handlePostLiveDose);
-    server.on("/api/chemical-levels", HTTP_GET, handleGetChemicalLevels);
-    server.on("/api/chemical-levels", HTTP_POST, handlePostChemicalLevels);
-    server.on("/api/emergency-stop", HTTP_POST, handlePostEmergencyStop);
-    server.on("/api/reset-wifi", HTTP_POST, handlePostResetWifi);
-    // Notification level endpoints.
-    // /api/config/notifications is used by the updated dashboard.
-    // /api/notifications is kept as a backward-compatible alias.
-    server.on("/api/config/notifications", HTTP_GET, handleGetNotificationSettings);
-    server.on("/api/config/notifications", HTTP_POST, handlePostNotificationSettings);
-    server.on("/api/notifications", HTTP_GET, handleGetNotificationSettings);
-    server.on("/api/notifications", HTTP_POST, handlePostNotificationSettings);
-
-    server.on("/api/logger/force-upload", HTTP_POST, []() {
-        logger.println("Manual logger upload requested from local API.");
-        logGoogleDriveDiagnostics("force-upload-before");
-        logger.forceUpload();
-        logGoogleDriveDiagnostics("force-upload-after");
-        publishLoggerHealthToFirebase("force-upload", true);
-        server.send(200, "application/json", "{\"ok\":true,\"message\":\"Logger upload attempted; check WebSerial/serial and Firebase /loggerHealth\"}");
-    });
-
-    server.on("/api/logger/diagnostics", HTTP_GET, []() {
-        GoogleDriveLogQueueStats q = collectGoogleDriveLogQueueStats();
-        JsonDocument doc;
-        doc["ok"] = true;
-        doc["source"] = "google-drive-logger";
-        doc["uptimeSec"] = (uint32_t)(millis() / 1000UL);
-        doc["wifiStatus"] = (int)WiFi.status();
-        doc["rssi"] = WiFi.RSSI();
-        doc["ip"] = WiFi.localIP().toString();
-        doc["gateway"] = WiFi.gatewayIP().toString();
-        doc["dns"] = WiFi.dnsIP().toString();
-        doc["freeHeap"] = ESP.getFreeHeap();
-        doc["minFreeHeap"] = ESP.getMinFreeHeap();
-        doc["littleFsUsed"] = LittleFS.usedBytes();
-        doc["littleFsTotal"] = LittleFS.totalBytes();
-        doc["queuedFiles"] = q.fileCount;
-        doc["queuedBytes"] = (uint32_t)q.totalBytes;
-        doc["oldestFile"] = q.oldestPath;
-        doc["oldestBytes"] = (uint32_t)q.oldestSize;
-        doc["newestFile"] = q.newestPath;
-        doc["newestBytes"] = (uint32_t)q.newestSize;
-
-        String output;
-        serializeJson(doc, output);
-        server.send(200, "application/json", output);
-    });
-    server.on("/api/config/safeties", HTTP_POST, handlePostDosingSafeties);
-    server.on("/api/config/ai-baseline", HTTP_POST, handlePostAiBaseline);
-    server.on("/api/config/alk-demand-learning", HTTP_GET, handleGetAlkDemandLearning);
-    server.on("/api/config/alk-demand-learning", HTTP_POST, handlePostAlkDemandLearning);
-    server.on("/api/config/calcium-demand-learning", HTTP_GET, handleGetCalciumDemandLearning);
-    server.on("/api/config/calcium-demand-learning", HTTP_POST, handlePostCalciumDemandLearning);
-    server.on("/api/config/chemical-strengths", HTTP_POST, handlePostChemicalStrengths);
-    server.on("/api/config/lights", HTTP_POST, handlePostLightConfig);
-    server.on("/api/config/mode7-split", HTTP_POST, handlePostMode7DayNightSplit);
-    server.on("/api/config/ai-chemistry-safeties", HTTP_POST, handlePostAiChemistrySafeties);
-
-    server.on("/api/history", HTTP_GET, []() {
-        JsonDocument doc;
-
-        JsonArray labels = doc.createNestedArray("labels");
-        labels.add("Today");
-
-        JsonObject params = doc.createNestedObject("params");
-        JsonObject today = params.createNestedObject("Today");
-
-        float count = (dailyStats.count > 0) ? (float)dailyStats.count : 1.0f;
-        float totalDose = dailyDoseTotals[0] + dailyDoseTotals[1] + dailyDoseTotals[2] + dailyDoseTotals[3];
-
-        // The dashboard water-parameter cards must show the newest accepted
-        // chemistry, not today's running average. Daily averages remain stored
-        // for the midnight history report, but they are not the live display.
-        today["alk"] = currentAlk;
-        today["ph"] = currentPh;
-        today["temp"] = currentTempF;
-        today["tempF"] = currentTempF;
-        today["ca"] = currentCa;
-        today["mg"] = currentMg;
-        today["ppt"] = currentPpt;
-        today["sal"] = currentPpt;
-        today["sg"] = currentSg;
-        today["totalDose"] = totalDose;
-
-        JsonObject dosing = doc.createNestedObject("dosing");
-        JsonObject doseToday = dosing.createNestedObject("Today");
-        doseToday["p1"] = dailyDoseTotals[0];
-        doseToday["p2"] = dailyDoseTotals[1];
-        doseToday["p3"] = dailyDoseTotals[2];
-        doseToday["p4"] = dailyDoseTotals[3];
-        doseToday[pumpKeyForPhysicalIndex(0)] = dailyDoseTotals[0];
-        doseToday[pumpKeyForPhysicalIndex(1)] = dailyDoseTotals[1];
-        doseToday[pumpKeyForPhysicalIndex(2)] = dailyDoseTotals[2];
-        doseToday[pumpKeyForPhysicalIndex(3)] = dailyDoseTotals[3];
-
-        doc["ok"] = true;
-        doc["dosingMode"] = dosingMode;
-        JsonObject planToday = doc.createNestedObject("plan").createNestedObject("Today");
-        planToday["kalk"] = ai.currentPlan.kalk;
-        planToday["afr"] = ai.currentPlan.afr;
-        planToday["alk"] = ai.currentPlan.alk;
-        planToday["cacl2"] = ai.currentPlan.cacl2;
-        planToday["naoh"] = ai.currentPlan.naoh;
-        planToday["mg"] = ai.currentPlan.mg;
-
-        doc["sampleCount"] = dailyStats.count;
-
-        String output;
-        serializeJson(doc, output);
-        server.send(200, "application/json", output);
-    });
+    // Local dashboard HTTP routes are registered in lib/WebRoutes/WebRoutes.cpp
+    registerWebRoutes();
 
     // Start local services BEFORE Firebase so the dashboard remains reachable even if Firebase is slow.
     server.begin();
@@ -6071,18 +4743,44 @@ if (root && root.isDirectory()) {
     loadDosingState();
     logger.println("Dosing state recovered from memory.");
 
+    // §5 free chemical declaration: load the customer's declared chemical
+    // list, or migrate one from the legacy dosingMode if this device has
+    // never had chemicals.json before (true first boot on this firmware,
+    // or an existing device updating from a pre-Phase-1 build). Must
+    // happen before rebuildAiChemicalDeclarations() below, which reads
+    // declaredChemicals[] directly.
+    if (!loadDeclaredChemicals()) {
+        Serial.println("CHEMICALS CONFIG: none found, migrating from legacy dosingMode.");
+        logger.println("CHEMICALS CONFIG: none found, migrating from legacy dosingMode.");
+        buildDeclaredChemicalsFromLegacyMode(dosingMode);
+    }
+
+    // §4.5 persistence: restore learned Kalman state from before this reboot,
+    // before the first recalculation runs. Chemical declarations must exist
+    // first so per-chemical confidence can be matched by NAME (§5.2) rather
+    // than array index -- see PersistedStateV1's comment in AI_EngineV2.h.
+    // Calling rebuildAiChemicalDeclarations() here is safe/idempotent even
+    // though runAiRecalculation() below calls it again itself: that function
+    // only rebuilds ai.chemicals[]/numChemicals, it never touches
+    // ai.filters[], so the restored Kalman state survives that second call.
+    ai.tank.tankVolumeLiters = TANK_VOLUME_L;
+    ai.tank.coralLoad = coralLoadFromBaselineString(baselineCoralLoad);
+    rebuildAiChemicalDeclarations();
+    if (ai.restoreState()) {
+        Serial.println("AI ENGINE V2: learned state restored from previous session.");
+        logger.println("AI ENGINE V2: learned state restored from previous session.");
+    } else {
+        Serial.println("AI ENGINE V2: no saved learned state found (first boot, fresh state, or nothing to restore).");
+        logger.println("AI ENGINE V2: no saved learned state found (first boot, fresh state, or nothing to restore).");
+    }
+
     // Restore the live AI plan after reboot/OTA so /api/status and the local dashboard
     // do not show a zero dosing plan while saved bucket state still exists.
     if (hasSavedManualTest) {
-        ai.calculateNextPlan(
-            dosingMode,
-            targetAlk - currentAlk,
-            targetCa  - currentCa,
-            targetMg  - currentMg,
-            currentPh,
-            isLightsOn()
+        runAiRecalculation(
+            currentAlk, currentCa, currentMg, currentPh,
+            isLightsOn(), MeasurementSource::ManualTest
         );
-        ai.currentPlan.active = true;
 
         Serial.println("AI plan restored from saved manual test.");
         logger.println("AI plan restored from saved manual test.");
@@ -6550,6 +5248,31 @@ void loop() {
         calculateAiFromBestChemistry("Hourly");
         addCurrentAiPlanToBuckets("Hourly", false);
         publishAiPlanIfNeeded("Hourly", true);
+
+        // Durable, searchable record of the maturity signal itself -- the
+        // actual thing that matters, independent of whether the Manual Test
+        // Schedule card is visible or anyone remembers to check the
+        // dashboard. Watch these three maturity values over the coming
+        // days: they should climb gradually (not instantly to 1.0, not
+        // stuck at 0.0) as real measurements accumulate -- that's the real
+        // evidence for whether today's Kalman fixes (maturity scale,
+        // advanceTime(), repeat-poll gating) are actually working, not just
+        // whether a UI card looks right.
+        // "real=" is the live, legitimately-decaying value (dosing caution);
+        // "proven=" is the ratchet (never regresses on its own) that
+        // actually drives the manual-test-interval recommendation -- shown
+        // side by side so a future "why did this drop" question is
+        // answerable from this one line instead of a multi-day log dive.
+        Serial.printf("[MATURITY] Alk real=%.3f/proven=%.3f Ca real=%.3f/proven=%.3f Mg real=%.3f/proven=%.3f | manualTestPrompt: daysSince=%d recommendedDays=%d governingMaturity=%.3f\n",
+                      ai.filters[P_ALK].maturity(), ai.filters[P_ALK].provenMaturity(),
+                      ai.filters[P_CA].maturity(), ai.filters[P_CA].provenMaturity(),
+                      ai.filters[P_MG].maturity(), ai.filters[P_MG].provenMaturity(),
+                      daysSinceLastManualTest(), recommendedManualTestIntervalDays(), manualTestGoverningMaturity());
+        logger.printf("[MATURITY] Alk real=%.3f/proven=%.3f Ca real=%.3f/proven=%.3f Mg real=%.3f/proven=%.3f | manualTestPrompt: daysSince=%d recommendedDays=%d governingMaturity=%.3f\n",
+                      ai.filters[P_ALK].maturity(), ai.filters[P_ALK].provenMaturity(),
+                      ai.filters[P_CA].maturity(), ai.filters[P_CA].provenMaturity(),
+                      ai.filters[P_MG].maturity(), ai.filters[P_MG].provenMaturity(),
+                      daysSinceLastManualTest(), recommendedManualTestIntervalDays(), manualTestGoverningMaturity());
     }
 
     static unsigned long lastApexPull = 0;

@@ -24,6 +24,9 @@ void Provisioner::startPortal(const char* apName) {
 
     // Keep setup AP alive while also allowing STA/home-WiFi connection.
     WiFi.mode(WIFI_AP_STA);
+    // Explicit rather than relying on the implicit default -- guarantees
+    // 192.168.4.1 is genuinely correct rather than assumed correct.
+    WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
     WiFi.softAP(_deviceName.c_str());
 
     // Captive Portal: Redirect all DNS requests to the ESP32 AP IP.
@@ -72,6 +75,26 @@ void Provisioner::_setupRoutes() {
     _server.on("/", std::bind(&Provisioner::_handleRoot, this));
     _server.on("/save", HTTP_POST, std::bind(&Provisioner::_handleSave, this));
     _server.on("/connect-status", HTTP_GET, std::bind(&Provisioner::_handleConnectStatus, this));
+
+    // Fixed 2026-07-25: without this, iOS/Android's captive-portal probe
+    // requests (e.g. captive.apple.com/hotspot-detect.html,
+    // connectivitycheck.gstatic.com/generate_204) hit a plain 404 instead
+    // of a redirect, since none of the three routes above match those
+    // paths. The OS then concludes this network has nothing useful and
+    // often won't auto-open the sign-in browser at all -- exactly the
+    // "connected to the hotspot, but nothing happens" symptom. A 302
+    // redirect to "/" for any unmatched path is what a captive portal is
+    // actually expected to return.
+    _server.onNotFound(std::bind(&Provisioner::_handleNotFound, this));
+}
+
+void Provisioner::_handleNotFound() {
+    // Standard captive-portal response: redirect any unmatched path to the
+    // setup page itself, using the AP's own IP rather than a relative path
+    // (some OS probes check the response is same-origin / a real address,
+    // not just a 3xx status).
+    _server.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
+    _server.send(302, "text/plain", "");
 }
 
 void Provisioner::_handleRoot() {
@@ -170,9 +193,10 @@ void Provisioner::_handleSave() {
     html += "let s=document.getElementById('status');";
     html += "if(j.connected){";
     html += "s.innerHTML='<h2 class=\"ok\">Connected!</h2>' +";
-    html += "'<p><b>Write this IP down now.</b> AIDoser will restart in about 2 minutes.</p>' +";
+    html += "'<p><b>Write this down now.</b> AIDoser will restart in about 2 minutes.</p>' +";
     html += "'<p>After restart, reconnect your phone/computer to your home WiFi.</p>' +";
     html += "'<h3>Dashboard</h3><p class=\"url\">http://' + j.ip + '</p>' +";
+    html += "'<p class=\"url\">or http://' + j.mdnsHost + '.local</p>' +";
     html += "'<h3>WebSerial</h3><p class=\"url\">http://' + j.ip + ':81/webserial</p>' +";
     html += "'<p><a href=\"http://' + j.ip + '\"><button>Try Dashboard</button></a></p>';";
     html += "}else if(j.failed){";
@@ -211,6 +235,10 @@ void Provisioner::_handleConnectStatus() {
     json += connected ? ("http://" + ip) : "";
     json += "\",\"webSerialUrl\":\"";
     json += connected ? ("http://" + ip + ":81/webserial") : "";
+    json += "\",\"mdnsHost\":\"";
+    json += _mdnsName;
+    json += "\",\"mdnsDashboardUrl\":\"";
+    json += connected ? ("http://" + _mdnsName + ".local") : "";
     json += "\"}";
 
     _server.send(200, "application/json", json);
