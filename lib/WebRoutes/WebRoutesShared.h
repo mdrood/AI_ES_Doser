@@ -424,6 +424,16 @@ extern float targetAlk;
 extern float targetCa;
 extern float targetMg;
 void saveChemistryTargets(float alk, float ca, float mg);
+// Added 2026-08-05: companions to the block above, for the pH target
+// range that was completely missing from this codebase until now -- see
+// main.cpp's targetPhLow/targetPhHigh declaration comment for the full
+// root-cause explanation of why this mattered beyond just "no UI for it."
+// These are defined in main.cpp exactly like targetAlk/targetCa/targetMg
+// above; this extern declaration is what WebRoutes.cpp (a separate
+// compilation unit/library) needs to see them.
+extern float targetPhLow;
+extern float targetPhHigh;
+void saveChemistryTargetPhRange(float lo, float hi);
 bool isValidNotificationLevel(const String& level);
 bool isValidSystemMode(int mode);
 bool mirrorStatusToFirebase();

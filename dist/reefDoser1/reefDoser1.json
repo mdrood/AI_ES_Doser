@@ -3,8 +3,8 @@
     "deviceId": "reefDoser1",
     "customer": "Mark",
     "label": "AIES-00001",
-    "firmwareVersion": "P-1.1.31",
-    "version": "P-1.1.31",
+    "firmwareVersion": "P-1.1.32",
+    "version": "P-1.1.32",
     "board": "vintlabs-devkit-v1",
     "chipId": "9C9E33077000",
     "macAddress": "e0:8c:fe:c2:6e:94",
@@ -13,7 +13,7 @@
     "firmwarePath": "/devices/reefDoser1/reefDoser1.bin",
     "firmwareUrl": "https://aiesdoser.web.app/devices/reefDoser1/reefDoser1.bin",
     "binUrl": "https://aiesdoser.web.app/devices/reefDoser1/reefDoser1.bin",
-    "size": 1831328,
-    "sha256": "b0a59e21d06eb72684bd95a6fa748145a4b3b4f8d13019855d9282c9bce87f05",
-    "builtAt": "2026-08-03T22:16:31"
+    "size": 1833280,
+    "sha256": "bfef9f7ce57811d1beb9454b223d36e6525e56448302205095d582b1928ba56f",
+    "builtAt": "2026-08-04T23:13:13"
 }

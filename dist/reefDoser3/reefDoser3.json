@@ -13,7 +13,7 @@
     "firmwarePath": "/devices/reefDoser3/reefDoser3.bin",
     "firmwareUrl": "https://aiesdoser.web.app/devices/reefDoser3/reefDoser3.bin",
     "binUrl": "https://aiesdoser.web.app/devices/reefDoser3/reefDoser3.bin",
-    "size": 1833088,
-    "sha256": "83ab2fe10901fbb0b1ff18509237360b0cf727e18b2a6597737822af00b47fc6",
-    "builtAt": "2026-08-04T20:24:46"
+    "size": 1833824,
+    "sha256": "2772b2c31ac9207bee47afb83cc84fc5593c664615c8260a8d6fbceabbd1fe1c",
+    "builtAt": "2026-08-05T06:59:56"
 }

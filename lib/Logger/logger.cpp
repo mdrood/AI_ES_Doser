@@ -606,10 +606,25 @@ void Logger::loop() {
   _queueCurrentLog();
   _enforceQueueLimit();
 
-  if (WiFi.status() == WL_CONNECTED) {
+  // Added 2026-08-05: WiFi.status() == WL_CONNECTED only means associated
+  // to the local router -- it says nothing about whether the internet path
+  // this upload actually needs works. On a WiFi-but-no-internet network,
+  // this used to still attempt _uploadNextQueuedFile() every 30 minutes,
+  // burning its own 8-second bounded timeout for nothing every time.
+  // internetReachable is maintained by main.cpp's isolated, non-blocking
+  // DNS-check task (built for the same underlying condition that caused
+  // connectToFirebase()'s crash loop) -- reusing that signal here avoids
+  // needing a second, redundant reachability check. Local rotation and
+  // queue trimming above this line are unconditional and unaffected --
+  // they don't touch the network and were never part of the problem.
+  extern volatile bool internetReachable;
+
+  if (WiFi.status() == WL_CONNECTED && internetReachable) {
     _uploadNextQueuedFile();
-  } else {
+  } else if (WiFi.status() != WL_CONNECTED) {
     loggerStatus("LOGGER: WiFi unavailable; queued files retained.");
+  } else {
+    loggerStatus("LOGGER: internet unreachable (DNS); queued files retained.");
   }
 
   _enforceQueueLimit();

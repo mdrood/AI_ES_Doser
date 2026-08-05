@@ -19,6 +19,12 @@
 // Safety Rise Limits" card for the corrected, accurately-scoped UI).
 
 void handleGetStatus() {
+    // TEMP DIAGNOSTIC (2026-08-05): timing instrumentation to locate the
+    // remaining ~4-5s delay after fixing the getLocalTime() default-
+    // timeout issue (11s -> 4-5s). Reading every function this handler
+    // calls found no second blocking call -- this measures where the
+    // actual time goes instead of guessing further. Remove once resolved.
+    unsigned long __t0 = millis();
     JsonDocument doc;
     doc["ok"] = true;
     doc["deviceId"] = deviceID;
@@ -154,6 +160,14 @@ void handleGetStatus() {
     doc["targetAlk"] = targetAlk;
     doc["targetCa"] = targetCa;
     doc["targetMg"] = targetMg;
+    // Added 2026-08-05: was entirely absent from this response. Confirmed
+    // during debugging that this absence was a real diagnostic signal, not
+    // just cosmetic -- targetPhLow/targetPhHigh didn't exist anywhere in
+    // main.cpp either, which meant pH correction silently never worked.
+    // See main.cpp's targetPhLow/targetPhHigh declaration comment for the
+    // full root-cause explanation.
+    doc["targetPhLow"] = targetPhLow;
+    doc["targetPhHigh"] = targetPhHigh;
 
     // §8/§8.5 one-time setup wizard.
     doc["shouldShowSetupWizard"] = shouldShowSetupWizard();
@@ -246,12 +260,19 @@ void handleGetStatus() {
         reservoir["severe"] = chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= (0.5f * ML_PER_GALLON);
     }
     
+    unsigned long __t1 = millis();
     String response;
     serializeJson(doc, response);
+    unsigned long __t2 = millis();
     server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     server.sendHeader("Pragma", "no-cache");
     server.sendHeader("Expires", "0");
     server.send(200, "application/json", response);
+    unsigned long __t3 = millis();
+    Serial.printf("STATUS TIMING: build=%lums serialize=%lums send=%lums total=%lums bytes=%u\n",
+                  __t1 - __t0, __t2 - __t1, __t3 - __t2, __t3 - __t0, response.length());
+    logger.printf("STATUS TIMING: build=%lums serialize=%lums send=%lums total=%lums bytes=%u\n",
+                  __t1 - __t0, __t2 - __t1, __t3 - __t2, __t3 - __t0, response.length());
 }
 
 // NOTE: handlePostVolume was defined in main.cpp but never registered
@@ -1115,7 +1136,15 @@ void handlePostDosingSafeties() {
 }
 
 void handleRoot() {
-    server.send_P(200, "text/html", kIndexHtml);
+    // Fixed 2026-08-05: was sending the raw 194KB HTML/CSS/JS string
+    // uncompressed on every single page load. kIndexHtml is now a
+    // pre-gzipped byte array (kIndexHtmlGz, generated from the exact same
+    // content -- 194031 -> 47532 bytes, about a 75% reduction) rather than
+    // a plain string; the browser transparently decompresses it as long
+    // as Content-Encoding is sent BEFORE the body, which is why
+    // sendHeader() comes first here.
+    server.sendHeader(F("Content-Encoding"), F("gzip"));
+    server.send_P(200, "text/html", (const char*)kIndexHtmlGz, kIndexHtmlGzLen);
 }
 
 void handlePostManualTest() {
@@ -1755,6 +1784,44 @@ void handlePostChemistryTargets() {
     server.send(200, "application/json", "{\"ok\":true}");
 }
 
+// Added 2026-08-05: companion to handlePostChemistryTargets() above, for
+// the pH target range that was completely missing until now -- see
+// main.cpp's targetPhLow/targetPhHigh declaration comment for why this
+// mattered beyond just "no UI for it" (pH dosing correction silently
+// never worked at all without a real target to compare against). Kept as
+// its own endpoint/handler rather than folding into
+// handlePostChemistryTargets() so that existing endpoint's request shape
+// doesn't change for any client already calling it.
+void handlePostPhTargetRange() {
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
+        return;
+    }
+    JsonDocument doc;
+    if (deserializeJson(doc, server.arg("plain"))) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
+        return;
+    }
+
+    float lo = doc["phLow"]  | NAN;
+    float hi = doc["phHigh"] | NAN;
+
+    // Plausible reef-tank pH range, with a sane minimum band width so a
+    // fat-fingered near-equal lo/hi doesn't produce a target midpoint that
+    // is technically valid but useless (e.g. lo=8.20, hi=8.21).
+    if (!isfinite(lo) || !isfinite(hi) ||
+        lo < 7.0f || lo > 9.0f ||
+        hi < 7.0f || hi > 9.0f ||
+        hi <= lo || (hi - lo) < 0.05f) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"error\":\"pH target range must be a plausible, well-separated low/high pair between 7.0 and 9.0\"}");
+        return;
+    }
+
+    saveChemistryTargetPhRange(lo, hi);
+    server.send(200, "application/json", "{\"ok\":true}");
+}
+
 void registerWebRoutes() {
     // ---------------- LOCAL DASHBOARD ROUTES ----------------
     server.on("/", HTTP_GET, handleRoot);
@@ -1809,6 +1876,7 @@ void registerWebRoutes() {
     server.on("/api/setup-wizard/complete", HTTP_POST, handlePostSetupWizardComplete);
     server.on("/api/setup-wizard/reset", HTTP_POST, handlePostSetupWizardReset);
     server.on("/api/config/chemistry-targets", HTTP_POST, handlePostChemistryTargets);
+    server.on("/api/config/ph-target-range", HTTP_POST, handlePostPhTargetRange);
 
     server.on("/api/calibration", HTTP_POST, handlePostCalibration);
     server.on("/api/calibration-run", HTTP_POST, handlePostCalibrationRun);

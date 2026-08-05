@@ -88,6 +88,18 @@ int alkIdx = 0;
 float targetAlk = 8.5f;
 float targetCa  = 450.0f;
 float targetMg  = 1440.0f;
+// Added 2026-08-05: targetPhLow/targetPhHigh never existed anywhere in this
+// file, on either the load, save, or AI-wiring side. Confirmed root cause
+// of pH correction never actually working, even after the separate
+// ingestMeasurement(P_PH,...) fix: with no target ever pushed into
+// ai.targetPhLow/targetPhHigh, both stayed at their Recommendable default
+// of 0.0 -- meaning any real pH reading always computed as "already above
+// target" and got clamped to zero by the existing additive-only rule,
+// regardless of whether pH was actually 8.6 or 7.4. 8.0/8.4 matches this
+// codebase's own existing pH-ceiling default (mode7NaohMaxPh=8.45) and the
+// generally accepted reef-tank healthy pH range.
+float targetPhLow  = 8.0f;
+float targetPhHigh = 8.4f;
 
 // AI starts from this known daily demand, then adjusts up/down from water tests.
 float baselineKalkMlDay  = 0.0f;
@@ -292,6 +304,67 @@ char apexEmulatorResultError[160] = {0};
 
 void apexEmulatorTask(void* parameter);
 bool serviceApexEmulatorResult();
+
+// Added 2026-08-05: isolated internet-reachability check, built specifically
+// to fix the confirmed no-internet crash loop in connectToFirebase() without
+// repeating either of two approaches that were tried and failed:
+//   1. esp_task_wdt_reset() calls placed around the blocking Firebase calls
+//      -- doesn't help, because DNS resolution (hostByName()) itself hangs
+//      inside a SINGLE call for longer than the 30s watchdog window; a
+//      reset placed between calls never gets a chance to run while one
+//      call is still stuck.
+//   2. config.timeout.* fields on FirebaseConfig -- doesn't help either,
+//      because those only govern the socket/SSL/response stages AFTER DNS
+//      resolves. DNS itself is handled by the underlying lwIP stack before
+//      the Firebase library or its timeout config ever gets involved.
+//
+// This task does the same WiFi.hostByName() DNS lookup that was hanging,
+// but on its OWN FreeRTOS task -- never registered with esp_task_wdt_add()
+// (only the task that calls that in setup(), i.e. loopTask, is registered)
+// -- so it is free to block through however long DNS takes without ever
+// tripping the watchdog. It never touches writeFbdo, streamFbdo, config,
+// auth, or anything else loopTask/OTA/emergency-stop use, so it carries
+// none of the concurrency risk a full Firebase-call migration would.
+// loop() only calls connectToFirebase() once this flag is true -- the
+// risky call itself is completely unchanged and still runs on loopTask,
+// synchronously, exactly as before. This does not make connectToFirebase()
+// itself safe in isolation; it prevents it from ever running until a
+// working path to the internet has already been confirmed.
+volatile bool internetReachable = false;
+
+void internetCheckTask(void* parameter) {
+    (void)parameter;
+    for (;;) {
+        if (WiFi.status() == WL_CONNECTED) {
+            IPAddress resolvedIp;
+            // Same hostname connectToFirebase()'s auth call ultimately
+            // depends on. A successful resolve here is a good proxy for
+            // "the network path Firebase needs is actually up," not just
+            // "WiFi is associated to the router."
+            bool ok = WiFi.hostByName("www.googleapis.com", resolvedIp);
+            internetReachable = ok;
+        } else {
+            internetReachable = false;
+        }
+
+        // Recheck faster while down (so recovery is noticed promptly),
+        // slower once confirmed up (no need to hammer DNS every cycle).
+        // Fixed 2026-08-05: was 15000UL (15s) while offline. Suspected root
+        // cause of dashboard requests taking up to ~2 minutes to complete
+        // even after the separate client-side pileup fix -- ESP32's LWIP
+        // network stack does not fully parallelize operations across
+        // FreeRTOS tasks the way "this task is isolated" suggested it
+        // would; a DNS lookup retried this often, each attempt taking
+        // ~20s per the observed logs, can still contend with the web
+        // server's own ability to accept/answer HTTP requests on a
+        // different task. 3 minutes is a large enough gap to stop that
+        // near-constant contention while offline, while still recovering
+        // reasonably quickly once internet actually returns.
+        vTaskDelay(pdMS_TO_TICKS(internetReachable ? 60000UL : 180000UL));
+    }
+}
+
+TaskHandle_t internetCheckTaskHandle = nullptr;
 
 
 FirebaseData streamFbdo;
@@ -2081,6 +2154,14 @@ void runAiRecalculation(float useAlk, float useCa, float useMg, float usePh,
     ai.targetAlkDkh.updateSuggestion(targetAlk);
     ai.targetCaPpm.updateSuggestion(targetCa);
     ai.targetMgPpm.updateSuggestion(targetMg);
+    // Added 2026-08-05: the missing piece -- see the comment on the
+    // targetPhLow/targetPhHigh declaration above for the full root-cause
+    // explanation. Without this, filters[P_PH] could be correctly
+    // initialized and ingesting real measurements (the earlier fix) and
+    // desired[P_PH] would still stay permanently 0.0000, because the gap
+    // calculation had nothing real to compare against.
+    ai.targetPhLow.updateSuggestion(targetPhLow);
+    ai.targetPhHigh.updateSuggestion(targetPhHigh);
 
     // §7 safety envelope -- the ONE place a rise-per-day gets capped now.
     ai.safety.maxAlkRisePerDayDkh.updateSuggestion(aiMaxAlkRiseDkhDay);
@@ -2127,6 +2208,19 @@ void runAiRecalculation(float useAlk, float useCa, float useMg, float usePh,
         if (isfinite(useAlk) && useAlk > 0.0f) ai.ingestMeasurement(P_ALK, useAlk, measurementSource);
         if (isfinite(useCa)  && useCa  > 0.0f) ai.ingestMeasurement(P_CA,  useCa,  measurementSource);
         if (isfinite(useMg)  && useMg  > 0.0f) ai.ingestMeasurement(P_MG,  useMg,  measurementSource);
+        // Fixed 2026-08-05: usePh was accepted as a parameter to this
+        // function but never actually ingested -- Alk/Ca/Mg all fed the
+        // Kalman filter here, pH never did. filters[P_PH].initialized was
+        // therefore never set true, which meant AIEngineV2::recalculate()'s
+        // `if (!filters[p].initialized) continue;` guard silently zeroed
+        // desired[P_PH] on every single cycle, regardless of how far real
+        // pH drifted in either direction -- confirmed against a real
+        // reefDoser12 log showing desired(...,pH,...)=0.0000 continuously
+        // while pH itself drifted from 7.92 down to 7.76 over one night.
+        // pH's own diurnal-swing correction (ingestMeasurement's
+        // `if (p == P_PH)` branch in AI_EngineV2.cpp) already existed and
+        // was simply never reached because this call was missing.
+        if (isfinite(usePh) && usePh > 0.0f) ai.ingestMeasurement(P_PH, usePh, measurementSource);
 
         // Added 2026-08-04, §4.4: a measurement whose real outcome didn't
         // plausibly match what the currently-declared chemicals should
@@ -2517,7 +2611,7 @@ void tokenStatusCallback(TokenInfo info) {
 
 String getTodayDateKey() {
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
+    if (!getLocalTime(&timeinfo, 10)) {
         return "";
     }
 
@@ -2702,7 +2796,7 @@ void publishAiPlanIfNeeded(const char* source, bool force) {
 
     char today[11] = "";
     struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
+    if (getLocalTime(&timeinfo, 10)) {
         strftime(today, sizeof(today), "%Y-%m-%d", &timeinfo);
         if (lastPlanPublishDate != String(today)) changed = true;
     }
@@ -2914,9 +3008,26 @@ bool isLightsOn() {
 }
 
 
+// Fixed 2026-08-05: getLocalTime(&timeinfo) with no explicit timeout
+// argument defaults to a 5000ms internal blocking retry loop on ESP32 if
+// the system clock hasn't synced via NTP yet -- which every log from this
+// entire session showed ("time=not-synced"), since these devices spend
+// long stretches offline or otherwise without a completed NTP sync. This
+// function is called from isLightsOn(), which handleGetStatus() calls on
+// every single /api/status request -- and a second, independent
+// getLocalTime() call (in localDayKeyWithOffsetDays(), reached through
+// daysSinceLastManualTest() inside the same request's manualTestPrompt
+// block, confirmed applicable=true on this device) meant TWO stacked 5s
+// blocks were plausible on one request -- closely matching an observed
+// ~11 second single-request delay. All 6 getLocalTime() call sites in
+// this file were changed to pass an explicit 10ms timeout: correct
+// behavior is unchanged when the clock IS synced (returns true almost
+// immediately either way), but a not-yet-synced clock now fails fast
+// instead of blocking pointlessly -- waiting longer cannot make an NTP
+// sync that hasn't happened suddenly complete synchronously anyway.
 int getLocalHour() {
     struct tm timeinfo;
-    if(!getLocalTime(&timeinfo)){
+    if(!getLocalTime(&timeinfo, 10)){
         return 0; // Fallback if sync hasn't happened yet
     }
     return timeinfo.tm_hour; // Returns 0-23
@@ -3439,6 +3550,10 @@ void loadChemistryTargets() {
     targetAlk = prefs.getFloat("tgt_alk", targetAlk);
     targetCa  = prefs.getFloat("tgt_ca", targetCa);
     targetMg  = prefs.getFloat("tgt_mg", targetMg);
+    // Added 2026-08-05: loaded the same way as the other three -- falls
+    // back to the 8.0/8.4 defaults declared above if never explicitly set.
+    targetPhLow  = prefs.getFloat("tgt_ph_lo", targetPhLow);
+    targetPhHigh = prefs.getFloat("tgt_ph_hi", targetPhHigh);
     prefs.end();
 }
 
@@ -3453,6 +3568,23 @@ void saveChemistryTargets(float alk, float ca, float mg) {
     prefs.end();
     Serial.printf("CHEMISTRY TARGETS SAVED: Alk=%.2f Ca=%.1f Mg=%.1f\n", alk, ca, mg);
     logger.printf("CHEMISTRY TARGETS SAVED: Alk=%.2f Ca=%.1f Mg=%.1f\n", alk, ca, mg);
+}
+
+// Added 2026-08-05: deliberately a separate function rather than adding
+// parameters to saveChemistryTargets() above -- that function's existing
+// 3-argument signature is called from WebRoutes.cpp (not open this
+// session), and changing it blind would break that call site. Once a
+// dashboard field for pH target range exists, its handler should call
+// this alongside (or instead of, once merged) saveChemistryTargets().
+void saveChemistryTargetPhRange(float lo, float hi) {
+    targetPhLow = lo;
+    targetPhHigh = hi;
+    prefs.begin("doser-settings", false);
+    prefs.putFloat("tgt_ph_lo", lo);
+    prefs.putFloat("tgt_ph_hi", hi);
+    prefs.end();
+    Serial.printf("PH TARGET RANGE SAVED: %.2f - %.2f\n", lo, hi);
+    logger.printf("PH TARGET RANGE SAVED: %.2f - %.2f\n", lo, hi);
 }
 
 void loadFlowRates() {
@@ -4355,7 +4487,7 @@ void connectToFirebase() {
 
 uint32_t localDayKeyWithOffsetDays(int offsetDays) {
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) return 0;
+    if (!getLocalTime(&timeinfo, 10)) return 0;
     time_t t = mktime(&timeinfo) + (time_t)offsetDays * 86400;
     localtime_r(&t, &timeinfo);
     return (uint32_t)(timeinfo.tm_year + 1900) * 10000UL +
@@ -4394,7 +4526,7 @@ void pushDailyReport() {
     }
 
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) return;
+    if (!getLocalTime(&timeinfo, 10)) return;
 
     char monthFolder[8]; // YYYY-MM
     char dayFolder[3];   // DD
@@ -4641,6 +4773,43 @@ if (root && root.isDirectory()) {
     loadCalciumDemandLearningSetting();
     loadCalciumDemandHistory();
     printCalciumDemandRecommendation("boot");
+
+    // Started unconditionally (unlike the emulator task, which only runs on
+    // specific test devices) so a reachability signal is already being
+    // established well before the 30-second Firebase-start grace period
+    // elapses in loop(). Same task-isolation pattern as apexEmulatorTask
+    // directly below -- pinned to core 0, never registered with the
+    // watchdog, touches no Firebase objects.
+    // RE-ENABLED 2026-08-05: the diagnostic test this block was built for
+    // is complete and conclusive. This build (task fully disabled, zero
+    // background DNS activity) still showed the same multi-second dashboard
+    // delay -- which rules out internetCheckTask as the cause. The real
+    // cause was found separately: server.handleClient() being called only
+    // once, at the end of loop(), after several seconds of unconditional
+    // chemistry-recalculation/logging work each pass (see the new
+    // handleClient() call added above, near addCurrentAiPlanToBuckets()).
+    // Restoring this task now since it's confirmed safe to run alongside
+    // that fix -- Firebase needs it to ever connect.
+    BaseType_t internetCheckTaskCreated = xTaskCreatePinnedToCore(
+        internetCheckTask,
+        "internetCheck",
+        4096,
+        nullptr,
+        1,
+        &internetCheckTaskHandle,
+        0
+    );
+
+    if (internetCheckTaskCreated == pdPASS) {
+        Serial.println("INTERNET CHECK TASK STARTED: connectToFirebase() will wait for a confirmed DNS path.");
+        logger.println("INTERNET CHECK TASK STARTED: connectToFirebase() will wait for a confirmed DNS path.");
+    } else {
+        internetCheckTaskHandle = nullptr;
+        internetReachable = true;
+        Serial.println("INTERNET CHECK TASK FAILED TO START: falling back to unconditional Firebase start.");
+        logger.println("INTERNET CHECK TASK FAILED TO START: falling back to unconditional Firebase start.");
+    }
+
     if (useApexLogEmulatorForThisDevice()) {
         apexEmu.begin(APEX_EMULATOR_URL, APEX_EMULATOR_POLL_MS);
 
@@ -4843,6 +5012,24 @@ void loop() {
     serviceOtaCommandFallback();
     if (pendingOtaRequested) return;
 
+    // Fixed 2026-08-05: server.handleClient() was only ever called once,
+    // at the very end of loop() -- AFTER addCurrentAiPlanToBuckets() below,
+    // which triggers chemistry recalculation and the multi-line
+    // ALLOCATOR DIAGNOSTIC block seen throughout every log tonight. Each
+    // of those lines goes through logger.println()/printf(), which does a
+    // real LittleFS file open/write/close per line, not just a fast
+    // Serial print. Confirmed via direct device-side timing instrumentation
+    // that handleGetStatus() itself completes in ~40ms once actually
+    // invoked -- the multi-second delay browsers were seeing as "waiting
+    // for server response" was the REQUEST SITTING UNREAD on the socket
+    // for however long the rest of this unconditional, ungated work took,
+    // every single loop() pass, before handleClient() ever got called to
+    // notice it. Calling it here too, before that heavy work starts, lets
+    // a pending request get serviced promptly; the original call at the
+    // end of loop() is left in place to catch anything that arrives during
+    // the heavy work itself.
+    server.handleClient();
+
     // Independent 10-minute AI dosing scheduler. This must run every loop pass;
     // Apex polling and hourly AI calculations only update the plan and must not
     // control whether a dosing slice is accumulated.
@@ -4898,8 +5085,17 @@ void loop() {
 
     // Delay Firebase startup so local dashboard can be reached first.
     // This preserves Firebase/OTA/commands but prevents SSL stream startup from starving port 80.
+    //
+    // Fixed 2026-08-05: added the internetReachable check. WiFi.status()
+    // == WL_CONNECTED only means associated to the local router -- it says
+    // nothing about whether DNS/internet actually works, which is exactly
+    // the gap that let connectToFirebase() run into a DNS hang long enough
+    // to trip the watchdog on a WiFi-but-no-internet network. This does
+    // not change connectToFirebase() itself at all; it just waits for the
+    // isolated internetCheckTask (above) to confirm a working path first.
     static unsigned long bootMs = millis();
-    if (!firebaseStarted && WiFi.status() == WL_CONNECTED && (millis() - bootMs > 30000UL)) {
+    if (!firebaseStarted && WiFi.status() == WL_CONNECTED && internetReachable &&
+        (millis() - bootMs > 30000UL)) {
         firebaseStarted = true;
         Serial.println("Starting Firebase after dashboard grace period...");
         logger.println("Starting Firebase after dashboard grace period...");
@@ -5329,7 +5525,7 @@ void loop() {
 
     // 2. MIDNIGHT PUSH
     struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
+    if (getLocalTime(&timeinfo, 10)) {
         // Use a 10-minute window so a busy SSL/Apex cycle does not miss the midnight report.
         if (timeinfo.tm_hour == 0 && timeinfo.tm_min < 10) {
             if (!reportPushedToday) {
