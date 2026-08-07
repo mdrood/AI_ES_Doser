@@ -2240,7 +2240,19 @@ void runAiRecalculation(float useAlk, float useCa, float useMg, float usePh,
     // toward a pH target, only gated NaOH on the CURRENT pH reading, which
     // recalculate()'s `usePh` argument already covers via phDerateWeight.
 
-    DosingPlanV2 plan = ai.recalculate(lightsOnNow, usePh);
+    // Added 2026-08-06: feeds the 7-day rolling learner's real, learned
+    // daily consumption rate into recalculate() as an alternative
+    // feedforward source -- "ready" requires both a full week of real
+    // history AND the dashboard toggle being enabled, matching exactly
+    // the same readiness check WebRoutes.cpp's GET endpoints already use
+    // for display.
+    bool alkLearnerReady = automaticDemandLearningEnabled && (alkDemandStore.count >= 7);
+    bool caLearnerReady = automaticCalciumLearningEnabled && (calciumDemandStore.count >= 7);
+    DosingPlanV2 plan = ai.recalculate(
+        lightsOnNow, usePh,
+        alkLearnerReady, alkDemandStore.recommendedDailyDemandDkh,
+        caLearnerReady, calciumDemandStore.recommendedDailyDemandPpm
+    );
     syncLegacyPlanFromV2(plan);
     currentPlan.active = true;
 

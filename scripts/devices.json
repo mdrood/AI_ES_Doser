@@ -21,7 +21,7 @@
         "customer": "Joe Test",
         "label": "AIES-00003",
         "deviceId": "reefDoser3",
-        "firmwareVersion": "T-1.0.43",
+        "firmwareVersion": "T-1.0.46",
         "chipId": "9C9E33077000",
         "macAddress": "00:70:07:33:9E:9C",
         "board": "vintlabs-devkit-v1",

@@ -212,4 +212,6 @@ then we have demand-learning-feedforward.
 then go merge everything go back to main and runt this
    git merge demand-learning-feedforward
 
-   
+   fake out 7 day learning in browser in console type:
+      fetch('/api/debug/fake-week-demand', {method: 'POST'}).then(r => r.json()).then(console.log)
+      

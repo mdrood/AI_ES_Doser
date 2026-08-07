@@ -303,7 +303,9 @@ bool updateConfidenceFromOutcome(
 
 
 
-DosingPlanV2 AIEngineV2::recalculate(bool lightsActive, float currentPh) {
+DosingPlanV2 AIEngineV2::recalculate(bool lightsActive, float currentPh,
+                                      bool alkLearnerReady, float alkLearnedDemandDkhDay,
+                                      bool caLearnerReady, float caLearnedDemandPpmDay) {
     // Added 2026-08-04: cached so ingestMeasurement()'s §3.5.3 diurnal pH
     // correction has access to the current light state without changing
     // ingestMeasurement()'s own signature (would touch every call site in
@@ -365,7 +367,28 @@ DosingPlanV2 AIEngineV2::recalculate(bool lightsActive, float currentPh) {
         // Allocator::solve() (§7 "the ONE place a rise-per-day gets
         // capped") -- that remains the real safety backstop, not a
         // second cap duplicated here.
-        float replenish = fmaxf(0.0f, -filters[p].trend);
+        // Fixed 2026-08-06: when the 7-day rolling demand learner has a
+        // full week of real history and is enabled, use ITS learned daily
+        // consumption rate as the feedforward replenishment term instead
+        // of the Kalman filter's own instantaneous trend estimate -- a
+        // rate learned from a full week of real measurements is a more
+        // stable feedforward baseline for a tank whose consumption is
+        // genuinely steady week to week, letting the system dose the
+        // known daily demand proactively instead of only reacting after
+        // the gap has already opened up. Falls back to exactly today's
+        // Kalman-trend behavior when the learner isn't ready/enabled yet,
+        // so nothing changes before 7 real days of history exist.
+        // Deliberately NOT added together with the Kalman trend value --
+        // both represent the same underlying "ongoing consumption"
+        // concept, and using both at once would double-count it.
+        float replenish;
+        if (p == P_ALK && alkLearnerReady) {
+            replenish = fmaxf(0.0f, alkLearnedDemandDkhDay);
+        } else if (p == P_CA && caLearnerReady) {
+            replenish = fmaxf(0.0f, caLearnedDemandPpmDay);
+        } else {
+            replenish = fmaxf(0.0f, -filters[p].trend);
+        }
 
         desired[p] = gapCorrection + replenish;
     }

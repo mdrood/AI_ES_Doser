@@ -548,7 +548,9 @@ public:
     // Call on every new test result or scheduled epoch (§7 architectural
     // separation — this is the "slow matrix recalculation," never called
     // from the pump-timing task).
-    DosingPlanV2 recalculate(bool lightsActive, float currentPh);
+    DosingPlanV2 recalculate(bool lightsActive, float currentPh,
+                              bool alkLearnerReady, float alkLearnedDemandDkhDay,
+                              bool caLearnerReady, float caLearnedDemandPpmDay);
 
     // Call when a real measurement arrives (manual entry or Apex/Trident).
     // Assumes the caller has already de-duplicated repeat/unchanged
