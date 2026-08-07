@@ -206,3 +206,10 @@ This should procure a user in firebase (athenticaliotn)
 
 
 
+ok doing branching for code
+so have our main stream
+then we have demand-learning-feedforward.
+then go merge everything go back to main and runt this
+   git merge demand-learning-feedforward
+
+   

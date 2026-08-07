@@ -319,7 +319,16 @@ DosingPlanV2 AIEngineV2::recalculate(bool lightsActive, float currentPh) {
     float desired[kNumParams] = {0, 0, 0, 0};
 
     struct { Recommendable* lo; Recommendable* hi; float youngMax; float matureMax; } targets[kNumParams] = {
-        { &targetAlkDkh, nullptr, 0.40f, 0.10f },   // §4.4 Alk: v1's fastAlk.maxBoostDkhDay-shaped bounds
+        // Fixed 2026-08-06: matureMax was 0.10f -- confirmed via direct
+        // tracing (not the separate, much larger 2.00 dKH/day
+        // SafetyEnvelope ceiling in Allocator.cpp, which this never came
+        // close to using) as the actual reason a mature filter's Alk
+        // correction was capped at ~0.13 dKH/day, closely matching five
+        // days of a real tank sitting stuck around 7.0-7.1 dKH against an
+        // 8.0-8.4 target. 0.35 is still well under that 2.00 ceiling, but
+        // lets a mature, confident estimate request real daily progress
+        // instead of this very conservative original default.
+        { &targetAlkDkh, nullptr, 0.40f, 0.35f },   // §4.4 Alk: v1's fastAlk.maxBoostDkhDay-shaped bounds
         { &targetPhLow,  &targetPhHigh, 0.05f, 0.02f },
         { &targetCaPpm,  nullptr, 20.0f, 5.0f },
         { &targetMgPpm,  nullptr, 15.0f, 3.0f },

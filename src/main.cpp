@@ -2177,17 +2177,6 @@ void runAiRecalculation(float useAlk, float useCa, float useMg, float usePh,
     // (v1's own mode7NaohMaxPh, still loaded/saved for the dashboard
     // elsewhere in this file) instead of a fixed constant.
     ai.safety.naohPhCeiling.updateSuggestion(mode7NaohMaxPh);
-    // TEMP DIAGNOSTIC (2026-08-05): confirming the actual live ceiling
-    // value driving Allocator.cpp's phDerateWeight, since NaOH showed up
-    // fully suppressed (A_col=0) on reefDoser3 at pH 8.21 -- a value that
-    // shouldn't fully suppress it under either the 8.60 comment-claimed
-    // default or the real 8.45 mode7NaohMaxPh default. Printed here (not
-    // just visible via the dashboard) so it shows up in the crash-loop
-    // window without needing the dashboard UI. Remove once resolved.
-    Serial.printf("NAOH PH CEILING DIAGNOSTIC: mode7NaohMaxPh=%.3f naohPhCeiling.value=%.3f\n",
-                  mode7NaohMaxPh, ai.safety.naohPhCeiling.value);
-    logger.printf("NAOH PH CEILING DIAGNOSTIC: mode7NaohMaxPh=%.3f naohPhCeiling.value=%.3f\n",
-                  mode7NaohMaxPh, ai.safety.naohPhCeiling.value);
 
     // Predict step: always runs when real time has elapsed, independent of
     // whether this cycle also has a new measurement. First-ever call (no
@@ -3187,7 +3176,14 @@ bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
 
     // Make OTA one-shot: clear the Firebase command before starting OTA so
     // stream reconnects do not replay the same /commands/ota node forever.
-    String otaCommandPath = "/devices/" + deviceID + "/commands/ota";
+    //
+    // Added 2026-08-06: cached as static -- this path is identical every
+    // single time this function runs (deviceID never changes after boot),
+    // so rebuilding it via fresh String concatenation on every call was
+    // pure unnecessary heap churn, right in a function already shown to
+    // crash under low memory. One small, free reduction in allocation
+    // pressure in exactly the place it matters most.
+    static String otaCommandPath = "/devices/" + deviceID + "/commands/ota";
     if (Firebase.deleteNode(writeFbdo, otaCommandPath.c_str())) {
         Serial.println("OTA command cleared from Firebase.");
         logger.println("OTA command cleared from Firebase.");
@@ -3196,6 +3192,45 @@ bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
         Serial.println(writeFbdo.errorReason());
         logger.print("OTA command clear failed: ");
         logger.println(writeFbdo.errorReason());
+    }
+
+    // Added 2026-08-06: diagnostic heap logging plus a defensive minimum-heap
+    // gate, right at the exact point a real device (reefDoser12) was
+    // confirmed -- via a real serial capture -- to silently reset with no
+    // error message at all, twice, always right in this same narrow window
+    // between clearing the OTA command and stopping the Firebase stream.
+    // minHeap readings nearby that failure were as low as ~38KB, which is
+    // genuinely risky territory for the SSL/TLS work both deleteNode() just
+    // did and endStream()/triggerEmergencyStop()'s own Firebase calls are
+    // about to do -- ESP32's TLS stack commonly needs 40-50KB+ of
+    // CONTIGUOUS free heap for a single handshake. This does not prevent
+    // low heap from happening, but if it's already low right here, briefly
+    // yielding gives other tasks a chance to free memory first, instead of
+    // immediately piling more SSL-heavy work on top of an already-tight
+    // heap. The exact numbers are logged either way, so the NEXT
+    // occurrence (if any) will show precisely what heap looked like at
+    // this exact moment, not an approximation from a nearby diagnostic
+    // line seconds away.
+    uint32_t heapBeforeStreamStop = ESP.getFreeHeap();
+    Serial.printf("OTA HEAP CHECK: freeHeap=%u minFreeHeap=%u (before endStream)\n",
+                  heapBeforeStreamStop, (uint32_t)ESP.getMinFreeHeap());
+    logger.printf("OTA HEAP CHECK: freeHeap=%u minFreeHeap=%u (before endStream)\n",
+                  heapBeforeStreamStop, (uint32_t)ESP.getMinFreeHeap());
+
+    static const uint32_t OTA_MIN_SAFE_HEAP_BYTES = 45000UL;
+    if (heapBeforeStreamStop < OTA_MIN_SAFE_HEAP_BYTES) {
+        Serial.printf("OTA HEAP LOW: %u bytes free, below %u safety floor -- yielding briefly before continuing.\n",
+                      heapBeforeStreamStop, OTA_MIN_SAFE_HEAP_BYTES);
+        logger.printf("OTA HEAP LOW: %u bytes free, below %u safety floor -- yielding briefly before continuing.\n",
+                      heapBeforeStreamStop, OTA_MIN_SAFE_HEAP_BYTES);
+        for (int i = 0; i < 5; ++i) {
+            esp_task_wdt_reset();
+            delay(200);
+            yield();
+        }
+        uint32_t heapAfterWait = ESP.getFreeHeap();
+        Serial.printf("OTA HEAP CHECK: freeHeap=%u after brief yield (was %u)\n", heapAfterWait, heapBeforeStreamStop);
+        logger.printf("OTA HEAP CHECK: freeHeap=%u after brief yield (was %u)\n", heapAfterWait, heapBeforeStreamStop);
     }
 
     // Stop the active Firebase stream before beginning the manifest and binary
@@ -4528,10 +4563,23 @@ void pushDailyReport() {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo, 10)) return;
 
+    // Fixed 2026-08-05: this function only ever runs in the 10-minute
+    // window right after midnight (see its caller) -- meaning
+    // getLocalTime() here always returns the NEW day that just started,
+    // not the day whose totals (dailyStats/dailyDoseTotals) are actually
+    // being reported. Every record got stamped with the date it was
+    // WRITTEN (today) instead of the date it SUMMARIZES (yesterday).
+    // Subtracting one day here corrects that -- the history record for
+    // "yesterday" is written under yesterday's actual date.
+    time_t nowEpoch = mktime(&timeinfo);
+    time_t yesterdayEpoch = nowEpoch - 86400;
+    struct tm reportDay;
+    localtime_r(&yesterdayEpoch, &reportDay);
+
     char monthFolder[8]; // YYYY-MM
     char dayFolder[3];   // DD
-    strftime(monthFolder, sizeof(monthFolder), "%Y-%m", &timeinfo);
-    strftime(dayFolder, sizeof(dayFolder), "%d", &timeinfo);
+    strftime(monthFolder, sizeof(monthFolder), "%Y-%m", &reportDay);
+    strftime(dayFolder, sizeof(dayFolder), "%d", &reportDay);
 
     float count = (float)dailyStats.count;
     float avgPh   = dailyStats.phSum / count;
@@ -5042,6 +5090,18 @@ void loop() {
     if (!anyDoserPumpRunning() && !apexTlsReservedOrCoolingDown()) {
         logger.loop();
     }
+
+    // Fixed 2026-08-05: logger.loop() can attempt a real network upload
+    // with its own 8-second bounded timeout. The earlier handleClient()
+    // call above (before addCurrentAiPlanToBuckets()) doesn't help a
+    // request that arrives DURING this specific window -- it still had to
+    // wait for everything below to finish too, before the original
+    // end-of-loop call would catch it. Confirmed via Network tab: /api/status
+    // (served promptly by the earlier fix) dropped to 34ms, but the initial
+    // document request -- the one most likely to land at an unlucky moment
+    // on a fresh page load -- still showed ~3.9s almost entirely as
+    // "waiting for server response," pointing at exactly this kind of gap.
+    server.handleClient();
 
     if (millis() - lastGoogleDriveDiagMs >= GDRIVE_DIAG_INTERVAL_MS) {
         lastGoogleDriveDiagMs = millis();

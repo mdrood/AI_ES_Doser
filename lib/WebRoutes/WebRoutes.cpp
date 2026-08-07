@@ -19,12 +19,6 @@
 // Safety Rise Limits" card for the corrected, accurately-scoped UI).
 
 void handleGetStatus() {
-    // TEMP DIAGNOSTIC (2026-08-05): timing instrumentation to locate the
-    // remaining ~4-5s delay after fixing the getLocalTime() default-
-    // timeout issue (11s -> 4-5s). Reading every function this handler
-    // calls found no second blocking call -- this measures where the
-    // actual time goes instead of guessing further. Remove once resolved.
-    unsigned long __t0 = millis();
     JsonDocument doc;
     doc["ok"] = true;
     doc["deviceId"] = deviceID;
@@ -260,19 +254,12 @@ void handleGetStatus() {
         reservoir["severe"] = chemicalCapacityGal[i] > 0.0f && chemicalRemainingMl[i] <= (0.5f * ML_PER_GALLON);
     }
     
-    unsigned long __t1 = millis();
     String response;
     serializeJson(doc, response);
-    unsigned long __t2 = millis();
     server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     server.sendHeader("Pragma", "no-cache");
     server.sendHeader("Expires", "0");
     server.send(200, "application/json", response);
-    unsigned long __t3 = millis();
-    Serial.printf("STATUS TIMING: build=%lums serialize=%lums send=%lums total=%lums bytes=%u\n",
-                  __t1 - __t0, __t2 - __t1, __t3 - __t2, __t3 - __t0, response.length());
-    logger.printf("STATUS TIMING: build=%lums serialize=%lums send=%lums total=%lums bytes=%u\n",
-                  __t1 - __t0, __t2 - __t1, __t3 - __t2, __t3 - __t0, response.length());
 }
 
 // NOTE: handlePostVolume was defined in main.cpp but never registered
@@ -1143,6 +1130,20 @@ void handleRoot() {
     // a plain string; the browser transparently decompresses it as long
     // as Content-Encoding is sent BEFORE the body, which is why
     // sendHeader() comes first here.
+    //
+    // Fixed 2026-08-05 (second issue, found after the above still left a
+    // measured ~3.7s document transfer time): WebServer.h sends large
+    // responses in HTTP_DOWNLOAD_UNIT_SIZE (1436-byte) chunks -- this
+    // 47.5KB payload is ~33 of them. Nagle's algorithm (which delays small
+    // outgoing packets to batch them) combined with TCP delayed-ACK on the
+    // receiving side is a well-documented pairing that can add tens to
+    // low-hundreds of milliseconds of pure waiting per chunk; 33 chunks at
+    // even ~100ms each lines up closely with the measured 3.7s. client()
+    // is WebServer's own confirmed-real public accessor (verified against
+    // the actual arduino-esp32 WebServer.h source, not guessed) for the
+    // underlying connection -- disabling Nagle's algorithm here means each
+    // chunk is sent immediately instead of waiting to batch with the next.
+    server.client().setNoDelay(true);
     server.sendHeader(F("Content-Encoding"), F("gzip"));
     server.send_P(200, "text/html", (const char*)kIndexHtmlGz, kIndexHtmlGzLen);
 }
@@ -1822,6 +1823,79 @@ void handlePostPhTargetRange() {
     server.send(200, "application/json", "{\"ok\":true}");
 }
 
+// Restored 2026-08-06 -- see the route-registration comment above for the
+// full explanation of why these were removed on 2026-08-04 and why
+// they're back now regardless.
+void handleGetAlkDemandLearning() {
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["enabled"] = automaticDemandLearningEnabled;
+    doc["daysCollected"] = (int)min((uint8_t)7, alkDemandStore.count);
+    doc["ready"] = alkDemandStore.count >= 7;
+    doc["recommendedDemandDkhDay"] = alkDemandStore.recommendedDailyDemandDkh;
+    doc["recommendedP4MlDay"] = alkDemandStore.lastRecommendedP4MlDay;
+    doc["currentP4BaselineMlDay"] = baselineMgMlDay;
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response);
+}
+
+void handlePostAlkDemandLearning() {
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
+        return;
+    }
+    JsonDocument doc;
+    if (deserializeJson(doc, server.arg("plain"))) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
+        return;
+    }
+    if (!doc.containsKey("enabled")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing 'enabled' field\"}");
+        return;
+    }
+    automaticDemandLearningEnabled = doc["enabled"].as<bool>();
+    saveAlkDemandLearningSetting();
+    Serial.printf("ALK 7-DAY AUTO LEARNING: %s (dashboard)\n", automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
+    logger.printf("ALK 7-DAY AUTO LEARNING: %s (dashboard)\n", automaticDemandLearningEnabled ? "ENABLED" : "DISABLED");
+    server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleGetCalciumDemandLearning() {
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["enabled"] = automaticCalciumLearningEnabled;
+    doc["daysCollected"] = (int)calciumDemandStore.count;
+    doc["ready"] = calciumDemandStore.count >= 7;
+    doc["recommendedDemandPpmDay"] = calciumDemandStore.recommendedDailyDemandPpm;
+    doc["recommendedP2MlDay"] = calciumDemandStore.lastRecommendedP2MlDay;
+    doc["currentP2BaselineMlDay"] = baselineCacl2MlDay;
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response);
+}
+
+void handlePostCalciumDemandLearning() {
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
+        return;
+    }
+    JsonDocument doc;
+    if (deserializeJson(doc, server.arg("plain"))) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
+        return;
+    }
+    if (!doc.containsKey("enabled")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing 'enabled' field\"}");
+        return;
+    }
+    automaticCalciumLearningEnabled = doc["enabled"].as<bool>();
+    saveCalciumDemandLearningSetting();
+    Serial.printf("CALCIUM 7-DAY AUTO LEARNING: %s (dashboard)\n", automaticCalciumLearningEnabled ? "ENABLED" : "DISABLED");
+    logger.printf("CALCIUM 7-DAY AUTO LEARNING: %s (dashboard)\n", automaticCalciumLearningEnabled ? "ENABLED" : "DISABLED");
+    server.send(200, "application/json", "{\"ok\":true}");
+}
+
 void registerWebRoutes() {
     // ---------------- LOCAL DASHBOARD ROUTES ----------------
     server.on("/", HTTP_GET, handleRoot);
@@ -1877,6 +1951,23 @@ void registerWebRoutes() {
     server.on("/api/setup-wizard/reset", HTTP_POST, handlePostSetupWizardReset);
     server.on("/api/config/chemistry-targets", HTTP_POST, handlePostChemistryTargets);
     server.on("/api/config/ph-target-range", HTTP_POST, handlePostPhTargetRange);
+
+    // Restored 2026-08-06: these four were removed 2026-08-04 on the
+    // reasoning that they didn't touch anything live in v2. Confirmed via
+    // direct inspection of DemandLearning.cpp that this was only half
+    // true -- the underlying learner (recordCompletedDayAndLearn) is real,
+    // working code that adjusts and persists baselineMgMlDay/baselineCacl2MlDay
+    // by up to +/-10% per completed rolling week. It's just that those
+    // specific baseline variables are themselves v1 leftovers the real v2
+    // engine (AI_EngineV2.cpp, Allocator.cpp) never reads -- confirmed via
+    // direct search, zero references in either file. Restoring the toggle
+    // here regardless, since the customer explicitly wants the learner
+    // itself enabled and visible on the dashboard, independent of whether
+    // its output currently feeds v2's real dosing math.
+    server.on("/api/config/alk-demand-learning", HTTP_GET, handleGetAlkDemandLearning);
+    server.on("/api/config/alk-demand-learning", HTTP_POST, handlePostAlkDemandLearning);
+    server.on("/api/config/calcium-demand-learning", HTTP_GET, handleGetCalciumDemandLearning);
+    server.on("/api/config/calcium-demand-learning", HTTP_POST, handlePostCalciumDemandLearning);
 
     server.on("/api/calibration", HTTP_POST, handlePostCalibration);
     server.on("/api/calibration-run", HTTP_POST, handlePostCalibrationRun);

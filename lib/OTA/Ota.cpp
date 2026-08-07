@@ -80,6 +80,18 @@ bool OtaManager::downloadManifest(const String& manifestUrl, JsonDocument& doc) 
     Serial.printf("OTA manifest URL: %s\n", manifestUrl.c_str());
 
     HTTPClient http;
+    // Fixed 2026-08-06: this call had no timeout at all, unlike the
+    // firmware-download HTTPClient instance below (which explicitly sets
+    // 15000ms on both). A hang here -- from a DNS hiccup or slow response
+    // reaching the manifest host, the same general class of problem
+    // chased and fixed on reefDoser3's Firebase connection last night --
+    // would block loop() indefinitely with no recovery, since nothing
+    // after this point (including the stall-detection logic further down
+    // in updateFirmware()) ever gets a chance to run. Matches reports of
+    // OTA attempts that go silent entirely on a live customer's real-world
+    // network but never reproduce on a fresh test device's clean local one.
+    http.setConnectTimeout(15000);
+    http.setTimeout(15000);
     http.begin(manifestUrl);
     int httpCode = http.GET();
 
