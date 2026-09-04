@@ -134,9 +134,40 @@ void ::Allocator::nnls(
         int k = 0;
         for (int i = 0; i < n; i++) if (inPassive[i]) passive[k++] = i;
 
+        // Fixed 2026-08-04 (third bug in this function -- root cause of
+        // BOTH prior symptoms, not a new/separate one). solvePassiveSet()
+        // was always given the raw, original `b` (desiredCorrectionPerDay)
+        // to solve against -- with NO subtraction of what's already being
+        // delivered by variables already fixedAtBound. Confirmed against a
+        // real reefDoser12 log from a live customer tank: Kalkwasser,
+        // Sodium Hydroxide, AND Alkalinity were each independently promoted
+        // over the course of a solve and each one solved as if it ALONE
+        // had to satisfy the entire ~0.39 dKH/day Alk target -- with zero
+        // awareness the others were already fixed and already contributing
+        // real correction toward that same dimension. Combined, three
+        // chemicals each individually sized to fully satisfy the target
+        // delivered roughly 3x the actual desired correction -- a real,
+        // measured Alk spike (8.89 -> 10.07 dKH) on a live reef tank.
+        // Standard bounded-least-squares requires solving the free
+        // (passive) variables against the RESIDUAL -- the target minus
+        // whatever's already fixed elsewhere -- not the raw original
+        // target. That subtraction never existed anywhere in this
+        // function. This is the actual defect both of yesterday's fixes
+        // missed: they corrected which SET a variable is allowed to be
+        // in, but never corrected what target value the solve for that
+        // set is computed against.
+        float bResidual[kNumParams];
+        for (int r = 0; r < kNumParams; r++) {
+            float fixedContribution = 0.0f;
+            for (int i = 0; i < n; i++) {
+                if (fixedAtBound[i]) fixedContribution += A[r][i] * x[i];
+            }
+            bResidual[r] = b[r] - fixedContribution;
+        }
+
         float xTry[kMaxChemicals];
         memcpy(xTry, x, sizeof(xTry));
-        solvePassiveSet(A, b, passive, k, xTry);
+        solvePassiveSet(A, bResidual, passive, k, xTry);
 
         bool changed = false;
         // Clip passive-set solution into bounds; demote violators on EITHER

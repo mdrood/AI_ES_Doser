@@ -212,4 +212,8 @@ then we have demand-learning-feedforward.
 then go merge everything go back to main and runt this
    git merge demand-learning-feedforward
 
-   
+   namecheap.com
+   Our website aidoser.tech is paypal
+
+
+   email is soho email mrood@aidoser.tech

@@ -108,11 +108,48 @@ static bool parseApexStatusJson(const String& payload, ApexLatest& out) {
   if (payload.length() < 10) return false;
   out = ApexLatest();
 
-  // Increase the filter/size for large Apex deployments
-  // For your 14-foot reef, 96KB is a safe bet.
-  DynamicJsonDocument doc(96 * 1024); 
-  
-  DeserializationError err = deserializeJson(doc, payload);
+  // Fixed 2026-08-13: this used to allocate a flat 96KB buffer fresh on
+  // every single poll, regardless of how much of the real payload this
+  // code actually reads. reefDoser12 polls Apex constantly (visible as
+  // CHEMISTRY REPEAT POLL in the logs, happening far more often than
+  // Trident actually produces a new real test) -- that's a large,
+  // repeated heap allocation on a very hot path, a real and plausible
+  // contributor to the heap pressure that caused reefDoser12's confirmed
+  // OTA crash earlier tonight, and a likely factor in its repeated
+  // reboots more generally (reefDoser1, which never calls this function
+  // at all since it doesn't use Apex, has stayed reboot-free for 3+ days
+  // on the identical firmware).
+  //
+  // A DeserializationOption::Filter tells the parser to only retain the
+  // specific fields listed below -- everything else in the real payload
+  // (however large) gets skipped during parsing rather than stored, so
+  // memory use scales with what's actually kept, not with the incoming
+  // payload's total size. The filter mirrors both JSON shapes this
+  // function already handles (istat-wrapped and flat), since an unmatched
+  // branch in the filter is simply ignored, not an error.
+  StaticJsonDocument<256> filter;
+  filter["istat"]["date"] = true;
+  JsonObject filterIstatInput = filter["istat"]["inputs"].createNestedObject();
+  filterIstatInput["did"] = true;
+  filterIstatInput["type"] = true;
+  filterIstatInput["name"] = true;
+  filterIstatInput["value"] = true;
+  filter["istat"]["outputs"].createNestedObject()["intensity"] = true;
+
+  filter["system"]["date"] = true;
+  JsonObject filterInput = filter["inputs"].createNestedObject();
+  filterInput["did"] = true;
+  filterInput["type"] = true;
+  filterInput["name"] = true;
+  filterInput["value"] = true;
+  filter["outputs"].createNestedObject()["intensity"] = true;
+
+  // 8KB is generous for the filtered fields across even a large multi-probe
+  // Apex system -- a substantial reduction from the previous 96KB, since
+  // only did/type/name/value per input and intensity per output are kept.
+  DynamicJsonDocument doc(8 * 1024);
+
+  DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
   if (err) {
     Serial.printf("APEX JSON parse error: %s\n", err.c_str());
     // If it still says IncompleteInput, the String 'payload' itself 

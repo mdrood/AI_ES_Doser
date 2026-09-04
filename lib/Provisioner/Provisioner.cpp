@@ -1,4 +1,6 @@
 #include "Provisioner.h"
+#include <vector>
+#include <algorithm>
 
 Provisioner::Provisioner()
     : _server(80),
@@ -76,6 +78,10 @@ void Provisioner::_setupRoutes() {
     _server.on("/save", HTTP_POST, std::bind(&Provisioner::_handleSave, this));
     _server.on("/connect-status", HTTP_GET, std::bind(&Provisioner::_handleConnectStatus, this));
 
+    // Added 2026-08-06: lets the setup page show a list of nearby networks
+    // to pick from instead of requiring the SSID to be typed in by hand.
+    _server.on("/scan", HTTP_GET, std::bind(&Provisioner::_handleScan, this));
+
     // Fixed 2026-07-25: without this, iOS/Android's captive-portal probe
     // requests (e.g. captive.apple.com/hotspot-detect.html,
     // connectivitycheck.gstatic.com/generate_204) hit a plain 404 instead
@@ -97,6 +103,64 @@ void Provisioner::_handleNotFound() {
     _server.send(302, "text/plain", "");
 }
 
+// Added 2026-08-06: lists nearby WiFi networks so the setup page can offer
+// a pick-from-a-list dropdown instead of requiring the SSID to be typed by
+// hand. Uses the synchronous WiFi.scanNetworks() -- this blocks for a few
+// seconds, but that's an acceptable, normal tradeoff during one-time device
+// setup (before any water dosing is happening at all), not something
+// running during live operation. Deduplicates repeated SSIDs (common with
+// mesh routers broadcasting the same name from multiple access points,
+// which would otherwise show the same network several times) by keeping
+// only the strongest-signal instance of each, and sorts strongest-first so
+// the customer's own router is likely to be at or near the top.
+void Provisioner::_handleScan() {
+    int n = WiFi.scanNetworks();
+
+    struct NetworkEntry {
+        String ssid;
+        int32_t rssi;
+        bool open;
+    };
+    std::vector<NetworkEntry> networks;
+
+    for (int i = 0; i < n; i++) {
+        String ssid = WiFi.SSID(i);
+        if (ssid.length() == 0) continue; // hidden networks aren't pickable from a list anyway
+
+        bool found = false;
+        for (auto& existing : networks) {
+            if (existing.ssid == ssid) {
+                found = true;
+                if (WiFi.RSSI(i) > existing.rssi) {
+                    existing.rssi = WiFi.RSSI(i);
+                    existing.open = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+                }
+                break;
+            }
+        }
+        if (!found) {
+            networks.push_back({ssid, WiFi.RSSI(i), WiFi.encryptionType(i) == WIFI_AUTH_OPEN});
+        }
+    }
+
+    std::sort(networks.begin(), networks.end(), [](const NetworkEntry& a, const NetworkEntry& b) {
+        return a.rssi > b.rssi;
+    });
+
+    String json = "[";
+    for (size_t i = 0; i < networks.size(); i++) {
+        if (i > 0) json += ",";
+        String escapedSsid = networks[i].ssid;
+        escapedSsid.replace("\\", "\\\\");
+        escapedSsid.replace("\"", "\\\"");
+        json += "{\"ssid\":\"" + escapedSsid + "\",\"rssi\":" + String(networks[i].rssi) + ",\"open\":" + (networks[i].open ? "true" : "false") + "}";
+    }
+    json += "]";
+
+    WiFi.scanDelete();
+    _server.send(200, "application/json", json);
+}
+
 void Provisioner::_handleRoot() {
     String html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1'>";
     html += "<style>";
@@ -109,6 +173,10 @@ void Provisioner::_handleRoot() {
     html += "<h1>ReefDoser Setup</h1>";
     html += "<form action='/save' method='POST'>";
     html += "<h3>WiFi Settings</h3>";
+    html += "<div id='scanStatus' style='color:#666;font-size:0.9em;margin-bottom:4px;'>Scanning for nearby networks...</div>";
+    html += "<select id='ssidPicker' onchange=\"if(this.value)document.getElementsByName('ssid')[0].value=this.value;\">";
+    html += "<option value=''>-- Select a network (or type below) --</option>";
+    html += "</select>";
     html += "SSID:<br><input type='text' name='ssid' required><br>";
     html += "Password:<br><input type='password' name='pass'><br>";
     html += "<h3>Pump Calibration (ml/min)</h3>";
@@ -118,7 +186,34 @@ void Provisioner::_handleRoot() {
     html += "Pump 3:<br><input type='number' step='0.1' name='p3' value='665'><br>";
     html += "<input type='submit' value='Save and Connect'>";
     html += "</form>";
-    html += "</div></body></html>";
+    html += "</div>";
+
+    html += "<script>";
+    html += "(async function(){";
+    html += "  const statusEl = document.getElementById('scanStatus');";
+    html += "  const picker = document.getElementById('ssidPicker');";
+    html += "  try {";
+    html += "    const r = await fetch('/scan');";
+    html += "    const networks = await r.json();";
+    html += "    if (networks.length === 0) {";
+    html += "      statusEl.textContent = 'No networks found nearby -- type your SSID below.';";
+    html += "    } else {";
+    html += "      statusEl.textContent = networks.length + ' network' + (networks.length === 1 ? '' : 's') + ' found. Not seeing yours? Type it in below instead.';";
+    html += "      for (const net of networks) {";
+    html += "        const opt = document.createElement('option');";
+    html += "        opt.value = net.ssid;";
+    html += "        const bars = net.rssi > -60 ? '\\u2588\\u2588\\u2588' : (net.rssi > -75 ? '\\u2588\\u2588\\u2591' : '\\u2588\\u2591\\u2591');";
+    html += "        opt.textContent = net.ssid + '  ' + bars + (net.open ? '' : '  \\uD83D\\uDD12');";
+    html += "        picker.appendChild(opt);";
+    html += "      }";
+    html += "    }";
+    html += "  } catch (e) {";
+    html += "    statusEl.textContent = 'Could not scan for networks -- type your SSID below.';";
+    html += "  }";
+    html += "})();";
+    html += "</script>";
+
+    html += "</body></html>";
 
     _server.send(200, "text/html", html);
 }

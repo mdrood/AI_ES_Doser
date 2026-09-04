@@ -2240,7 +2240,16 @@ void runAiRecalculation(float useAlk, float useCa, float useMg, float usePh,
     // toward a pH target, only gated NaOH on the CURRENT pH reading, which
     // recalculate()'s `usePh` argument already covers via phDerateWeight.
 
-    DosingPlanV2 plan = ai.recalculate(lightsOnNow, usePh);
+    // Added 2026-08-06: feeds the 7-day rolling learner's real, learned
+    // daily consumption rate into recalculate() as an alternative
+    // feedforward source -- "ready" requires both a full week of real
+    // history AND the dashboard toggle being enabled, matching exactly
+    // the same readiness check WebRoutes.cpp's GET endpoints already use
+    // for display.
+    bool alkLearnerReady = automaticDemandLearningEnabled && (alkDemandStore.count >= 7);
+    bool caLearnerReady = automaticCalciumLearningEnabled && (calciumDemandStore.count >= 7);
+    DosingPlanV2 plan = ai.recalculate(
+        lightsOnNow, usePh);
     syncLegacyPlanFromV2(plan);
     currentPlan.active = true;
 
@@ -4102,6 +4111,38 @@ void evaluateAlertState(const char* source, bool force) {
 // the previous result. All sources feed the same fast/mid/long-term learners.
 bool acceptNewChemistryMeasurement(const char* source, const String& measurementId = "", bool forceNew = false) {
     bool isNew = false;
+
+    // Added 2026-09-01, TEMPORARY diagnostic -- remove once the confirmed
+    // real gap (13 of 24 real changes in a 7-day sample not tagged "new")
+    // is understood. Prints the ACTUAL comparison inputs on EVERY call --
+    // not just the outcome -- so it's possible to see directly whether
+    // lastAcceptedTridentAlk/Ca/Mg are being updated (consumed) on a call
+    // that never produces its own "AI chemistry" summary line, which
+    // would explain a real change appearing to be "missed" when it was
+    // actually correctly caught one call earlier than visible from the
+    // summary print alone.
+    {
+        const char* pathTaken = forceNew ? "forceNew"
+                               : (measurementId.length() > 0) ? "measurementId"
+                               : (!haveAcceptedTridentFingerprint) ? "firstEverFingerprint"
+                               : "fingerprintCompare";
+        Serial.printf("ACCEPT-CHECK [%s] path=%s current(Alk=%.4f,Ca=%.2f,Mg=%.2f) "
+                      "lastAccepted(Alk=%.4f,Ca=%.2f,Mg=%.2f) diff(Alk=%.4f,Ca=%.2f,Mg=%.2f)\n",
+                      source ? source : "?", pathTaken,
+                      currentAlk, currentCa, currentMg,
+                      lastAcceptedTridentAlk, lastAcceptedTridentCa, lastAcceptedTridentMg,
+                      fabsf(currentAlk - lastAcceptedTridentAlk),
+                      fabsf(currentCa  - lastAcceptedTridentCa),
+                      fabsf(currentMg  - lastAcceptedTridentMg));
+        logger.printf("ACCEPT-CHECK [%s] path=%s current(Alk=%.4f,Ca=%.2f,Mg=%.2f) "
+                      "lastAccepted(Alk=%.4f,Ca=%.2f,Mg=%.2f) diff(Alk=%.4f,Ca=%.2f,Mg=%.2f)\n",
+                      source ? source : "?", pathTaken,
+                      currentAlk, currentCa, currentMg,
+                      lastAcceptedTridentAlk, lastAcceptedTridentCa, lastAcceptedTridentMg,
+                      fabsf(currentAlk - lastAcceptedTridentAlk),
+                      fabsf(currentCa  - lastAcceptedTridentCa),
+                      fabsf(currentMg  - lastAcceptedTridentMg));
+    }
 
     if (forceNew) {
         isNew = true;

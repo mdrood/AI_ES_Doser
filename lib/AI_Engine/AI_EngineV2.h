@@ -471,7 +471,18 @@ public:
     // roughly a month of real testing at a realistic every-2-3-day cadence
     // without being large -- deliberately NOT one entry per day, since
     // real testing is never that regular in practice.
-    static constexpr int kHistoryCapacity = 12;
+    // Fixed 2026-09-01: 12 was sized for a rough guess ("every 2-3 days"),
+    // never checked against real cadence. First correction (64) used a
+    // figure inferred from one device's logs (~1.1 new measurements/day)
+    // -- but the owner confirmed the actual, intended Apex/Trident test
+    // cadence is every 6 hours (4/day), and the buffer needs to be sized
+    // for that real design cadence, not however many happened to pass a
+    // specific device's change-detection gate in one log sample. At 4/day,
+    // even 64 slots only spans 16 days -- still short of a real 30-day
+    // month window. 200 comfortably covers 30+ days at 4/day with real
+    // margin (35+ days), and still trivial memory (each HistoryEntry is
+    // ~12 bytes; 200 * 4 params * 12B ≈ 9.6KB).
+    static constexpr int kHistoryCapacity = 200;
     HistoryEntry history[kNumParams][kHistoryCapacity];
     int historyNextSlot[kNumParams] = {0, 0, 0, 0};
     float totalElapsedDays = 0.0f; // monotonic clock for history timestamps, incremented by advanceTime()
@@ -638,6 +649,15 @@ public:
     // for no new information.
     bool saveState();
     bool restoreState();
+    // Added 2026-09-02: split out of saveState()/restoreState() -- see
+    // PersistedHistoryV1's comment further down for why the Week/Month
+    // history buffer moved to its own LittleFS file instead of sharing
+    // the small NVS blob these two methods still use for Kalman/
+    // confidence state. Called internally by saveState()/restoreState();
+    // exposed here in case a caller ever needs to save/restore history
+    // independently of the rest of the engine's state.
+    bool saveHistoryState();
+    bool restoreHistoryState();
 };
 
 // -----------------------------------------------------------------------
@@ -655,31 +675,50 @@ struct PersistedChemicalConfidence {
 
 struct PersistedStateV1 {
     static constexpr uint32_t kMagic = 0xA1E2C0DEu;
-    static constexpr uint16_t kSchemaVersion = 6; // bumped 2026-08-04: added
-    // history[]/historyNextSlot[]/totalElapsedDays (§4.2/§4.3 Week/Month
-    // trend buffer) as new fields. Found and fixed as a real, direct gap:
-    // this buffer was originally session-only, but reefDoser3's own boot
-    // history shows well over a dozen reboots in a single night (OTA
-    // pushes, crashes, power cycles) -- a 7/30-day rolling window that
-    // resets on every single reboot could realistically never accumulate
-    // enough real data to ever report anything at all on a device that
-    // reboots this often. Same non-negotiable persistence requirement
-    // this file's own comment already states for the Kalman filter state
-    // itself applies here too: "repeated reboots... must not silently
-    // reset the system back to 'new tank' behavior." An old pre-v6 blob
-    // has no history data to lose -- restoreState() rejecting it and
-    // starting the Week/Month buffer fresh is the correct, honest outcome
-    // for a genuinely new field, not a regression.
+    static constexpr uint16_t kSchemaVersion = 8; // bumped 2026-09-02: the
+    // history[]/historyNextSlot[]/totalElapsedDays fields (added in v6,
+    // enlarged in v7) are REMOVED from this struct entirely and moved to
+    // their own separate LittleFS file (see PersistedHistoryV1 below).
+    // Real, confirmed bug found on a live customer device (reefDoser1,
+    // same chip/partition layout as reefDoser12): v7's ~10KB combined
+    // struct was too large to fit as an NVS blob at all on this
+    // partition scheme -- "nvs_set_blob fail: state_v1 NOT_ENOUGH_SPACE"
+    // -- meaning the Kalman filter state and confidence values (which
+    // genuinely belong in small, fast NVS) were being silently prevented
+    // from saving at all, every single time, by being bundled together
+    // with data that was always going to keep growing (history)  and
+    // never belonged in NVS to begin with. This struct now only holds
+    // what's actually small and NVS-appropriate; the history buffer uses
+    // LittleFS instead, the same storage this codebase already uses for
+    // chemicals.json and the demand-learning history files -- genuine
+    // files with real available space, not a cramped key-value blob.
+    // A pre-v8 blob's layout doesn't match this struct at all -- a clean
+    // reset here is unavoidable and correct, same as every prior bump.
 
     uint32_t magic = kMagic;
     uint16_t schemaVersion = kSchemaVersion;
     ParamKalmanState filters[kNumParams];
     uint8_t numConfidenceEntries = 0;
     PersistedChemicalConfidence confidenceByName[kMaxChemicals];
-    // Added 2026-08-04, see schemaVersion comment above.
+    // CRC32 is stored as a separate NVS key alongside this blob (see .cpp),
+    // not as a member here, so the checksum never covers itself.
+};
+
+// Added 2026-09-02: the Week/Month history buffer's own persistence,
+// split out of PersistedStateV1 -- see that struct's schemaVersion
+// comment for the full reasoning. Written to and read from a LittleFS
+// file (path defined in the .cpp), not NVS. Kept as its own small,
+// versioned, checksummed struct -- same defensive pattern as the NVS
+// blob (magic/schema/CRC), just on a different, more appropriately-sized
+// storage medium.
+struct PersistedHistoryV1 {
+    static constexpr uint32_t kMagic = 0xA1E2401Au;
+    static constexpr uint16_t kSchemaVersion = 1;
+
+    uint32_t magic = kMagic;
+    uint16_t schemaVersion = kSchemaVersion;
     AIEngineV2::HistoryEntry history[kNumParams][AIEngineV2::kHistoryCapacity];
     int historyNextSlot[kNumParams] = {0, 0, 0, 0};
     float totalElapsedDays = 0.0f;
-    // CRC32 is stored as a separate NVS key alongside this blob (see .cpp),
-    // not as a member here, so the checksum never covers itself.
+    uint32_t crc = 0; // unlike the NVS blob, this lives inside the file itself, computed over everything above it
 };

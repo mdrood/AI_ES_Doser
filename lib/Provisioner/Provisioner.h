@@ -33,6 +33,7 @@ private:
     void _handleSave();
     void _handleConnectStatus();
     void _handleNotFound();
+    void _handleScan();
 };
 
 #endif

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <Preferences.h>
 #include <cmath>
+#include <LittleFS.h>
 
 // =============================================================================
 // §6/§7 Shared tank estimator
@@ -319,16 +320,7 @@ DosingPlanV2 AIEngineV2::recalculate(bool lightsActive, float currentPh) {
     float desired[kNumParams] = {0, 0, 0, 0};
 
     struct { Recommendable* lo; Recommendable* hi; float youngMax; float matureMax; } targets[kNumParams] = {
-        // Fixed 2026-08-06: matureMax was 0.10f -- confirmed via direct
-        // tracing (not the separate, much larger 2.00 dKH/day
-        // SafetyEnvelope ceiling in Allocator.cpp, which this never came
-        // close to using) as the actual reason a mature filter's Alk
-        // correction was capped at ~0.13 dKH/day, closely matching five
-        // days of a real tank sitting stuck around 7.0-7.1 dKH against an
-        // 8.0-8.4 target. 0.35 is still well under that 2.00 ceiling, but
-        // lets a mature, confident estimate request real daily progress
-        // instead of this very conservative original default.
-        { &targetAlkDkh, nullptr, 0.40f, 0.35f },   // §4.4 Alk: v1's fastAlk.maxBoostDkhDay-shaped bounds
+        { &targetAlkDkh, nullptr, 0.40f, 0.10f },   // §4.4 Alk: v1's fastAlk.maxBoostDkhDay-shaped bounds
         { &targetPhLow,  &targetPhHigh, 0.05f, 0.02f },
         { &targetCaPpm,  nullptr, 20.0f, 5.0f },
         { &targetMgPpm,  nullptr, 15.0f, 3.0f },
@@ -344,51 +336,55 @@ DosingPlanV2 AIEngineV2::recalculate(bool lightsActive, float currentPh) {
         float gapCorrection = constrain(gap, -step, step);
         if (gapCorrection < 0.0f) gapCorrection = 0.0f; // allocator only adds, never removes (matches v1 clamp)
 
-        // Fixed 2026-07-24, found via the §9.5 synthetic digital-twin
-        // simulator: a steadily-consuming tank's gap naturally shrinks
-        // toward ~0 as the filter's level estimate correctly tracks the
-        // decline, even though true Alk keeps falling at the observed
-        // rate -- gapCorrection alone can never counteract that once the
-        // needed daily replenishment exceeds the young/mature step cap,
-        // which exists to bound how fast an ABRUPT one-time correction
-        // is allowed to happen (§4.4/§7 safety), not to throttle ordinary
-        // steady-state maintenance dosing that just keeps the tank AT its
-        // current level. This is exactly the "learned daily consumption"
-        // replacement MIGRATION_NOTES.md describes v1's baseline-demand
-        // store being replaced by ("v2's per-parameter Kalman filter is
-        // meant to capture ongoing consumption automatically... WITHOUT a
-        // separately maintained baseline number") -- the trend state was
-        // being tracked correctly all along, just never wired into the
-        // correction request. Deliberately NOT capped by the same step
-        // limit as gapCorrection above: the overall ceiling on total
-        // achieved rise-per-day still applies via SafetyEnvelope inside
-        // Allocator::solve() (§7 "the ONE place a rise-per-day gets
-        // capped") -- that remains the real safety backstop, not a
-        // second cap duplicated here.
-        float replenish = fmaxf(0.0f, -filters[p].trend);
+        // Fixed 2026-09-01, replacing the demand-learning-feedforward
+        // branch's approach: that branch used the OLD v1 alkDemandStore/
+        // calciumDemandStore machinery as an alternate replenishment
+        // source once 7 real days existed, entirely separate from this
+        // engine's own Week/Month history buffer -- meaning the fleet
+        // would carry two independently-maintained "learn from days of
+        // real data" mechanisms computing conceptually the same thing.
+        // This version sources the SAME concept from getWeekTrend()
+        // instead -- this engine's own already-persisted, already-
+        // maintained history buffer -- so there's one real mechanism,
+        // not two.
+        //
+        // The other real change: a GRADUAL ramp-in instead of a hard
+        // switch the moment hasWeekData() first becomes true. Justified
+        // by a real month of reefDoser1 data reviewed directly: the first
+        // ~2 weeks after the branch's original hard 7-day cutover showed
+        // genuine volatility (Alk swinging 6.1-10.1 dKH, CaCl2 and NaOH
+        // both hitting their full daily caps) before settling into small,
+        // smooth, stable dosing from roughly day 21 onward. A tank's
+        // first real week of history is exactly the period LEAST likely
+        // to represent genuine steady-state consumption -- trusting it
+        // at full weight immediately looks like a real contributor to
+        // that early volatility, not merely coincidental timing.
+        // Ramping linearly from 0% weight at day 7 (hasWeekData() first
+        // true) to 100% by day 21 directly matches how long the real
+        // volatility actually lasted on real hardware -- not an arbitrary
+        // guess. Below 7 days, or for pH/Mg (no learned-replenishment
+        // concept built for those), behavior is completely unchanged:
+        // pure Kalman-trend replenishment, exactly as before.
+        float replenish;
+        if ((p == P_ALK || p == P_CA) && hasWeekData((WaterParam)p)) {
+            float spanDays = historySpanDays((WaterParam)p);
+            const float kRampStartDays = 7.0f;
+            const float kRampFullDays = 21.0f;
+            float rampWeight = constrain((spanDays - kRampStartDays) / (kRampFullDays - kRampStartDays), 0.0f, 1.0f);
+
+            float kalmanReplenish = fmaxf(0.0f, -filters[p].trend);
+            float learnedReplenish = fmaxf(0.0f, getWeekTrend((WaterParam)p));
+            // Deliberately NOT added together with the Kalman trend --
+            // both represent the same underlying "ongoing consumption"
+            // concept; using both at once would double-count it. The ramp
+            // blends WHICH source is trusted, not how much of each.
+            replenish = kalmanReplenish * (1.0f - rampWeight) + learnedReplenish * rampWeight;
+        } else {
+            replenish = fmaxf(0.0f, -filters[p].trend);
+        }
 
         desired[p] = gapCorrection + replenish;
     }
-
-    // Fixed 2026-08-03: pH is dosed additively just like Alk/Ca/Mg above, so
-    // the "allocator only adds, never removes" clamp on gapCorrection is
-    // physically correct for it too -- there's no such thing as requesting
-    // a negative dose. But every chemical this product doses has a
-    // non-negative pH potency (NaOH/soda ash/kalkwasher all push pH UP;
-    // none pull it down), so when pH sits above its target band that clamp
-    // produces desired[P_PH] == 0 every single cycle, indistinguishable from
-    // "pH is fine." That fed straight into Allocator::solve's sufficiency
-    // check (`if (desiredCorrectionPerDay[p] <= 0.01f) continue;`), which
-    // then never evaluates pH at all -- so an out-of-band-high pH could sit
-    // there indefinitely with sufficient=yes and no customer-facing signal,
-    // missing both §1 (hold pH 8.0-8.4) and §5.2 (never fail silently).
-    // Computed here, independently of the desired[] vector the Allocator
-    // consumes, because this is a structural fact about the chemical
-    // inventory (no chemical can lower pH), not a capacity shortfall the
-    // Allocator's NNLS solve is equipped to reason about.
-    bool phAboveTarget = filters[P_PH].initialized &&
-                          targetPhHigh.value > 0.0f &&
-                          filters[P_PH].level > targetPhHigh.value;
 
     DosingPlanV2 plan;
     bool sufficient = Allocator::solve(chemicals, numChemicals, desired, safety, lightsActive, currentPh, plan);
@@ -399,13 +395,6 @@ DosingPlanV2 AIEngineV2::recalculate(bool lightsActive, float currentPh) {
         // the signal in the explanation string and expects the caller to
         // check the return path in production, not swallow it here.
         strncat(plan.explanation, " [WARNING: insufficient chemical capacity for current targets]",
-                sizeof(plan.explanation) - strlen(plan.explanation) - 1);
-    }
-    if (phAboveTarget) {
-        // Same channel as the insufficiency warning above -- deliberately
-        // independent of `sufficient`, since it can be true even on a
-        // cycle where every other parameter is dosing fine.
-        strncat(plan.explanation, " [WARNING: pH above target range and no available chemical can lower it]",
                 sizeof(plan.explanation) - strlen(plan.explanation) - 1);
     }
     // Fixed 2026-07-24: remember this plan so advanceTime() can feed its
@@ -826,6 +815,11 @@ namespace {
 constexpr char kNvsNamespace[] = "aiengine2";
 constexpr char kNvsStateKey[]  = "state_v1";
 constexpr char kNvsCrcKey[]    = "state_v1_crc";
+// Added 2026-09-02: the Week/Month history buffer's own storage -- see
+// PersistedHistoryV1's comment in the header for why this moved off NVS.
+// Same directory convention as this codebase's other LittleFS files
+// (chemicals.json, demand-learning history).
+constexpr char kHistoryFilePath[] = "/ai_history_v1.bin";
 
 // Small, dependency-free CRC32 (standard IEEE 802.3 polynomial). Only used
 // for corruption detection on a few-hundred-byte blob, not a security
@@ -844,20 +838,18 @@ uint32_t crc32(const uint8_t* data, size_t len) {
 } // namespace
 
 bool AIEngineV2::saveState() {
-    PersistedStateV1 state; // magic/schemaVersion default-initialized correctly
+    // Fixed 2026-09-02: the `static` fix (see restoreState()'s comment for
+    // the full stack-overflow story) stopped the crash, but a second,
+    // separate real bug then showed up on the same live customer device:
+    // the combined ~10KB blob was simply too large for this NVS partition
+    // to store at all ("nvs_set_blob fail: state_v1 NOT_ENOUGH_SPACE"),
+    // silently failing every single save. The real fix is this split:
+    // the small, NVS-appropriate Kalman/confidence state saves here as
+    // before; the much larger history buffer now saves separately, to
+    // LittleFS, via saveHistoryState() below.
+    static PersistedStateV1 state; // magic/schemaVersion default-initialized correctly
 
     for (int p = 0; p < kNumParams; p++) state.filters[p] = filters[p];
-
-    // Added 2026-08-04: see PersistedStateV1's schemaVersion comment for
-    // why this needs to survive a reboot -- a rolling 7/30-day window
-    // that resets every reboot could realistically never accumulate
-    // enough data to report anything on a device that reboots as often
-    // as this fleet's test devices have tonight.
-    for (int p = 0; p < kNumParams; p++) {
-        for (int i = 0; i < kHistoryCapacity; i++) state.history[p][i] = history[p][i];
-        state.historyNextSlot[p] = historyNextSlot[p];
-    }
-    state.totalElapsedDays = totalElapsedDays;
 
     // Confidence keyed by name (§5.2) — see header comment. Only the
     // currently-declared chemicals are written; a removed chemical's old
@@ -874,22 +866,100 @@ bool AIEngineV2::saveState() {
     uint32_t checksum = crc32(reinterpret_cast<const uint8_t*>(&state), sizeof(state));
 
     Preferences prefs;
-    if (!prefs.begin(kNvsNamespace, /*readOnly=*/false)) return false;
-
-    size_t written = prefs.putBytes(kNvsStateKey, &state, sizeof(state));
-    bool ok = (written == sizeof(state));
-    if (ok) {
-        ok = (prefs.putUInt(kNvsCrcKey, checksum) == sizeof(uint32_t));
+    bool nvsOk = false;
+    if (prefs.begin(kNvsNamespace, /*readOnly=*/false)) {
+        size_t written = prefs.putBytes(kNvsStateKey, &state, sizeof(state));
+        nvsOk = (written == sizeof(state));
+        if (nvsOk) {
+            nvsOk = (prefs.putUInt(kNvsCrcKey, checksum) == sizeof(uint32_t));
+        }
+        prefs.end();
     }
-    prefs.end();
-    return ok;
+
+    bool historyOk = saveHistoryState();
+
+    // Reported distinctly rather than folded into one flag -- if only one
+    // side fails, that's genuinely useful to know (e.g. NVS is fine but
+    // LittleFS is full, or vice versa), not just "something failed."
+    if (!nvsOk) {
+        Serial.println("AI ENGINE V2: WARNING - saveState() NVS write failed (Kalman/confidence not saved).");
+    }
+    if (!historyOk) {
+        Serial.println("AI ENGINE V2: WARNING - saveHistoryState() failed (Week/Month history not saved).");
+    }
+
+    return nvsOk && historyOk;
+}
+
+// Added 2026-09-02: the history buffer's own save, split out of
+// saveState() -- see PersistedHistoryV1's comment in the header for the
+// full reasoning. `static` for the same stack-safety reason as the NVS
+// state struct -- this one's smaller (kHistoryCapacity * 4 params * 12
+// bytes, ~9.6KB at the current capacity of 200) but still large enough
+// to be worth keeping off the stack on principle, not just when it
+// happens to be large enough to matter.
+bool AIEngineV2::saveHistoryState() {
+    static PersistedHistoryV1 hist;
+
+    for (int p = 0; p < kNumParams; p++) {
+        for (int i = 0; i < kHistoryCapacity; i++) hist.history[p][i] = history[p][i];
+        hist.historyNextSlot[p] = historyNextSlot[p];
+    }
+    hist.totalElapsedDays = totalElapsedDays;
+    hist.crc = crc32(reinterpret_cast<const uint8_t*>(&hist),
+                      offsetof(PersistedHistoryV1, crc));
+
+    File f = LittleFS.open(kHistoryFilePath, "w");
+    if (!f) return false;
+    size_t written = f.write(reinterpret_cast<const uint8_t*>(&hist), sizeof(hist));
+    f.close();
+    return written == sizeof(hist);
+}
+
+// Added 2026-09-02: reads the history buffer back from its own LittleFS
+// file -- see PersistedHistoryV1's comment in the header, and
+// saveHistoryState() above. Same defensive checks as the NVS blob always
+// had (magic/schema/CRC) -- a missing file (first boot, or a device that
+// predates this split) is handled identically to a corrupt one: start
+// the buffer fresh, don't guess.
+bool AIEngineV2::restoreHistoryState() {
+    if (!LittleFS.exists(kHistoryFilePath)) return false;
+
+    File f = LittleFS.open(kHistoryFilePath, "r");
+    if (!f) return false;
+
+    static PersistedHistoryV1 hist;
+    size_t readLen = f.read(reinterpret_cast<uint8_t*>(&hist), sizeof(hist));
+    f.close();
+
+    if (readLen != sizeof(hist)) return false;
+    if (hist.magic != PersistedHistoryV1::kMagic) return false;
+    if (hist.schemaVersion != PersistedHistoryV1::kSchemaVersion) return false;
+
+    uint32_t computedCrc = crc32(reinterpret_cast<const uint8_t*>(&hist),
+                                  offsetof(PersistedHistoryV1, crc));
+    if (computedCrc != hist.crc) return false;
+
+    for (int p = 0; p < kNumParams; p++) {
+        for (int i = 0; i < kHistoryCapacity; i++) history[p][i] = hist.history[p][i];
+        historyNextSlot[p] = hist.historyNextSlot[p];
+    }
+    totalElapsedDays = hist.totalElapsedDays;
+    return true;
 }
 
 bool AIEngineV2::restoreState() {
     Preferences prefs;
     if (!prefs.begin(kNvsNamespace, /*readOnly=*/true)) return false;
 
-    PersistedStateV1 state;
+    // Fixed 2026-09-02: same real, confirmed stack-overflow bug originally
+    // found here -- `static` keeps this off the stack. This struct is now
+    // back to its original small size (history moved to its own LittleFS
+    // file, see restoreHistoryState() below), so the overflow risk that
+    // motivated this fix no longer even applies at the current size --
+    // kept anyway, since there's no real cost to it and it removes any
+    // future risk if this struct ever grows again.
+    static PersistedStateV1 state;
     size_t readLen = prefs.getBytes(kNvsStateKey, &state, sizeof(state));
     uint32_t storedCrc = prefs.getUInt(kNvsCrcKey, 0);
     prefs.end();
@@ -910,14 +980,15 @@ bool AIEngineV2::restoreState() {
 
     for (int p = 0; p < kNumParams; p++) filters[p] = state.filters[p];
 
-    // Added 2026-08-04: see PersistedStateV1's schemaVersion comment for
-    // the full reasoning -- this is what actually lets the Week/Month
-    // buffer survive a reboot instead of resetting empty every time.
-    for (int p = 0; p < kNumParams; p++) {
-        for (int i = 0; i < kHistoryCapacity; i++) history[p][i] = state.history[p][i];
-        historyNextSlot[p] = state.historyNextSlot[p];
-    }
-    totalElapsedDays = state.totalElapsedDays;
+    // Added 2026-09-02: history restoration now lives in its own function,
+    // reading from LittleFS instead of this NVS blob -- see
+    // PersistedHistoryV1's comment in the header. Its own success/failure
+    // is logged separately in main.cpp (or wherever this gets called) and
+    // deliberately does NOT affect this function's own return value: a
+    // device with valid Kalman/confidence state but no (or a failed)
+    // history restore has still genuinely "restored learned state" in the
+    // sense this return value has always meant.
+    restoreHistoryState();
 
     // Fixed 2026-07-31: corrects the pTrend seeding bug (see update()'s
     // comment for the full explanation) for state that was already

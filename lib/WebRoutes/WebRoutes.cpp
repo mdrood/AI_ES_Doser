@@ -669,22 +669,21 @@ void handlePostLiveDose() {
     recordChemicalDispense(pumpIndex, actualMl, "LiveDose");
     evaluateAlertState("ChemicalLevel", true);
 
-    // Added 2026-08-04, at owner's direct observation: a manual Quick Dose
-    // puts real chemical into the tank exactly like an AI-planned dose --
-    // until now, AIEngineV2 had no idea this happened at all, so its
-    // learning (in particular the confidence-learning feedback loop, see
-    // AI_EngineV2.cpp) could misattribute this dose's real effect on the
-    // water to whatever the AI itself happened to be dosing that cycle.
-    // Feeds it into the exact same known-dose-effect mechanism a
-    // AI-planned dose uses. Silently does nothing if this pump has no
-    // matching active declared chemical (chemicalIndexForPump returns -1)
-    // -- the physical dose still happened, it's just invisible to a model
-    // that has nothing declared for this pump, same honest limitation as
-    // any other unmodeled event.
-    int chemForThisPump = chemicalIndexForPump(pumpIndex);
-    if (chemForThisPump >= 0) {
-        ai.recordManualDose(chemForThisPump, actualMl);
-    }
+    // Fixed 2026-09-01: removed a redundant standalone ai.recordManualDose()
+    // call that used to live here (added 2026-08-04, at owner's direct
+    // observation that a manual Quick Dose needed to feed the confidence-
+    // learning loop the same way an AI-planned dose does -- that reasoning
+    // was correct, but the implementation is no longer needed HERE).
+    // recordChemicalDispense() (called just above) now does this itself,
+    // for every real physical dose regardless of source -- confirmed
+    // directly in main.cpp: "SAFETY FIX 2026-08-31: Feed the AI only
+    // ACTUAL delivered mL... recordManualDose() is correct for automatic
+    // confirmed deliveries too." With both calls present, every single
+    // Quick Dose was applying its effect TWICE to the confidence-learning
+    // ledger -- confirmed as a real, active bug, not just a risk: the
+    // engine believed twice as much was dosed as actually was, for every
+    // manual dose, corrupting exactly the mechanism meant to keep
+    // confidence learning honest.
 
     Serial.printf("Local live dose: physical pump %d, requested %.2f ml, safety %.2f ml, actual %.2f ml\n", pumpIndex + 1, ml, safeMl, actualMl);
     logger.printf("Local live dose: physical pump %d, requested %.2f ml, safety %.2f ml, actual %.2f ml\n", pumpIndex + 1, ml, safeMl, actualMl);
