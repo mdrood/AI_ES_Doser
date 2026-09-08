@@ -7,7 +7,7 @@
 
 const String BUILD_DEVICE_ID = "reefDoser1";
 const String BUILD_DEVICE_LABEL = "AIES-00001";
-const String BUILD_FW_VERSION = "P-1.1.40";
+const String BUILD_FW_VERSION = "P-1.1.41";
 
 const String BUILD_EXPECTED_MAC = "e0:8c:fe:c2:6e:94";
 const String BUILD_EXPECTED_CHIP = "9C9E33077000";

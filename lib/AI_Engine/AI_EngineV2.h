@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <math.h>
+#include <string.h>
 
 // =============================================================================
 // AI_Engine v2 — Core types
@@ -497,6 +498,27 @@ public:
     // stays pure math/state, no direct Serial/logger calls from in here.
     bool lastAnomaly[kNumParams] = {false, false, false, false};
 
+    // Added 2026-09-04: real, spec-aligned fix, replacing an earlier
+    // version of this mechanism that silently sped up correction once a
+    // hidden threshold was crossed -- confirmed, on review against the
+    // actual spec, to violate the Core Design Principle ("recommend,
+    // never silently impose") and §4.4's own explicit instruction that a
+    // mature-phase miss this large should be "flagged as an anomaly to
+    // the customer," not silently folded into the next dose. This
+    // version does exactly that instead: when a parameter sits genuinely
+    // outside a safe range, the engine PROPOSES an accelerated,
+    // still-safety-capped correction (accelerationProposed[p] = true)
+    // but does NOT apply it until the customer explicitly approves
+    // (accelerationApproved[p]), matching §8's "AI proposes, customer
+    // confirms anything beyond routine bounds." Approval is intentionally
+    // NOT permanent -- accelerationApprovedUntilDay[p] holds the
+    // engine's own totalElapsedDays value at which this approval expires
+    // (see approveAcceleratedCorrection()), so a stale, forgotten
+    // approval can't silently keep accelerating corrections indefinitely.
+    bool accelerationProposed[kNumParams] = {false, false, false, false};
+    bool accelerationApproved[kNumParams] = {false, false, false, false};
+    float accelerationApprovedUntilDay[kNumParams] = {0, 0, 0, 0};
+
     // §3.5.1 Water change reconciliation. Call as soon as a water change is
     // logged (dashboard event, §3.5.1) -- applies the dilution formula
     // directly to each initialized filter's level, the same "feed a known
@@ -611,6 +633,91 @@ public:
     // only ever reflects the single most recent result, not a lingering
     // state.
     bool wasAnomaly(WaterParam p) const { return lastAnomaly[p]; }
+
+    // Added 2026-09-07: closes a real, confirmed gap found on a live
+    // customer device -- correcting a chemical's potency (e.g. from a
+    // real, chemistry-derived recipe calculation) does NOT automatically
+    // grant any confidence in that corrected value. The allocator
+    // multiplies potency * confidence together (Allocator.cpp's
+    // A[p][c] = potency * confidence * phWeight) -- a real, correct
+    // potency sitting on zero confidence contributes exactly nothing,
+    // indistinguishable from a chemical that genuinely can't touch that
+    // parameter at all. Confirmed directly: NaOH's pH potency was fixed
+    // hours before this, but its pH confidence had never had a chance to
+    // build up (it was never correlated against a real, nonzero potency
+    // before), so pH stayed uncorrected the whole time regardless.
+    //
+    // Returns false if no chemical with this name is currently declared
+    // -- the caller (e.g. the recipe-save handler) should treat that as
+    // "nothing to seed," not silently ignore a real failure.
+    //
+    // value is clamped to [0,1] -- confidence is always a 0-1 scale
+    // throughout this engine, matching every other confidence field.
+    bool seedConfidence(const char* chemicalName, WaterParam p, float value) {
+        if (value < 0.0f) value = 0.0f;
+        if (value > 1.0f) value = 1.0f;
+        for (int c = 0; c < numChemicals; c++) {
+            if (strcmp(chemicals[c].name, chemicalName) == 0) {
+                chemicals[c].confidence[p] = value;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Added 2026-09-07: the read side of seedConfidence -- needed to
+    // actually expose these values through /api/chemicals for the
+    // dashboard's confidence display. Returns -1 if no chemical with
+    // this name is currently declared, distinguishable from a real 0%
+    // confidence (a genuinely untrusted but present relationship).
+    float getConfidence(const char* chemicalName, WaterParam p) const {
+        for (int c = 0; c < numChemicals; c++) {
+            if (strcmp(chemicals[c].name, chemicalName) == 0) {
+                return chemicals[c].confidence[p];
+            }
+        }
+        return -1.0f;
+    }
+
+    // Added 2026-09-04: true when this parameter is genuinely outside a
+    // safe range and the engine has a faster, still-safety-capped
+    // correction available -- but has NOT applied it, pending explicit
+    // customer approval. The dashboard/API surfaces this as a real,
+    // visible proposal, not a silent log line.
+    bool isAccelerationProposed(WaterParam p) const { return accelerationProposed[p]; }
+
+    // Added 2026-09-04: confirmed missing when wiring the actual
+    // WebRoutes.cpp/dashboard status exposure -- accelerationApproved[]
+    // existed as private state with mutators (approveAcceleratedCorrection/
+    // revokeAcceleratedCorrection) but no public way to read the CURRENT
+    // approval state, which the dashboard needs to show the right button
+    // (approve vs. already-approved-with-cancel-option). Reflects live
+    // expiry: returns false once totalElapsedDays has passed the
+    // approval window, even if recalculate() hasn't run since to clear
+    // the underlying flag itself.
+    bool isAccelerationApproved(WaterParam p) const {
+        return accelerationApproved[p] && totalElapsedDays <= accelerationApprovedUntilDay[p];
+    }
+
+    // Called when the customer explicitly approves the proposed
+    // accelerated correction (e.g. clicking a real dashboard button) --
+    // matches §8's "AI proposes, customer confirms" pattern. approvalWindowDays
+    // is intentionally required, not defaulted, so the caller has to make
+    // a deliberate choice about how long this stays active rather than
+    // silently granting a permanent exception. A reasonable dashboard
+    // default is 2-3 days -- long enough to actually close a real gap,
+    // short enough that a forgotten approval doesn't linger indefinitely.
+    void approveAcceleratedCorrection(WaterParam p, float approvalWindowDays) {
+        accelerationApproved[p] = true;
+        accelerationApprovedUntilDay[p] = totalElapsedDays + approvalWindowDays;
+    }
+
+    // Lets the customer revoke approval immediately (e.g. "actually,
+    // don't speed this up") without waiting for the window to expire.
+    void revokeAcceleratedCorrection(WaterParam p) {
+        accelerationApproved[p] = false;
+        accelerationApprovedUntilDay[p] = 0.0f;
+    }
 
     // Added 2026-08-04: needed for a real percentage progress bar on the
     // dashboard (hasWeekData/hasMonthData alone only give a binary

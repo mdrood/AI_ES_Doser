@@ -319,11 +319,11 @@ DosingPlanV2 AIEngineV2::recalculate(bool lightsActive, float currentPh) {
     // fastAlk/adaptiveNaohBoost ladder for every parameter, not just Alk.
     float desired[kNumParams] = {0, 0, 0, 0};
 
-    struct { Recommendable* lo; Recommendable* hi; float youngMax; float matureMax; } targets[kNumParams] = {
-        { &targetAlkDkh, nullptr, 0.40f, 0.10f },   // §4.4 Alk: v1's fastAlk.maxBoostDkhDay-shaped bounds
-        { &targetPhLow,  &targetPhHigh, 0.05f, 0.02f },
-        { &targetCaPpm,  nullptr, 20.0f, 5.0f },
-        { &targetMgPpm,  nullptr, 15.0f, 3.0f },
+    struct { Recommendable* lo; Recommendable* hi; float youngMax; float matureMax; float dangerDeviation; } targets[kNumParams] = {
+        { &targetAlkDkh, nullptr, 0.40f, 0.10f, 1.0f },   // §4.4 Alk: v1's fastAlk.maxBoostDkhDay-shaped bounds
+        { &targetPhLow,  &targetPhHigh, 0.05f, 0.02f, 0.3f },
+        { &targetCaPpm,  nullptr, 20.0f, 5.0f, 30.0f },
+        { &targetMgPpm,  nullptr, 15.0f, 3.0f, 100.0f },
     };
 
     for (int p = 0; p < kNumParams; p++) {
@@ -333,6 +333,90 @@ DosingPlanV2 AIEngineV2::recalculate(bool lightsActive, float currentPh) {
 
         float gap = targetLevel - filters[p].level; // positive = below target
         float step = MathEngine::maxCorrectionStep(filters[p], targets[p].youngMax, targets[p].matureMax);
+
+        // Fixed 2026-09-04, real fix -- replaces TWO earlier versions of
+        // this same idea rejected on review against the actual spec.
+        // First version: a capped multiplier -- too weak, only got a
+        // real 1.75 dKH deficit from 17.5 days to 10. Second version:
+        // request the full gap outright, silently -- mathematically
+        // correct (verified: SafetyEnvelope's own maxAlkRisePerDayDkh
+        // already bounds the real achievable rate downstream, so this
+        // was never at risk of an unsafe dose), but WRONG on its own
+        // terms: it silently deviates from normal behavior with nothing
+        // shown to the customer, directly violating the Core Design
+        // Principle ("recommend, never silently impose") and §4.4's own
+        // explicit instruction that a mature-phase miss this large
+        // should be "flagged as an anomaly to the customer... rather
+        // than silently folded into the next dose."
+        //
+        // This version does exactly what the spec says: PROPOSE the
+        // accelerated correction, don't apply it, until the customer
+        // explicitly approves (§8: "AI proposes, customer confirms
+        // anything beyond routine bounds"). Below the danger threshold,
+        // or without approval, behavior is completely unchanged from the
+        // original, pre-tonight code -- normal, cautious maturity-based
+        // pacing.
+        // Fixed 2026-09-06: real, confirmed bug found on a live test
+        // device -- Magnesium was being proposed for acceleration
+        // alongside a genuine Alk deficit, even though NO declared
+        // chemical on this device (or any device seen tonight) actually
+        // touches Mg at all. Approving that proposal would have done
+        // nothing: there's no chemical for Allocator::solve() to speed
+        // up. That's not a hypothetical edge case -- Allocator.cpp
+        // already has this exact same check built in
+        // (anyChemicalTouches[p], §5.2's own structural-vs-capacity
+        // distinction, "at least one parameter has no active chemical
+        // able to touch it"). This reuses the identical real fact, from
+        // the same underlying chemical data, so a parameter with no
+        // capable chemical is never proposed as accelerable -- proposing
+        // an action with literally nothing behind it is its own kind of
+        // silently-misleading behavior, just as real a problem as the
+        // silent auto-speedup this whole mechanism was built to avoid.
+        bool anyChemicalTouchesThisParam = false;
+        for (int c = 0; c < numChemicals; c++) {
+            if (chemicals[c].active && chemicals[c].potencyPerMl[p] != 0.0f) {
+                anyChemicalTouchesThisParam = true;
+                break;
+            }
+        }
+
+        float deviation = fabsf(gap);
+        bool inDangerZone = deviation > targets[p].dangerDeviation && anyChemicalTouchesThisParam;
+        accelerationProposed[p] = inDangerZone;
+
+        bool approvalActive = accelerationApproved[p] && totalElapsedDays <= accelerationApprovedUntilDay[p];
+        if (accelerationApproved[p] && !approvalActive) {
+            // Approval window expired -- clear it rather than leaving a
+            // stale true flag sitting around implying it's still active.
+            accelerationApproved[p] = false;
+            accelerationApprovedUntilDay[p] = 0.0f;
+        }
+
+        if (inDangerZone && approvalActive) {
+            step = deviation; // customer-approved: request the full correction;
+                               // SafetyEnvelope's own per-day rise cap (verified
+                               // separately in Allocator::solve()) is the real,
+                               // independent bound on how much actually gets dosed
+
+            // Added 2026-09-06: closes a real, confirmed gap -- the only
+            // existing log for this mechanism was the approval CLICK
+            // itself (handlePostApproveAcceleration), which confirms the
+            // request was received but says nothing about whether
+            // acceleration is actually active on any given calculation
+            // cycle. Without this, confirming the real effect meant
+            // manually comparing two separate ALLOCATOR DIAGNOSTIC
+            // blocks and reasoning about whether a changed desired()
+            // value was explained by acceleration or something else.
+            // This line removes that ambiguity -- it only ever prints
+            // when acceleration is genuinely active THIS cycle, with the
+            // real before/after numbers right there to check directly.
+            static const char* kAccelParamNames[kNumParams] = {"Alk", "pH", "Ca", "Mg"};
+            Serial.printf("ACCELERATED CORRECTION ACTIVE [%s]: requesting %.4f/day (normal cap would be %.4f/day), approved until day %.2f (now %.2f)\n",
+                          kAccelParamNames[p], step,
+                          MathEngine::maxCorrectionStep(filters[p], targets[p].youngMax, targets[p].matureMax),
+                          accelerationApprovedUntilDay[p], totalElapsedDays);
+        }
+
         float gapCorrection = constrain(gap, -step, step);
         if (gapCorrection < 0.0f) gapCorrection = 0.0f; // allocator only adds, never removes (matches v1 clamp)
 

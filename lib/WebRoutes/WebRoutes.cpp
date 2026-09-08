@@ -92,6 +92,28 @@ void handleGetStatus() {
             doc["weekMonthTrend"][key]["historySpanDays"] = ai.historySpanDays(wp);
         }
     }
+
+    // Added 2026-09-04: closes the gap between the engine-side
+    // propose/approve mechanism (AI_EngineV2.h's accelerationProposed[]/
+    // accelerationApproved[]) and the dashboard banner that's been
+    // waiting to read it -- confirmed as the actual reason the banner
+    // never appeared on a real device test, even with Alk genuinely
+    // 1.72 dKH below target: the flag existed in the engine, but nothing
+    // exposed it here, so the dashboard's own defensive `|| {}` fallback
+    // correctly (if silently) treated it as "nothing proposed" every
+    // single time. pH intentionally excluded -- no learned-replenishment
+    // concept exists for it in the engine, matching AI_EngineV2's own
+    // existing pattern of treating pH differently from Alk/Ca/Mg.
+    {
+        const char* accelKeys[kNumParams] = {"alk", "ph", "ca", "mg"};
+        for (int p = 0; p < kNumParams; p++) {
+            if (p == P_PH) continue;
+            WaterParam wp = (WaterParam)p;
+            const char* key = accelKeys[p];
+            doc["accelerationProposed"][key] = ai.isAccelerationProposed(wp);
+            doc["accelerationApproved"][key] = ai.isAccelerationApproved(wp);
+        }
+    }
     doc["calciumDemandLearning"]["currentP2MlDay"] = baselineCacl2MlDay;
     doc["chemicalStrengths"]["kalk"] = kalkStrengthDkhPerMl;
     doc["chemicalStrengths"]["afr"] = afrStrengthDkhPerMl;
@@ -1231,6 +1253,21 @@ void handleGetChemicals() {
         o["active"] = d.active;
         o["nightFraction"] = d.nightFraction;
         o["daytimeSuppressPercent"] = d.daytimeSuppressPercent;
+
+        // Added 2026-09-07: real data for the dashboard's confidence
+        // display -- see AI_EngineV2.h's getConfidence()/seedConfidence()
+        // comments for the full reasoning. A -1 return (chemical not
+        // found in the engine's own list, e.g. a declared-but-not-yet-
+        // synced chemical) is simply omitted rather than sent as a
+        // misleading 0%.
+        float confAlk = ai.getConfidence(d.name.c_str(), P_ALK);
+        float confPh  = ai.getConfidence(d.name.c_str(), P_PH);
+        float confCa  = ai.getConfidence(d.name.c_str(), P_CA);
+        float confMg  = ai.getConfidence(d.name.c_str(), P_MG);
+        if (confAlk >= 0.0f) o["confidenceAlk"] = confAlk;
+        if (confPh  >= 0.0f) o["confidencePh"]  = confPh;
+        if (confCa  >= 0.0f) o["confidenceCa"]  = confCa;
+        if (confMg  >= 0.0f) o["confidenceMg"]  = confMg;
     }
     String output;
     serializeJson(doc, output);
@@ -1588,6 +1625,46 @@ void handlePostUpdateChemical() {
             }
         }
 
+        // Fixed 2026-09-07: real, confirmed gap -- correcting a potency
+        // value here did NOT grant any matching confidence, and the
+        // allocator multiplies potency * confidence together (see
+        // Allocator.cpp's A[p][c] computation). A real, correct potency
+        // sitting on zero confidence contributes exactly nothing --
+        // confirmed directly on a live customer device: NaOH's pH
+        // potency was fixed via this exact code path, but pH stayed
+        // uncorrected for hours afterward because confidence never had
+        // a chance to build up before now (there was never a nonzero
+        // potency to correlate against previously). Seeds a starting
+        // confidence matching this codebase's own established reference
+        // point for "how much to trust a real, chemistry-derived
+        // correction" (0.35 -- what Kalk's own pH relationship already
+        // carries after building up through real observation). Only
+        // seeds when the OLD value was effectively zero and the NEW
+        // value is genuinely meaningful -- a routine tweak to an
+        // already-trusted, already-nonzero potency does not reset
+        // confidence, matching §5.2's own "narrower trigger" principle
+        // (only the specific thing that changed should reset trust).
+        auto seedConfidenceIfNewlyMeaningful = [&](float oldVal, float newVal, WaterParam p) {
+            const float kMeaningfulThreshold = 1e-9f;
+            const float kSeedConfidence = 0.35f;
+            bool wasEffectivelyZero = fabsf(oldVal) < kMeaningfulThreshold;
+            bool isNowMeaningful = fabsf(newVal) >= kMeaningfulThreshold;
+            if (wasEffectivelyZero && isNowMeaningful) {
+                bool seeded = ai.seedConfidence(chem.name.c_str(), p, kSeedConfidence);
+                if (seeded) {
+                    Serial.printf("CONFIDENCE SEEDED [%s]: parameter=%d value=%.2f (potency corrected from ~0 to a real value)\n",
+                                  chem.name.c_str(), (int)p, kSeedConfidence);
+                    logger.printf("CONFIDENCE SEEDED [%s]: parameter=%d value=%.2f (potency corrected from ~0 to a real value)\n",
+                                  chem.name.c_str(), (int)p, kSeedConfidence);
+                }
+            }
+        };
+
+        float oldAlk = chem.potencyAlkPerMl;
+        float oldCa  = chem.potencyCaPerMl;
+        float oldMg  = chem.potencyMgPerMl;
+        float oldPh  = chem.potencyPhPerMl;
+
         chem.potencyAlkPerMl = newAlk;
         chem.potencyCaPerMl  = newCa;
         chem.potencyMgPerMl  = newMg;
@@ -1596,6 +1673,11 @@ void handlePostUpdateChemical() {
         // declared chemicals too, not just new ones.
         if (!doc["potencyPhPerMl"].isNull())  chem.potencyPhPerMl  = doc["potencyPhPerMl"];
         if (!doc["phSensitive"].isNull())     chem.phSensitive     = doc["phSensitive"];
+
+        seedConfidenceIfNewlyMeaningful(oldAlk, chem.potencyAlkPerMl, P_ALK);
+        seedConfidenceIfNewlyMeaningful(oldCa,  chem.potencyCaPerMl,  P_CA);
+        seedConfidenceIfNewlyMeaningful(oldMg,  chem.potencyMgPerMl,  P_MG);
+        seedConfidenceIfNewlyMeaningful(oldPh,  chem.potencyPhPerMl,  P_PH);
     }
 
     if (!doc["maxMlPerDay"].isNull()) {
@@ -1667,6 +1749,50 @@ void handlePostUpdateChemical() {
 
     calculateAiFromBestChemistry("ChemicalUpdate");
     publishAiPlanIfNeeded("ChemicalUpdate", true);
+
+    server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// Added 2026-09-04: closes the final missing piece of the propose/
+// approve mechanism -- the dashboard's "Approve faster correction"
+// button was calling this exact endpoint with nowhere for it to land.
+// Body: { "param": "alk"|"ca"|"mg", "days": <number> }. days=0 (or
+// omitted) revokes; any positive value approves for that many days,
+// matching AIEngineV2::approveAcceleratedCorrection()'s own contract
+// (a deliberate, bounded window, not a permanent exception).
+void handlePostApproveAcceleration() {
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing JSON body\"}");
+        return;
+    }
+    JsonDocument doc;
+    if (deserializeJson(doc, server.arg("plain"))) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
+        return;
+    }
+
+    String param = doc["param"] | "";
+    float days = doc["days"] | 0.0f;
+
+    WaterParam wp;
+    if (param == "alk") wp = P_ALK;
+    else if (param == "ca") wp = P_CA;
+    else if (param == "mg") wp = P_MG;
+    else {
+        server.send(400, "application/json",
+            "{\"ok\":false,\"error\":\"param must be one of: alk, ca, mg (pH has no accelerated-correction path)\"}");
+        return;
+    }
+
+    if (days > 0.0f) {
+        ai.approveAcceleratedCorrection(wp, days);
+        Serial.printf("ACCELERATION APPROVED [%s]: %.1f day window\n", param.c_str(), days);
+        logger.printf("ACCELERATION APPROVED [%s]: %.1f day window\n", param.c_str(), days);
+    } else {
+        ai.revokeAcceleratedCorrection(wp);
+        Serial.printf("ACCELERATION REVOKED [%s]\n", param.c_str());
+        logger.printf("ACCELERATION REVOKED [%s]\n", param.c_str());
+    }
 
     server.send(200, "application/json", "{\"ok\":true}");
 }
@@ -1945,6 +2071,7 @@ void registerWebRoutes() {
     server.on("/api/chemicals", HTTP_POST, handlePostAddChemical);
     server.on("/api/chemicals/update", HTTP_POST, handlePostUpdateChemical);
     server.on("/api/chemicals/remove", HTTP_POST, handlePostRemoveChemical);
+    server.on("/api/chemistry/approve-acceleration", HTTP_POST, handlePostApproveAcceleration);
     server.on("/api/chemical-presets", HTTP_GET, handleGetChemicalPresets);
     server.on("/api/setup-wizard/complete", HTTP_POST, handlePostSetupWizardComplete);
     server.on("/api/setup-wizard/reset", HTTP_POST, handlePostSetupWizardReset);
