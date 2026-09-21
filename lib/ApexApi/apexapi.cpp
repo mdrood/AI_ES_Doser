@@ -215,10 +215,22 @@ static bool parseApexStatusJson(const String& payload, ApexLatest& out) {
       else if (type == "alk" || name.indexOf("alk") >= 0) {
         out.alk = v;
       }
-      else if (type == "ca" || name.indexOf("Cax3") >= 0) {
+      // Fixed 2026-09-11: real, confirmed bug -- `name` is lowercased just
+      // above this loop (name.toLowerCase()), but these two literals were
+      // still mixed-case ("Cax3"/"Mgx3"). Arduino's String::indexOf() is
+      // case-sensitive, so these conditions could never match on any real
+      // payload -- Ca/Mg only ever updated via the `type == "ca"`/`"mg"`
+      // exact-match fallback. Confirmed against a real overnight
+      // reefDoser12 log: genuine Apex Ca/Mg changes (e.g. 434 -> 464 -> 495)
+      // never produced a "NEW MEASUREMENT ACCEPTED" line -- `latest` is a
+      // static struct that persists between polls, so an unmatched probe
+      // silently keeps whatever value was last successfully parsed,
+      // indefinitely, rather than genuinely refusing to change. Lowercased
+      // to match `name`, mirroring the already-correct "alk" branch above.
+      else if (type == "ca" || name.indexOf("cax3") >= 0) {
         out.ca = v;
       }
-      else if (type == "mg" || name.indexOf("Mgx3") >= 0) {
+      else if (type == "mg" || name.indexOf("mgx3") >= 0) {
         out.mg = v;
       }
     }
@@ -363,6 +375,7 @@ float ApexApi::getCond(){ return cond; }
 float ApexApi::getAlk(){ return alk; }
 float ApexApi::getCa(){ return ca; }
 float ApexApi::getMg(){ return mg; }
+String ApexApi::getDate(){ return String(latest.date); }
 
 void ApexApi::setTempF(float v){ tempF = v; }
 void ApexApi::setPh(float v){ ph = v; }

@@ -420,49 +420,35 @@ DosingPlanV2 AIEngineV2::recalculate(bool lightsActive, float currentPh) {
         float gapCorrection = constrain(gap, -step, step);
         if (gapCorrection < 0.0f) gapCorrection = 0.0f; // allocator only adds, never removes (matches v1 clamp)
 
-        // Fixed 2026-09-01, replacing the demand-learning-feedforward
-        // branch's approach: that branch used the OLD v1 alkDemandStore/
-        // calciumDemandStore machinery as an alternate replenishment
-        // source once 7 real days existed, entirely separate from this
-        // engine's own Week/Month history buffer -- meaning the fleet
-        // would carry two independently-maintained "learn from days of
-        // real data" mechanisms computing conceptually the same thing.
-        // This version sources the SAME concept from getWeekTrend()
-        // instead -- this engine's own already-persisted, already-
-        // maintained history buffer -- so there's one real mechanism,
-        // not two.
+        // Fixed 2026-09-08: real, confirmed bug -- both prior sources here
+        // (raw Kalman trend, and getWeekTrend()) structurally
+        // underestimated real consumption, confirmed directly on a live
+        // customer tank: measured real decline was ~0.75 dKH/day, but
+        // both prior sources reported only ~0.21-0.32 dKH/day, roughly
+        // 3x too low. Root cause: neither source ever isolated
+        // consumption from dosing -- a week containing both an active
+        // correction (a rise) and ordinary consumption (a fall) averages
+        // toward something much smaller than either true rate. See
+        // isolatedConsumptionRate's own comment (header) for the full
+        // derivation -- it computes actualChange minus the dosed
+        // contribution over the same window, so dosing is subtracted
+        // out at the source, not diluted into an average alongside it.
         //
-        // The other real change: a GRADUAL ramp-in instead of a hard
-        // switch the moment hasWeekData() first becomes true. Justified
-        // by a real month of reefDoser1 data reviewed directly: the first
-        // ~2 weeks after the branch's original hard 7-day cutover showed
-        // genuine volatility (Alk swinging 6.1-10.1 dKH, CaCl2 and NaOH
-        // both hitting their full daily caps) before settling into small,
-        // smooth, stable dosing from roughly day 21 onward. A tank's
-        // first real week of history is exactly the period LEAST likely
-        // to represent genuine steady-state consumption -- trusting it
-        // at full weight immediately looks like a real contributor to
-        // that early volatility, not merely coincidental timing.
-        // Ramping linearly from 0% weight at day 7 (hasWeekData() first
-        // true) to 100% by day 21 directly matches how long the real
-        // volatility actually lasted on real hardware -- not an arbitrary
-        // guess. Below 7 days, or for pH/Mg (no learned-replenishment
-        // concept built for those), behavior is completely unchanged:
-        // pure Kalman-trend replenishment, exactly as before.
+        // Simpler than the version this replaces: the isolated signal is
+        // correctly separated from dosing from its very first
+        // observation, so it doesn't need the OLD ramp's justification
+        // (real calendar time to dilute mixed effects). It still ramps
+        // in gradually, but based on observation COUNT (a single
+        // reading can be noisy) rather than elapsed days.
         float replenish;
-        if ((p == P_ALK || p == P_CA) && hasWeekData((WaterParam)p)) {
-            float spanDays = historySpanDays((WaterParam)p);
-            const float kRampStartDays = 7.0f;
-            const float kRampFullDays = 21.0f;
-            float rampWeight = constrain((spanDays - kRampStartDays) / (kRampFullDays - kRampStartDays), 0.0f, 1.0f);
+        if ((p == P_ALK || p == P_CA) && hasIsolatedConsumptionRateData((WaterParam)p)) {
+            const int kMinObservationsForFullTrust = 5;
+            int obs = getIsolatedConsumptionObservations((WaterParam)p);
+            float trustWeight = constrain((float)obs / (float)kMinObservationsForFullTrust, 0.0f, 1.0f);
 
             float kalmanReplenish = fmaxf(0.0f, -filters[p].trend);
-            float learnedReplenish = fmaxf(0.0f, getWeekTrend((WaterParam)p));
-            // Deliberately NOT added together with the Kalman trend --
-            // both represent the same underlying "ongoing consumption"
-            // concept; using both at once would double-count it. The ramp
-            // blends WHICH source is trusted, not how much of each.
-            replenish = kalmanReplenish * (1.0f - rampWeight) + learnedReplenish * rampWeight;
+            float isolatedReplenish = fmaxf(0.0f, getIsolatedConsumptionRate((WaterParam)p));
+            replenish = kalmanReplenish * (1.0f - trustWeight) + isolatedReplenish * trustWeight;
         } else {
             replenish = fmaxf(0.0f, -filters[p].trend);
         }
@@ -507,6 +493,51 @@ void AIEngineV2::ingestMeasurement(WaterParam p, float value, MeasurementSource 
     float ratioToleranceMultiplier = 1.0f;
     if (daysSinceLivestockAddition >= 0.0f && daysSinceLivestockAddition < 21.0f) {
         ratioToleranceMultiplier = 2.0f;
+    }
+
+    // Added 2026-09-08: real, confirmed fix -- see isolatedConsumptionRate's
+    // comment in the header for the full reasoning. Computed here,
+    // BEFORE updateConfidenceFromOutcome() below (which clears
+    // pendingContribution via its own ResetGuard on exit) -- this needs
+    // the same totalContribution and actualChange values while they're
+    // still valid. Deliberately duplicates that small computation rather
+    // than threading an out-parameter through updateConfidenceFromOutcome(),
+    // to keep that function's existing, already-validated signature
+    // untouched.
+    {
+        float totalContribution = 0.0f;
+        for (int c = 0; c < numChemicals; c++) totalContribution += pendingContribution[c][p];
+        float actualChange = (value - knownExternalEffect) - filters[p].level;
+        float netConsumption = actualChange - totalContribution; // real change NOT explained by dosing
+
+        const float kMinElapsedDays = 0.05f; // guards against a division blowing up on a near-instant repeat
+        if (daysSinceLastMeasurement[p] > kMinElapsedDays) {
+            float netConsumptionPerDay = netConsumption / daysSinceLastMeasurement[p];
+
+            // Exponentially-weighted rolling average -- recent windows
+            // matter most (real consumption can genuinely shift with
+            // bioload/coral growth), but a single noisy measurement
+            // shouldn't swing the whole estimate on its own.
+            const float kIsolatedConsumptionAlpha = 0.25f;
+            if (!hasIsolatedConsumptionData[p]) {
+                isolatedConsumptionRate[p] = netConsumptionPerDay; // first real data point: take it directly, nothing to blend with yet
+            } else {
+                isolatedConsumptionRate[p] = isolatedConsumptionRate[p] * (1.0f - kIsolatedConsumptionAlpha)
+                                            + netConsumptionPerDay * kIsolatedConsumptionAlpha;
+            }
+            hasIsolatedConsumptionData[p] = true;
+            if (isolatedConsumptionObservations[p] < 1000) isolatedConsumptionObservations[p]++; // cap avoids any pathological long-run overflow, not a meaningful behavior limit
+
+            // Added 2026-09-08: real, direct visibility into this new
+            // signal -- without this, there was no way to confirm from
+            // the log whether it's actually computing sensible numbers,
+            // only to infer it indirectly from later dosing behavior.
+            static const char* kParamNames[kNumParams] = {"Alk", "pH", "Ca", "Mg"};
+            Serial.printf("ISOLATED CONSUMPTION [%s]: actualChange=%.4f dosedContribution=%.4f netConsumption=%.4f over %.3f days -> %.4f/day (rolling avg=%.4f/day, obs=%d)\n",
+                          kParamNames[p], actualChange, totalContribution, netConsumption,
+                          daysSinceLastMeasurement[p], netConsumptionPerDay,
+                          isolatedConsumptionRate[p], isolatedConsumptionObservations[p]);
+        }
     }
 
     // Added 2026-08-04: cleared before the call (not after), so this

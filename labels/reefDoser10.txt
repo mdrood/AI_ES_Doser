@@ -1,0 +1,10 @@
+AIDoser
+
+Device ID: reefDoser10
+Serial Label: AIES-0010
+Claim Code: RP2N-XHLN
+MAC Address: E0:8C:FE:C1:11:58
+Chip ID: 5811C1FE8CE0
+
+Setup:
+https://aiesdoser.web.app/setup

@@ -1,0 +1,10 @@
+AIDoser
+
+Device ID: reefDoser9
+Serial Label: AIES_00009
+Claim Code: CDKJ-YZRU
+MAC Address: E0:8C:FE:C1:20:64
+Chip ID: 6420C1FE8CE0
+
+Setup:
+https://aiesdoser.web.app/setup

@@ -498,6 +498,40 @@ public:
     // stays pure math/state, no direct Serial/logger calls from in here.
     bool lastAnomaly[kNumParams] = {false, false, false, false};
 
+    // Added 2026-09-08: real, confirmed fix for a structural underestimate
+    // found on a live customer tank -- real measured consumption was
+    // ~0.75 dKH/day, but both existing replenishment sources (the raw
+    // Kalman trend, and getWeekTrend()) were reporting only ~0.21-0.32
+    // dKH/day, roughly 3x too low. Root cause: NEITHER source actually
+    // isolates consumption from dosing -- both are raw trends over real
+    // measurements, and real measurements mix together "how much the
+    // tank consumed" and "how much was actively dosed" into one number.
+    // A week containing both a large active correction (a rise) and
+    // ordinary passive consumption (a fall) averages toward something
+    // much smaller than either true rate -- diluting the signal
+    // replenishment actually needs.
+    //
+    // This isolates the TRUE consumption rate directly, using data this
+    // engine already tracks for confidence reconciliation (§4.1's
+    // "expected vs actual" comparison): actualChange minus
+    // totalDosedContribution over the same window is, by construction,
+    // the change NOT explained by dosing -- i.e. real consumption, with
+    // the dosing effect already subtracted out, not averaged in. An
+    // exponentially-weighted rolling average (kIsolatedConsumptionAlpha)
+    // smooths real measurement noise while still tracking a genuine
+    // recent-consumption rate, not a multi-week blend of unrelated
+    // events.
+    float isolatedConsumptionRate[kNumParams] = {0, 0, 0, 0};
+    bool hasIsolatedConsumptionData[kNumParams] = {false, false, false, false};
+    // Small, real, honest gate: the isolated signal is correctly
+    // dosing-separated from its very first data point (unlike the old
+    // week-trend, which needed real calendar time to dilute mixed
+    // effects) -- but a single observation can still be noisy. Ramps
+    // from 0% trust (first observation) to 100% (kMinObservationsForFullTrust,
+    // defined at the use site) rather than an arbitrary elapsed-time
+    // window, since observation count is what actually matters here.
+    int isolatedConsumptionObservations[kNumParams] = {0, 0, 0, 0};
+
     // Added 2026-09-04: real, spec-aligned fix, replacing an earlier
     // version of this mechanism that silently sped up correction once a
     // hidden threshold was crossed -- confirmed, on review against the
@@ -633,6 +667,15 @@ public:
     // only ever reflects the single most recent result, not a lingering
     // state.
     bool wasAnomaly(WaterParam p) const { return lastAnomaly[p]; }
+
+    // Added 2026-09-08: the real, dosing-isolated consumption rate -- see
+    // isolatedConsumptionRate's own comment for the full reasoning. false
+    // until at least one real reconciliation window has occurred, so a
+    // caller can distinguish "genuinely near-zero consumption" from
+    // "no real data yet" rather than treating both as the same 0.0f.
+    float getIsolatedConsumptionRate(WaterParam p) const { return isolatedConsumptionRate[p]; }
+    bool hasIsolatedConsumptionRateData(WaterParam p) const { return hasIsolatedConsumptionData[p]; }
+    int getIsolatedConsumptionObservations(WaterParam p) const { return isolatedConsumptionObservations[p]; }
 
     // Added 2026-09-07: closes a real, confirmed gap found on a live
     // customer device -- correcting a chemical's potency (e.g. from a

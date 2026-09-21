@@ -172,6 +172,25 @@ float lastAcceptedTridentAlk = NAN;
 float lastAcceptedTridentCa = NAN;
 float lastAcceptedTridentMg = NAN;
 bool newChemistrySamplePendingForDailyStats = false;
+// Added 2026-09-12: real, safety-motivated fix -- confirmed directly on a
+// live customer tank that the fingerprintCompare comparison below can go
+// stuck for extended periods (confirmed: ~19.5 hours, spanning roughly
+// three missed real Trident results) without ever recognizing a genuine
+// change, despite Apex/Trident genuinely producing new results the whole
+// time (raw currentAlk visibly moved from 7.97 to 9.74 in that window).
+// The exact defect in the comparison itself has resisted tracing twice
+// now -- once in an earlier, still-open investigation from 2026-09-01,
+// and again tonight -- so rather than keep guessing at the exact line,
+// this adds an independent, unconditional backstop: if genuinely too
+// long has passed since the last real acceptance, force one regardless
+// of what the comparison decides. This bounds the worst case (the
+// filter silently going stale while active dosing continues on a wrong
+// belief, as happened here) to this window, even if the underlying
+// comparison defect is never found. Set well above a single real
+// Trident cycle (~6h) so it never fires under genuinely normal
+// operation, only as a real safety net for exactly this failure mode.
+unsigned long lastTridentAcceptMs = 0;
+const unsigned long kMaxTridentStalenessMs = 9UL * 3600UL * 1000UL; // 9 hours
 String lastAcceptedEmulatorTestTime = "";
 
 
@@ -529,6 +548,20 @@ unsigned long googleDriveDiagCount = 0;
 // stop after only a few seconds.
 bool calibrationRunActive[4] = {false, false, false, false};
 unsigned long calibrationRunUntilMs[4] = {0, 0, 0, 0};
+// Added 2026-09-10: real, confirmed bug -- a calibration run physically
+// dispenses real chemical (via doser.startManualRun(), for up to 300
+// real seconds -- see the /api/calibrate handler in WebRoutes.cpp) but
+// nothing in this file or that handler ever calls recordChemicalDispense()
+// for it. Confirmed directly against a live customer report: the
+// dashboard showed ~25% chemical remaining, but the physical reservoir
+// had actually run dry -- every calibration run since that reservoir was
+// last reset had been silently consuming real chemical the software's
+// running total never subtracted. Stores the originally-requested
+// duration (set alongside calibrationRunActive/calibrationRunUntilMs in
+// the start handler) so the completion code below can compute the real
+// dispensed volume (flow rate x duration) and account for it, the same
+// as every other real dosing path already does.
+float calibrationRunSeconds[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 // ============================================================================
 // HARD PUMP FAIL-SAFE SUPERVISOR
@@ -4158,6 +4191,29 @@ bool acceptNewChemistryMeasurement(const char* source, const String& measurement
         isNew = fabsf(currentAlk - lastAcceptedTridentAlk) >= 0.005f ||
                 fabsf(currentCa  - lastAcceptedTridentCa)  >= 0.5f   ||
                 fabsf(currentMg  - lastAcceptedTridentMg)  >= 0.5f;
+
+        // Added 2026-09-12: the real safety-net check -- see
+        // kMaxTridentStalenessMs's own comment above for the full
+        // reasoning. Wrap-safe subtraction (matches this file's existing
+        // style elsewhere, e.g. the calibration-run deadline check) so a
+        // millis() rollover can't accidentally suppress this.
+        if (!isNew && (long)(millis() - lastTridentAcceptMs) > (long)kMaxTridentStalenessMs) {
+            isNew = true;
+            Serial.printf("TRIDENT STALENESS SAFETY NET FIRED [%s]: %.1f hours since last real acceptance, "
+                          "forcing accept regardless of comparison (current Alk=%.4f Ca=%.2f Mg=%.2f, "
+                          "last accepted Alk=%.4f Ca=%.2f Mg=%.2f)\n",
+                          source ? source : "?",
+                          (millis() - lastTridentAcceptMs) / 3600000.0f,
+                          currentAlk, currentCa, currentMg,
+                          lastAcceptedTridentAlk, lastAcceptedTridentCa, lastAcceptedTridentMg);
+            logger.printf("TRIDENT STALENESS SAFETY NET FIRED [%s]: %.1f hours since last real acceptance, "
+                          "forcing accept regardless of comparison (current Alk=%.4f Ca=%.2f Mg=%.2f, "
+                          "last accepted Alk=%.4f Ca=%.2f Mg=%.2f)\n",
+                          source ? source : "?",
+                          (millis() - lastTridentAcceptMs) / 3600000.0f,
+                          currentAlk, currentCa, currentMg,
+                          lastAcceptedTridentAlk, lastAcceptedTridentCa, lastAcceptedTridentMg);
+        }
     }
 
     if (isNew) {
@@ -4165,6 +4221,7 @@ bool acceptNewChemistryMeasurement(const char* source, const String& measurement
         lastAcceptedTridentAlk = currentAlk;
         lastAcceptedTridentCa = currentCa;
         lastAcceptedTridentMg = currentMg;
+        lastTridentAcceptMs = millis(); // Added 2026-09-12: see kMaxTridentStalenessMs's comment above
         newChemistrySamplePendingForDailyStats = true;
         Serial.printf("CHEMISTRY NEW MEASUREMENT ACCEPTED [%s]: Alk=%.2f Ca=%.1f Mg=%.1f%s%s\n",
                       source ? source : "Unknown", currentAlk, currentCa, currentMg,
@@ -4408,6 +4465,9 @@ void syncAllTruths() {
         float nextCa    = apex.getCa();
         float nextMg    = apex.getMg();
         float nextCond  = apex.getCond();
+        // Added 2026-09-12: see acceptNewTridentMeasurement's call below,
+        // and getDate()'s own comment in apexapi.h, for the full reasoning.
+        String nextDate = apex.getDate();
 
         // Reject bad Apex parser/fallback values before they poison saved state or Firebase.
         // This blocks the earlier 650.00 dKH style failure.
@@ -4437,7 +4497,19 @@ void syncAllTruths() {
         // behavior correctly, but the code didn't actually do it --
         // acceptNewTridentMeasurement()'s return value was discarded here,
         // so every poll re-ingested the current reading regardless.
-        bool isNewTridentResult = acceptNewTridentMeasurement("Apex");
+        //
+        // Fixed 2026-09-12: real, structural fix, replacing reliance on
+        // the fragile value-comparison fallback (fingerprintCompare) with
+        // Apex's own reported test timestamp -- see getDate()'s comment
+        // in apexapi.h for the full reasoning. Passing a real, non-empty
+        // nextDate here routes acceptNewChemistryMeasurement() into the
+        // same date-based comparison the emulator path already uses
+        // (measurementId.length() > 0), rather than the value-comparison
+        // path. If nextDate ever comes back empty (a parse gap on some
+        // payload shape), this gracefully falls back to the original
+        // value-comparison behavior -- no new failure mode, strictly an
+        // improvement when the date is available.
+        bool isNewTridentResult = acceptNewTridentMeasurement("Apex", nextDate);
 
         // Recalculate AI after all Apex values are current, then publish the plan to Firebase.
         onNewDataArrived(currentAlk, isNewTridentResult);
@@ -5163,6 +5235,23 @@ void loop() {
             calibrationRunActive[i] = false;
             clearPumpRuntimeDeadline();
             forcePumpPinsOffDirect();
+
+            // Added 2026-09-10: real, confirmed fix -- see
+            // calibrationRunSeconds' own comment above for the full
+            // reasoning. Computed from the pump's own configured flow
+            // rate and the originally-requested run duration -- the same
+            // real quantity physically dispensed, not a guess. Guarded
+            // on a positive flow rate: a pump that's never been
+            // calibrated (flow rate still 0) has no real basis to
+            // estimate a volume from, and recordChemicalDispense() itself
+            // already no-ops on ml <= 0 -- this guard just avoids the
+            // wasted call and an extra log line for that case.
+            if (pumpFlowRates[i] > 0.0f && calibrationRunSeconds[i] > 0.0f) {
+                float dispensedMl = pumpFlowRates[i] * (calibrationRunSeconds[i] / 60.0f);
+                recordChemicalDispense(i, dispensedMl, "Calibration");
+            }
+            calibrationRunSeconds[i] = 0.0f;
+
             Serial.printf("Calibration timed run complete: pump %d\n", i + 1);
             logger.printf("Calibration timed run complete: pump %d\n", i + 1);
         }
@@ -5573,6 +5662,28 @@ void loop() {
     }
 
     static unsigned long lastApexPull = 0;
+    // Added 2026-09-11: real diagnostic, not a fix -- after ruling out
+    // four separate hypotheses for a confirmed real gap (a genuine
+    // 30-minute stretch with zero Apex polling activity, not even a
+    // failed attempt, despite this loop running every 5 minutes) purely
+    // from static code reading, this logs the actual live state of every
+    // gating condition on a matching cadence, so the next real
+    // occurrence shows directly which one is actually false/blocking,
+    // rather than continuing to guess. Deliberately logs unconditionally
+    // on this same 5-min cadence (using lastApexPull itself, so it can't
+    // drift out of sync with the real check above) rather than only on
+    // failure, so a working period looks visibly different from a
+    // blocked one instead of only ever seeing the blocked case.
+    if (millis() - lastApexPull > 300000UL) {
+        Serial.printf("APEX POLL GATE CHECK: apexEnabled=%d emulatorForDevice=%d msSinceLastPull=%lu willPoll=%d\n",
+                      apexEnabled, useApexLogEmulatorForThisDevice(),
+                      millis() - lastApexPull,
+                      apexEnabled && !useApexLogEmulatorForThisDevice());
+        logger.printf("APEX POLL GATE CHECK: apexEnabled=%d emulatorForDevice=%d msSinceLastPull=%lu willPoll=%d\n",
+                      apexEnabled, useApexLogEmulatorForThisDevice(),
+                      millis() - lastApexPull,
+                      apexEnabled && !useApexLogEmulatorForThisDevice());
+    }
     if (apexEnabled && !useApexLogEmulatorForThisDevice() &&
         (millis() - lastApexPull > 300000UL)) {
         lastApexPull = millis();

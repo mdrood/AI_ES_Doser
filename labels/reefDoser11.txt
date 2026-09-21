@@ -1,0 +1,10 @@
+AIDoser
+
+Device ID: reefDoser11
+Serial Label: AIES-00011
+Claim Code: PAYT-EM25
+MAC Address: E0:8C:FE:C2:63:A0
+Chip ID: A063C2FE8CE0
+
+Setup:
+https://aiesdoser.web.app/setup

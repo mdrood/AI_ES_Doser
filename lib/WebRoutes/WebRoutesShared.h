@@ -324,6 +324,17 @@ extern float baselineNaohMlDay;
 extern CalciumDemandStore calciumDemandStore;
 extern bool calibrationRunActive[4];
 extern unsigned long calibrationRunUntilMs[4];
+// Added 2026-09-10: real, confirmed fix for a compile error -- man.cpp
+// declares this array (see its own comment there for the full reasoning:
+// closes a real chemical-accounting gap where calibration runs dispensed
+// real chemical without ever being recorded) but WebRoutes.cpp's
+// handlePostCalibrationRun() needs to write the requested duration into
+// it too, the same way it already writes calibrationRunActive/
+// calibrationRunUntilMs just above. Missing this line is exactly why the
+// build failed with "'calibrationRunSeconds' was not declared in this
+// scope" -- both arrays right above it are declared here for the same
+// reason.
+extern float calibrationRunSeconds[4];
 extern float chemicalCapacityGal[4];
 extern float chemicalRemainingMl[4];
 extern bool currentAlertActive;

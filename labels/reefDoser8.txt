@@ -1,0 +1,10 @@
+AIDoser
+
+Device ID: reefDoser8
+Serial Label: AIES-00008
+Claim Code: 25FJ-T82R
+MAC Address: E0:8C:FE:C1:1F:10
+Chip ID: 101FC1FE8CE0
+
+Setup:
+https://aiesdoser.web.app/setup

@@ -526,6 +526,13 @@ void handlePostCalibrationRun() {
     doser.startManualRun(pumpIndex);
     calibrationRunActive[pumpIndex] = true;
     calibrationRunUntilMs[pumpIndex] = millis() + (unsigned long)(seconds * 1000.0f);
+    // Added 2026-09-10: real, confirmed fix -- see calibrationRunSeconds'
+    // own comment (man.cpp) for the full reasoning. Recorded here, where
+    // the actually-requested duration is directly known, rather than
+    // derived from calibrationRunUntilMs at completion time -- keeps the
+    // "what was actually requested" value exact and independent of any
+    // scheduling jitter between this handler and the completion check.
+    calibrationRunSeconds[pumpIndex] = seconds;
     armPumpRuntimeDeadlineMs(
         pumpIndex,
         (unsigned long)(seconds * 1000.0f),
