@@ -17,6 +17,13 @@ static const uint8_t LOGGER_MAX_QUEUED_FILES = 5;
 static const uint8_t LOGGER_MAX_FAILED_RETRIES = 2;
 static const uint16_t LOGGER_HTTP_TIMEOUT_MS = 8000;
 
+// Boot-record files ("bootrec_*.log") are a separate, small namespace from
+// the ordinary "queued_*.log" pool and never count against
+// LOGGER_MAX_QUEUED_FILES. Capped independently so a crash-loop can't let
+// this grow unbounded; normally drained (uploaded + deleted) almost
+// immediately since _uploadNextQueuedFile() now prefers these first.
+static const uint8_t LOGGER_MAX_BOOT_FILES = 3;
+
 static void loggerStatus(const String& message) {
   Serial.println(message);
   WebSerial.println(message);
@@ -30,7 +37,8 @@ Logger::Logger()
     _fsReady(false),
     _uploadBusy(false),
     _failedPath(""),
-    _failedCount(0) {}
+    _failedCount(0),
+    _bootRecordPath("") {}
 
 bool Logger::begin(const String& deviceId, const String& appsScriptUrl) {
   return begin(deviceId,
@@ -62,6 +70,7 @@ bool Logger::begin(const String& deviceId,
   _uploadBusy = false;
   _failedPath = "";
   _failedCount = 0;
+  _bootRecordPath = ""; // fresh boot -> lazily create a new bootrec_ file
 
   if (!LittleFS.begin(true)) {
     loggerStatus("LOGGER: LittleFS mount failed; Drive logging disabled.");
@@ -76,14 +85,17 @@ bool Logger::begin(const String& deviceId,
     LittleFS.mkdir("/logs");
   }
 
-  // Do not erase the queue at boot. Just trim it safely to the newest five.
+  // Do not erase the queue at boot. Just trim it safely to the newest five
+  // (ordinary queue) and newest three (boot-record files), independently.
   _enforceQueueLimit();
+  _enforceBootFileLimit();
 
   println("LOGGER: started fail-safe local-first Drive logger");
-  printf("LOGGER: interval=%lu ms rotate=%u bytes maxQueue=%u timeout=%u ms retries=%u\n",
+  printf("LOGGER: interval=%lu ms rotate=%u bytes maxQueue=%u maxBootFiles=%u timeout=%u ms retries=%u\n",
          (unsigned long)_uploadEveryMs,
          (unsigned)_rotateBytes,
          (unsigned)LOGGER_MAX_QUEUED_FILES,
+         (unsigned)LOGGER_MAX_BOOT_FILES,
          (unsigned)LOGGER_HTTP_TIMEOUT_MS,
          (unsigned)LOGGER_MAX_FAILED_RETRIES);
 
@@ -119,6 +131,18 @@ String Logger::_nextQueuePath() const {
   static uint32_t counter = 0;
 
   return "/logs/queued_" +
+         String((uint32_t)(millis() / 1000UL)) + "_" +
+         String((uint32_t)(millis() & 0xFFFFUL)) + "_" +
+         String(counter++) + ".log";
+}
+
+String Logger::_nextBootRecordPath() const {
+  static uint32_t counter = 0;
+
+  // Separate "bootrec_" prefix keeps this out of every "queued_" scan in
+  // _findOldestQueuedFile()/_enforceQueueLimit() -- it is never counted,
+  // never evicted, and never picked up by the ordinary upload path.
+  return "/logs/bootrec_" +
          String((uint32_t)(millis() / 1000UL)) + "_" +
          String((uint32_t)(millis() & 0xFFFFUL)) + "_" +
          String(counter++) + ".log";
@@ -193,6 +217,39 @@ void Logger::log(const String& msg) {
 
 void Logger::log(const char* msg) {
   println(msg);
+}
+
+void Logger::logBootRecord(const String& line) {
+  // Always echo locally, same as every other logger output path.
+  Serial.println(line);
+  WebSerial.println(line);
+
+  if (!_enabled || !_fsReady) return;
+
+  if (_bootRecordPath.length() == 0) {
+    _bootRecordPath = _nextBootRecordPath();
+  }
+
+  File file = LittleFS.open(_bootRecordPath, FILE_APPEND);
+  if (!file) {
+    if (!LittleFS.exists("/logs")) {
+      LittleFS.mkdir("/logs");
+    }
+    file = LittleFS.open(_bootRecordPath, FILE_WRITE);
+    if (!file) {
+      loggerStatus("LOGGER ERR: boot record write failed; continuing without it.");
+      return;
+    }
+  }
+
+  file.print(_timestampPrefix());
+  file.println(line);
+  file.close();
+
+  // This file is small and bounded (a handful of short banner lines), so
+  // there is no rotation to worry about -- just keep the total number of
+  // retained boot-record files capped.
+  _enforceBootFileLimit();
 }
 
 void Logger::_writeRaw(const String& text, bool addNewline) {
@@ -335,6 +392,79 @@ void Logger::_enforceQueueLimit() {
       loggerStatus("LOGGER: queue over five; deleted oldest " + oldest);
     } else {
       loggerStatus("LOGGER ERR: failed deleting oldest queued file " + oldest);
+      return;
+    }
+  }
+}
+
+String Logger::_findOldestBootFile() {
+  String oldest = "";
+
+  File root = LittleFS.open("/logs");
+  if (!root || !root.isDirectory()) return oldest;
+
+  File file = root.openNextFile();
+
+  while (file) {
+    String path = file.path();
+    if (path.startsWith("/littlefs")) {
+      path.replace("/littlefs", "");
+    }
+
+    bool isBootRec = path.indexOf("bootrec_") >= 0 && path.endsWith(".log");
+    file.close();
+
+    if (isBootRec && (oldest.length() == 0 || path < oldest)) {
+      oldest = path;
+    }
+
+    file = root.openNextFile();
+    yield();
+  }
+
+  root.close();
+  return oldest;
+}
+
+void Logger::_enforceBootFileLimit() {
+  if (!_fsReady) return;
+
+  while (true) {
+    uint8_t bootFileCount = 0;
+
+    File root = LittleFS.open("/logs");
+    if (!root || !root.isDirectory()) return;
+
+    File file = root.openNextFile();
+
+    while (file) {
+      String path = file.path();
+      if (path.startsWith("/littlefs")) {
+        path.replace("/littlefs", "");
+      }
+
+      if (path.indexOf("bootrec_") >= 0 && path.endsWith(".log")) {
+        bootFileCount++;
+      }
+
+      file.close();
+      file = root.openNextFile();
+      yield();
+    }
+
+    root.close();
+
+    if (bootFileCount <= LOGGER_MAX_BOOT_FILES) return;
+
+    String oldest = _findOldestBootFile();
+    if (oldest.length() == 0) return;
+
+    _clearFailure(oldest);
+
+    if (LittleFS.remove(oldest)) {
+      loggerStatus("LOGGER: boot-record files over cap; deleted oldest " + oldest);
+    } else {
+      loggerStatus("LOGGER ERR: failed deleting oldest boot-record file " + oldest);
       return;
     }
   }
@@ -544,6 +674,15 @@ bool Logger::_uploadOneFile(const String& path) {
 bool Logger::_uploadNextQueuedFile() {
   if (!_fsReady || !_enabled || _uploadBusy) return false;
 
+  // Boot-record files take priority over the ordinary queue: whenever there
+  // is any connectivity at all, get the reset-reason record for the most
+  // recent boot(s) out first, ahead of whatever backlog of ordinary
+  // diagnostic chatter may have built up in the meantime.
+  String oldestBoot = _findOldestBootFile();
+  if (oldestBoot.length() > 0) {
+    return _uploadOneFile(oldestBoot);
+  }
+
   String oldest = _findOldestQueuedFile();
 
   if (oldest.length() == 0) {
@@ -605,6 +744,7 @@ void Logger::loop() {
   // Rotate the active file, trim queue to five, and attempt only one upload.
   _queueCurrentLog();
   _enforceQueueLimit();
+  _enforceBootFileLimit(); // periodic safety net; logBootRecord() also self-enforces
 
   // Added 2026-08-05: WiFi.status() == WL_CONNECTED only means associated
   // to the local router -- it says nothing about whether the internet path

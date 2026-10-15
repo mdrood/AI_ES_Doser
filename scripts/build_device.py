@@ -16,6 +16,21 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 # Enrollment script writes here
 DEVICES_FILE = PROJECT_DIR / "scripts" / "devices.json"
 
+# Fixed 2026-10-09: every device used to carry its OWN independent
+# firmwareVersion counter in devices.json, bumped only when THAT device
+# happened to get built. Two devices built a different number of times
+# over the months (reefDoser6 built far less often than reefDoser7, say)
+# ended up with version strings that looked unrelated (P-1.1.17 vs
+# P-1.2.54) even when built from the identical src/main.cpp -- there was
+# no way to tell from the version number alone whether two devices were
+# running the same code or genuinely different feature sets. This file
+# holds the ONE shared counter for the whole fleet: every build (normal
+# or a credential rotation) reads/bumps this single value, so the version
+# number means the same thing everywhere -- "which build of the shared
+# codebase this device is running" -- not "how many times this specific
+# device has been built."
+FIRMWARE_VERSION_FILE = PROJECT_DIR / "scripts" / "firmware_version.json"
+
 GENERATED_DIR = PROJECT_DIR / "generated"
 GENERATED_HEADER = GENERATED_DIR / "device_config.generated.h"
 
@@ -67,6 +82,62 @@ def save_devices(devices):
         DEVICES_FILE.write_text(json.dumps(devices, indent=4) + "\n", encoding="utf-8")
     except Exception as e:
         fail(f"Could not write devices.json: {e}")
+
+
+def load_shared_firmware_version():
+    if not FIRMWARE_VERSION_FILE.exists():
+        fail(
+            f"Shared firmware version file not found:\n{FIRMWARE_VERSION_FILE}\n\n"
+            "Create it once with the version the whole fleet should be on, e.g.:\n"
+            '{"firmwareVersion": "P-1.2.54"}'
+        )
+
+    try:
+        data = json.loads(FIRMWARE_VERSION_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        fail(f"Could not read firmware_version.json: {e}")
+
+    version = str(data.get("firmwareVersion", "")).strip()
+    if not version:
+        fail(f"firmware_version.json is missing a non-empty 'firmwareVersion' value.")
+
+    return version
+
+
+def save_shared_firmware_version(version):
+    try:
+        FIRMWARE_VERSION_FILE.write_text(
+            json.dumps({"firmwareVersion": version}, indent=4) + "\n",
+            encoding="utf-8",
+        )
+    except Exception as e:
+        fail(f"Could not write firmware_version.json: {e}")
+
+
+def resolve_build_firmware_version():
+    """Single entry point every build path uses to decide what version
+    number this build gets. Reads the ONE shared counter (not the device's
+    own stored value), offers to bump it, and -- if bumped -- persists that
+    bump back to the shared file so the NEXT device built, whichever one it
+    is, picks up the same new number. Returns the version string to embed
+    in this build."""
+    current_version = load_shared_firmware_version()
+    next_version = increment_firmware_version(current_version)
+
+    bump_version = ask_yes_no(
+        f"Increment the shared firmware version for this build? {current_version} -> {next_version}",
+        default=True,
+    )
+
+    if bump_version:
+        save_shared_firmware_version(next_version)
+        print(f"\nShared firmware version incremented:")
+        print(f"  {current_version} -> {next_version}")
+        print(f"  saved to: {FIRMWARE_VERSION_FILE}")
+        return next_version
+
+    print(f"\nShared firmware version unchanged: {current_version}")
+    return current_version
 
 
 def increment_firmware_version(version):
@@ -370,22 +441,14 @@ def main():
     validate_device(d)
     d = ensure_device_firebase_credentials(devices, device_name, d)
 
-    old_fw_version = str(d["firmwareVersion"]).strip()
-    bump_version = ask_yes_no(
-        f'Increment firmware version for this build? {old_fw_version} -> {increment_firmware_version(old_fw_version)}',
-        default=True,
-    )
-
-    if bump_version:
-        new_fw_version = increment_firmware_version(old_fw_version)
-        d["firmwareVersion"] = new_fw_version
-        devices[device_name] = d
-        save_devices(devices)
-        print(f"\nFirmware version incremented:")
-        print(f"  {old_fw_version} -> {new_fw_version}")
-        print(f"  saved to: {DEVICES_FILE}")
-    else:
-        print(f"\nFirmware version unchanged: {old_fw_version}")
+    # Reads/bumps the ONE shared fleet-wide version, not this device's own
+    # stored value -- see resolve_build_firmware_version()'s comment. The
+    # resulting version is still written into d["firmwareVersion"] below so
+    # devices.json keeps an accurate per-device record of "what this device
+    # was last actually built and flashed with."
+    d["firmwareVersion"] = resolve_build_firmware_version()
+    devices[device_name] = d
+    save_devices(devices)
 
     validate_device(d)
 
@@ -549,21 +612,11 @@ def rotate_start(devices, device_name):
     devices[device_name] = d
     save_devices(devices)
 
-    old_fw_version = str(d["firmwareVersion"]).strip()
-    bump_version = ask_yes_no(
-        f'Increment firmware version for this build? {old_fw_version} -> {increment_firmware_version(old_fw_version)}',
-        default=True,
-    )
-
-    if bump_version:
-        new_fw_version = increment_firmware_version(old_fw_version)
-        d["firmwareVersion"] = new_fw_version
-        devices[device_name] = d
-        save_devices(devices)
-        print(f"\nFirmware version incremented:")
-        print(f"  {old_fw_version} -> {new_fw_version}")
-    else:
-        print(f"\nFirmware version unchanged: {old_fw_version}")
+    # Same shared, fleet-wide version counter as the normal build path --
+    # see resolve_build_firmware_version()'s comment.
+    d["firmwareVersion"] = resolve_build_firmware_version()
+    devices[device_name] = d
+    save_devices(devices)
 
     pio_env = d.get("board", DEFAULT_PIO_ENV) or DEFAULT_PIO_ENV
 

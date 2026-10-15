@@ -74,6 +74,40 @@ void predict(ParamKalmanState& s, float dtDays, float processNoise) {
     float pCross = s.pCross + dtDays * s.pTrend;
     float pTrend = s.pTrend;
 
+    // Fixed 2026-09-28, real fix for a confirmed live-tank incident
+    // (reefDoser12, Alk overshoot to 10.67 dKH): without this, a long-
+    // mature filter's cross-covariance (pCross) shrinks toward zero
+    // forever -- update() multiplies it by (1-kLevel) on every real
+    // measurement, and nothing ever grows it back except this function's
+    // own dt*pTrend term, which is also tiny once pTrend itself has
+    // shrunk. Once pCross is ~0, kTrend = pCross/sInnov in update() is
+    // also ~0, so NEW measurements can no longer move `trend` at all --
+    // the filter's velocity estimate gets permanently stuck at whatever
+    // it last was, even after the real chemistry reverses direction.
+    // Confirmed directly in FILTER STATE DEBUG logs from that incident:
+    // trend sat at exactly -0.2304 dKH/day, unchanged to four decimal
+    // places, for hours while real Alk was actively climbing -- pCross
+    // had collapsed and had no way to recover on its own, so `replenish`
+    // (= max(0, -trend)) kept commanding "replenishment" dosing the whole
+    // time, completely disconnected from the fact that Alk was already
+    // above target and rising.
+    //
+    // Standard textbook fix for a converged filter that can't respond to
+    // a regime change: fading memory -- inflate the whole covariance by a
+    // small factor every predict step, proportional to elapsed time. This
+    // keeps just enough "we could be wrong" margin that a sustained new
+    // pattern can always eventually re-open the trend gain again, without
+    // materially changing behavior for a filter that's genuinely tracking
+    // well (the inflation is tiny per cycle; it only matters after
+    // compounding over many cycles with no correcting real measurement).
+    // Rate is an unvalidated starting magnitude, same caveat as this
+    // file's other §10-style constants -- revisit once fleet data exists.
+    const float kFadingMemoryRatePerDay = 0.02f;
+    float inflate = 1.0f + kFadingMemoryRatePerDay * dtDays;
+    pLevel *= inflate;
+    pCross *= inflate;
+    pTrend *= inflate;
+
     s.pLevel = pLevel + processNoise * dtDays;
     s.pCross = pCross;
     s.pTrend = pTrend + processNoise * dtDays * 0.1f; // trend drifts slower than level
@@ -282,22 +316,53 @@ bool updateConfidenceFromOutcome(
     // that window is expected, not a chemical-effectiveness anomaly.
     const float kMinRatio = 0.3f / ratioToleranceMultiplier;
     const float kMaxRatio = 3.0f * ratioToleranceMultiplier;
-    if (!isfinite(ratio) || ratio < kMinRatio || ratio > kMaxRatio) return true; // §4.4 anomaly: likely external event, not chemical feedback
+
+    // A non-finite ratio (zero/degenerate contribution slipping past the
+    // kMinContribution guard via float weirdness) has nothing safe to learn
+    // from -- still bail out entirely for that case only.
+    if (!isfinite(ratio)) return true;
+
+    bool isAnomaly = (ratio < kMinRatio || ratio > kMaxRatio);
+
+    // Fixed 2026-09-28, real fix for a confirmed live-tank incident
+    // (reefDoser12): previously, ANY ratio outside [kMinRatio, kMaxRatio]
+    // skipped learning ENTIRELY (`return true` before any confidence
+    // update ran) -- reasonable for a genuine one-off external event (an
+    // unlogged water change), but if the real reason for the mismatch is
+    // that the declared/cold-start potency itself is wrong, the model can
+    // never correct: the exact evidence that would fix it is defined as
+    // the thing to discard. Confirmed directly against this device's full
+    // log history: the Alkalinity chemical's confidence[Alk] sat at its
+    // 0.35 cold-start value for its ENTIRE ~7-week operating life --
+    // every single outcome landed outside the band, in the same
+    // direction, and every single one was thrown away.
+    //
+    // Fix: still flag the anomaly to the customer exactly as before
+    // (isAnomaly, returned below, unchanged meaning/behavior for callers)
+    // -- but no longer skip the confidence update itself. Instead, pin the
+    // ratio to the nearest band edge and apply a heavily extra-damped
+    // nudge. A genuine one-off event now produces one small, bounded
+    // correction instead of zero -- not a single large corrupting jump the
+    // way an unclamped ratio would -- while a real, persistent
+    // miscalibration (the actual failure mode here) can finally climb out
+    // over repeated cycles instead of being frozen forever.
+    float learningRatio = isAnomaly ? constrain(ratio, kMinRatio, kMaxRatio) : ratio;
 
     const float kBaseLearningRate = 0.15f; // unvalidated starting magnitude, same caveat as other §10 constants in this file
     float learningRate = kBaseLearningRate * (1.0f - maturity);
+    if (isAnomaly) learningRate *= 0.25f; // extra caution for an out-of-band outcome -- still learns, just slowly, in case it really was a one-off event
 
     for (int c = 0; c < numChemicals; c++) {
         if (pendingContribution[c][p] == 0.0f) continue; // this chemical wasn't part of this window's dosing
         float share = pendingContribution[c][p] / totalContribution;
         float oldConfidence = chemicals[c].confidence[p];
-        float newConfidence = oldConfidence * (1.0f + learningRate * share * (ratio - 1.0f));
+        float newConfidence = oldConfidence * (1.0f + learningRate * share * (learningRatio - 1.0f));
 
         const float kMinConfidence = 0.05f;
         const float kMaxConfidence = 1.00f;
         chemicals[c].confidence[p] = constrain(newConfidence, kMinConfidence, kMaxConfidence);
     }
-    return false;
+    return isAnomaly; // §4.4 anomaly signal for the customer -- unchanged meaning, learning above no longer gated by it
 }
 
 } // namespace
@@ -451,6 +516,29 @@ DosingPlanV2 AIEngineV2::recalculate(bool lightsActive, float currentPh) {
             replenish = kalmanReplenish * (1.0f - trustWeight) + isolatedReplenish * trustWeight;
         } else {
             replenish = fmaxf(0.0f, -filters[p].trend);
+        }
+
+        // Fixed 2026-10-11: overshoot brake. Once a parameter is ABOVE its
+        // target and is projected to still be above it a day from now, there
+        // is nothing to "replenish" -- the tank is already ahead of its own
+        // consumption. Before this, `replenish` kept commanding dosing from
+        // the rolling consumption estimate even while the level was above
+        // target and rising, and the allocator only ever adds. Confirmed on
+        // reefDoser12: Alk 9.55 dKH (target 8.5) rising ~+0.67 dKH/day, plan
+        // still asking for +0.41..0.47 dKH/day of Alk and ~680 ml/day of
+        // sodium hydroxide. This zeroes only the replenish term; the normal
+        // gap term already clamps to zero above target. Applies to Alk, Ca
+        // and Mg alike (pH keeps its own range logic). Dosing resumes on its
+        // own as soon as the projected level comes back down toward target.
+        if (p != P_PH && gap < 0.0f) {
+            float projectedLevel = filters[p].level + filters[p].trend; // ~1 day ahead
+            if (projectedLevel > targetLevel && replenish > 0.0f) {
+                static const char* kBrakeNames[kNumParams] = {"Alk", "pH", "Ca", "Mg"};
+                Serial.printf("OVERSHOOT BRAKE [%s]: level=%.3f target=%.3f trend=%.4f/day projected=%.3f -> replenish %.4f dropped to 0\n",
+                              kBrakeNames[p], filters[p].level, targetLevel, filters[p].trend,
+                              projectedLevel, replenish);
+                replenish = 0.0f;
+            }
         }
 
         desired[p] = gapCorrection + replenish;

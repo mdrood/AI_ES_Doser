@@ -4,6 +4,17 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <math.h>
+#include "logger.h"
+#include <esp_task_wdt.h>
+// Fixed 2026-10-09: every diagnostic in this file used to be Serial-only,
+// so none of it ever reached an uploaded log zip -- there was no way to
+// tell, after the fact, whether Apex/Trident actually returned a fresh
+// Cond/Salt (-> SG/PPT) reading on a given poll, or whether it silently
+// never matched any of the probe-name patterns below and SG/PPT just
+// stayed blank forever. `logger` (declared extern in logger.h) mirrors
+// these same lines into the durable log so a future "why is SG/PPT
+// blank" question is answerable from one log pull instead of another
+// multi-day field investigation.
 
 // ------------------------------
 // Shared readings struct (yours)
@@ -215,19 +226,13 @@ static bool parseApexStatusJson(const String& payload, ApexLatest& out) {
       else if (type == "alk" || name.indexOf("alk") >= 0) {
         out.alk = v;
       }
-      // Fixed 2026-09-11: real, confirmed bug -- `name` is lowercased just
-      // above this loop (name.toLowerCase()), but these two literals were
-      // still mixed-case ("Cax3"/"Mgx3"). Arduino's String::indexOf() is
-      // case-sensitive, so these conditions could never match on any real
-      // payload -- Ca/Mg only ever updated via the `type == "ca"`/`"mg"`
-      // exact-match fallback. Confirmed against a real overnight
-      // reefDoser12 log: genuine Apex Ca/Mg changes (e.g. 434 -> 464 -> 495)
-      // never produced a "NEW MEASUREMENT ACCEPTED" line -- `latest` is a
-      // static struct that persists between polls, so an unmatched probe
-      // silently keeps whatever value was last successfully parsed,
-      // indefinitely, rather than genuinely refusing to change. Lowercased
-      // to match `name`, mirroring the already-correct "alk" branch above.
       else if (type == "ca" || name.indexOf("cax3") >= 0) {
+        // Fixed 2026-10-09: `name` is lowercased a few lines above, but this
+        // compared it against "Cax3" (mixed case) -- indexOf() is
+        // case-sensitive, so that half of the check could never match.
+        // Harmless today only because Apex's JSON "type" field apparently
+        // already says "ca" for this probe; this would silently fail
+        // Ca-matching-by-name on any system where it doesn't.
         out.ca = v;
       }
       else if (type == "mg" || name.indexOf("mgx3") >= 0) {
@@ -258,23 +263,48 @@ static bool parseApexStatusJson(const String& payload, ApexLatest& out) {
 // =====================================================
 // HTTP helper
 // =====================================================
-static bool httpGetBody(const String& url, String& bodyOut) {
+// Fixed 2026-10-11: this runs on loopTask, which is registered with a 30s
+// task watchdog (esp_task_wdt_init(30, true) in main.cpp). The old code used
+// a 15s timeout per request AND always retried the other endpoint (JSON then
+// XML), so one unreachable/slow Apex could block loop() for ~30s+ -- exactly
+// the watchdog limit -- and reset the whole controller. On reefDoser12 nearly
+// every TASK_WDT reset in the logs lands right after an Apex poll or the
+// Firebase publish that follows it, and the three resets on 10-11 came about
+// one poll interval apart. A LAN Apex answers in well under a second, so a
+// short timeout loses nothing when it's healthy, and a failed transport (no
+// connection / no response) skips the second endpoint since it would hang the
+// same way.
+static const uint16_t APEX_CONNECT_TIMEOUT_MS = 3000;
+static const uint16_t APEX_READ_TIMEOUT_MS    = 4000;
+
+// Backoff after failed polls so a dead Apex costs a few seconds per several
+// minutes instead of blocking every poll cycle.
+static uint8_t  apexConsecutiveFailures = 0;
+static unsigned long apexNextPollAllowedMs = 0;
+static unsigned long apexLastProblemLogMs = 0;
+
+static bool httpGetBody(const String& url, String& bodyOut, bool* transportFailed = nullptr) {
   bodyOut = "";
+  if (transportFailed) *transportFailed = false;
   WiFiClient client;
   HTTPClient http;
 
   if (!http.begin(client, url)) {
     Serial.println("http.begin() failed");
+    if (transportFailed) *transportFailed = true;
     return false;
   }
 
-  // keep it snappy so fallback doesn’t stall your loop
-  http.setTimeout(15000);
+  http.setConnectTimeout(APEX_CONNECT_TIMEOUT_MS);
+  http.setTimeout(APEX_READ_TIMEOUT_MS);
 
+  esp_task_wdt_reset();
   int httpCode = http.GET();
+  esp_task_wdt_reset();
   if (httpCode <= 0) {
     Serial.printf("HTTP GET failed (%s): %s\n", url.c_str(), http.errorToString(httpCode).c_str());
     http.end();
+    if (transportFailed) *transportFailed = true;
     return false;
   }
 
@@ -304,30 +334,82 @@ String ApexApi::getState() {
   const String urlJson = "http://" + apexIp + "/cgi-bin/status.json";
   const String urlXml  = "http://" + apexIp + "/cgi-bin/status.xml";
 
+  // Still backing off from recent failures -- skip this poll entirely
+  // (returns "" like any other failed poll; caller already handles that).
+  if (apexConsecutiveFailures > 0 && (long)(millis() - apexNextPollAllowedMs) < 0) {
+    return "";
+  }
+
+  const unsigned long pollStartMs = millis();
+  esp_task_wdt_reset();
+
+  bool transportFailed = false;
+
   auto tryJson = [&](String& body) -> bool {
-    if (!httpGetBody(urlJson, body)) return false;
+    transportFailed = false;
+    if (!httpGetBody(urlJson, body, &transportFailed)) return false;
     bool ok = parseApexStatusJson(body, latest);
-    if (!ok) Serial.println("Apex JSON fetched but parse/values invalid");
+    if (!ok) {
+      Serial.println("Apex JSON fetched but parse/values invalid");
+      logger.println("Apex JSON fetched but parse/values invalid");
+    }
     return ok;
   };
 
   auto tryXml = [&](String& body) -> bool {
-    if (!httpGetBody(urlXml, body)) return false;
+    transportFailed = false;
+    if (!httpGetBody(urlXml, body, &transportFailed)) return false;
     bool ok = parseApexLatestXml(body, latest);
-    if (!ok) Serial.println("Apex XML fetched but parse/values invalid");
+    if (!ok) {
+      Serial.println("Apex XML fetched but parse/values invalid");
+      logger.println("Apex XML fetched but parse/values invalid");
+    }
     return ok;
   };
 
   String body = "";
   bool ok = false;
 
-  // Prefer based on flag, but ALWAYS fallback to the other.
+  // Prefer based on flag, and fall back to the other endpoint -- but only
+  // when the first one actually answered (e.g. 404 or unparseable). If the
+  // connection itself failed, the other endpoint would hang the same way, so
+  // don't spend another timeout on it.
   if (apexJson) {
     ok = tryJson(body);
-    if (!ok) ok = tryXml(body);
+    if (!ok && !transportFailed) ok = tryXml(body);
   } else {
     ok = tryXml(body);
-    if (!ok) ok = tryJson(body);
+    if (!ok && !transportFailed) ok = tryJson(body);
+  }
+
+  const unsigned long pollDurationMs = millis() - pollStartMs;
+  esp_task_wdt_reset();
+
+  // Rate-limited durable record (at most one line per 10 min): failures and
+  // unusually slow polls were previously Serial-only, so none of this ever
+  // reached an uploaded log.
+  const bool canLogProblem = (apexLastProblemLogMs == 0) || (millis() - apexLastProblemLogMs >= 600000UL);
+  if (!ok) {
+    if (apexConsecutiveFailures < 250) apexConsecutiveFailures++;
+    unsigned long backoffMs = 60000UL << (apexConsecutiveFailures > 4 ? 3 : (apexConsecutiveFailures - 1)); // 60s,120s,240s,480s
+    if (backoffMs > 600000UL) backoffMs = 600000UL;
+    apexNextPollAllowedMs = millis() + backoffMs;
+    if (canLogProblem) {
+      apexLastProblemLogMs = millis();
+      logger.printf("APEX POLL FAILED #%u after %lums (transportFailed=%d); backing off %lus\n",
+                    (unsigned)apexConsecutiveFailures, pollDurationMs, (int)transportFailed, backoffMs / 1000UL);
+    }
+  } else {
+    if (apexConsecutiveFailures > 0) {
+      logger.printf("APEX POLL RECOVERED after %u failed polls (took %lums)\n",
+                    (unsigned)apexConsecutiveFailures, pollDurationMs);
+      apexLastProblemLogMs = millis();
+    } else if (pollDurationMs > 3000 && canLogProblem) {
+      apexLastProblemLogMs = millis();
+      logger.printf("APEX POLL SLOW: %lums\n", pollDurationMs);
+    }
+    apexConsecutiveFailures = 0;
+    apexNextPollAllowedMs = 0;
   }
 
   if (ok) {
@@ -336,17 +418,42 @@ String ApexApi::getState() {
     Serial.printf("TempF=%.2f pH=%.2f Cond=%.2f Alk=%.2f Ca=%.1f Mg=%.0f\n",
                   latest.tempF, latest.ph, latest.cond, latest.alk, latest.ca, latest.mg);
 
+    // Kept out of the Serial-only firehose on purpose: the user specifically
+    // wants durable confirmation of Temp/Cond (Temp/SG missing on the
+    // dashboard), without adding a new line to the logger on every single
+    // poll. Only writes once to the durable log when Temp or Cond actually
+    // CHANGES value, plus one heartbeat every ~60 polls (roughly hourly at
+    // the normal ~5min poll cadence) so a long run of "still NAN" is still
+    // visible without being a line-per-poll flood.
+    static float lastLoggedTempF = NAN;
+    static float lastLoggedCond = NAN;
+    static uint16_t pollsSinceApexLog = 0;
+    bool tempChanged = !isfinite(lastLoggedTempF) != !isfinite(latest.tempF) ||
+                        (isfinite(latest.tempF) && fabs(latest.tempF - lastLoggedTempF) > 0.05f);
+    bool condChanged = !isfinite(lastLoggedCond) != !isfinite(latest.cond) ||
+                        (isfinite(latest.cond) && fabs(latest.cond - lastLoggedCond) > 0.05f);
+    pollsSinceApexLog++;
+    if (tempChanged || condChanged || pollsSinceApexLog >= 60) {
+      logger.printf("APEX POLL: TempF=%.2f Cond=%.2f (pH=%.2f Alk=%.2f Ca=%.1f Mg=%.0f)\n",
+                    latest.tempF, latest.cond, latest.ph, latest.alk, latest.ca, latest.mg);
+      lastLoggedTempF = latest.tempF;
+      lastLoggedCond = latest.cond;
+      pollsSinceApexLog = 0;
+    }
+
     setTempF(latest.tempF);
     setPh(latest.ph);
     setCond(latest.cond);
     setAlk(latest.alk);
     setCa(latest.ca);
     setMg(latest.mg);
+    setDate(String(latest.date));
 
     Serial.printf("CLASS: TempF=%.2f pH=%.2f Cond=%.2f Alk=%.2f Ca=%.1f Mg=%.0f\n",
                   getTempF(), getPh(), getCond(), getAlk(), getCa(), getMg());
   } else {
     Serial.println("Failed to fetch/parse Apex via JSON and XML.");
+    logger.println("Failed to fetch/parse Apex via JSON and XML.");
     body = "";
   }
 
@@ -375,7 +482,7 @@ float ApexApi::getCond(){ return cond; }
 float ApexApi::getAlk(){ return alk; }
 float ApexApi::getCa(){ return ca; }
 float ApexApi::getMg(){ return mg; }
-String ApexApi::getDate(){ return String(latest.date); }
+String ApexApi::getDate(){ return dateStr; }
 
 void ApexApi::setTempF(float v){ tempF = v; }
 void ApexApi::setPh(float v){ ph = v; }
@@ -383,3 +490,4 @@ void ApexApi::setCond(float v){ cond = v; }
 void ApexApi::setAlk(float v){ alk = v; }
 void ApexApi::setCa(float v){ ca = v; }
 void ApexApi::setMg(float v){ mg = v; }
+void ApexApi::setDate(String v){ dateStr = v; }

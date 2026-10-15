@@ -1,5 +1,10 @@
 #include "Doser.h"
 #include <Preferences.h>
+#include "logger.h"
+
+// Added: needed for the new doseMl() failure logging below. Same global
+// instance main.cpp and (now) StateMachine.cpp already reference.
+extern Logger logger;
 
 Doser::Doser() {
     // Initialize pins (Update these to your actual ESP32 pins)
@@ -41,10 +46,28 @@ void Doser::begin() {
 }
 
 float Doser::doseMl(int i, float ml) {
-    if (i < 0 || i > 3 || !isfinite(ml) || ml <= 0.0f) return 0.0f;
+    if (i < 0 || i > 3 || !isfinite(ml) || ml <= 0.0f) {
+        // Added: this used to return 0.0f with zero log output. Anything
+        // calling doseMl() (main.cpp's AutoDose path, calibration, a
+        // manual/quick-dose API) already logs a "dose failed to start"
+        // line on seeing 0.0f back, but never WHY -- a bad index vs. an
+        // invalid ml amount look identical from the outside. Logging the
+        // actual inputs here closes that gap directly at the source.
+        Serial.printf("DOSER: doseMl rejected -- pump=%d ml=%.3f (bad index or non-finite/non-positive ml)\n", i, ml);
+        logger.printf("DOSER: doseMl rejected -- pump=%d ml=%.3f (bad index or non-finite/non-positive ml)\n", i, ml);
+        return 0.0f;
+    }
 
     const float flowMlPerMin = _pumps[i].mlPerMin;
-    if (!isfinite(flowMlPerMin) || flowMlPerMin <= 0.0f) return 0.0f;
+    if (!isfinite(flowMlPerMin) || flowMlPerMin <= 0.0f) {
+        // Added: same reasoning -- an uncalibrated or corrupted flow rate
+        // (0, negative, NaN) silently blocked every dose for that pump
+        // with nothing in any log to say so. This is now directly visible
+        // instead of only inferable from a pump that never dumps.
+        Serial.printf("DOSER: doseMl rejected -- pump=%d requested=%.2fml, flow rate invalid (%.4f ml/min)\n", i, ml, flowMlPerMin);
+        logger.printf("DOSER: doseMl rejected -- pump=%d requested=%.2fml, flow rate invalid (%.4f ml/min)\n", i, ml, flowMlPerMin);
+        return 0.0f;
+    }
 
     // main.cpp has a five-minute absolute runtime supervisor with a 20-second
     // margin. Keep this driver below that same deadline instead of silently

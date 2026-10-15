@@ -41,6 +41,17 @@ public:
   void log(const String& msg);
   void log(const char* msg);
 
+  // Writes one line of the current boot's one-time banner (reset reason,
+  // firmware version, etc.) to a small dedicated file that is exempt from
+  // the normal 5-file queue eviction and is uploaded ahead of everything
+  // else. Ordinary logger.println()/printf() output shares a queue that is
+  // capped at LOGGER_MAX_QUEUED_FILES and drained at only one file per
+  // upload cycle -- since the boot banner is always the oldest thing in
+  // that queue right after a reboot, it was reliably the first thing
+  // evicted before it could ever be uploaded. This path fixes that without
+  // touching the normal queue's behavior at all.
+  void logBootRecord(const String& line);
+
   void forceUpload();
   void setEnabled(bool enabled);
   bool isEnabled() const;
@@ -60,16 +71,23 @@ private:
   String _failedPath;
   uint8_t _failedCount;
 
+  // Path of this boot's dedicated boot-record file. Empty until the first
+  // logBootRecord() call of this boot, then reused for the rest of it.
+  String _bootRecordPath;
+
   String _currentPath() const;
   String _queuePath(uint32_t stamp) const;
   String _nextQueuePath() const;
+  String _nextBootRecordPath() const;
   String _timestampPrefix() const;
 
   void _writeRaw(const String& s, bool addNewline);
   void _rotateIfNeeded();
   void _queueCurrentLog();
   void _enforceQueueLimit();
+  void _enforceBootFileLimit();
   String _findOldestQueuedFile();
+  String _findOldestBootFile();
   bool _uploadOneFile(const String& path);
   bool _uploadNextQueuedFile();
   String _fileNameForPath(const String& path) const;

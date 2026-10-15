@@ -10,6 +10,8 @@
 #include "global_config.h"
 #include <esp_task_wdt.h>
 #include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 // 2. YOUR CUSTOM HEADERS
 #include "Doser.h"
@@ -34,6 +36,49 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <WebSerial.h>
+
+// Fixed 2026-10-06: root cause of reefDoser7's P1 safety-cap intermittently
+// never clearing, found after v47/v48/v49/v50 (each a logically-sound fix
+// to the SEQUENTIAL comparison logic) kept failing unpredictably anyway.
+// It was never a logic bug -- it's a data race. addCurrentAiPlanToBuckets()
+// calls saveDosingState() (-> rolloverDailyAccountingIfNeeded(), which reads
+// and writes dailyAccountingDate/dailyAccountingDayNumber/dailyDoseTotals[])
+// and is called from TWO different FreeRTOS tasks: the main loop() task
+// (the periodic "AI BUCKET SLICE [Scheduler]" tick) AND streamCallback()'s
+// CloudManual path (addCurrentAiPlanToBuckets("CloudManual", true)) --
+// Firebase-ESP32-Client runs stream callbacks on their OWN dedicated task,
+// never on the Arduino loop task. Two tasks touching the same unsynchronized
+// String/long/float[] globals is a genuine race: usually harmless (the
+// window is tiny), but if a cloud manual-test update lands in the same
+// instant as a scheduled rollover check, the comparison or the clear can
+// be corrupted or lost entirely -- consistent with every symptom seen:
+// intermittent (not every midnight), immune to any amount of purely
+// sequential logic review, and getting WORSE the more cloud/Apex activity
+// is happening (more chances for the two tasks to collide), not better.
+//
+// Declared here, near the top of the file, because applyPumpSafetyCaps()
+// and recordChemicalDispense() (both well before dailyAccountingDate's own
+// declaration further down) also need to take this lock.
+//
+// Recursive (not plain) mutex: rolloverDailyAccountingIfNeeded() is called
+// both directly and from inside saveDosingState() on the same call stack,
+// on the same task -- a plain mutex would deadlock a task against itself.
+// Created in setup(), before WiFi/Firebase start (so before streamCallback()
+// could possibly fire); NULL-checked so any call before that point is a
+// harmless no-op rather than a crash.
+SemaphoreHandle_t dailyAccountingMutex = NULL;
+
+struct DailyAccountingLock {
+    bool held;
+    DailyAccountingLock() : held(false) {
+        if (dailyAccountingMutex != NULL) {
+            held = (xSemaphoreTakeRecursive(dailyAccountingMutex, pdMS_TO_TICKS(2000)) == pdTRUE);
+        }
+    }
+    ~DailyAccountingLock() {
+        if (held) xSemaphoreGiveRecursive(dailyAccountingMutex);
+    }
+};
 
 #define FIREBASE_API_KEY "AIzaSyB4XtC5Pvxw6To58EKTLMADQLqR_hTZK0M"
 #define FIREBASE_DB_URL "https://aiesdoser-default-rtdb.firebaseio.com"
@@ -393,6 +438,46 @@ FirebaseConfig config;
 bool firebaseStarted = false;
 bool tankVolumePublishedThisBoot = false;
 unsigned long lastTankVolumePublishAttemptMs = 0;
+
+// Firebase stale-token recovery, two tiers. Added 2026-09-28, real,
+// confirmed gap: reefDoser12's log shows an unattended Firebase
+// TOKEN_EXPIRED outage running 6.6 hours straight (80 consecutive errors)
+// with nothing in this codebase ever forcing recovery -- tokenStatusCallback()
+// only logs the error, the SDK's own internal retry eventually succeeded on
+// its own, on an unpredictable timeline, and nothing here could speed that
+// up or even know it needed to. During that window every remote-control
+// path (OTA, dashboard commands, dosing-stop) is also unreachable, since
+// they all ride the same Firebase stream -- so once it's stuck, only the
+// device itself can get out of it.
+//
+// Tier 1 (light): after the token's been broken for FIREBASE_REFRESH_MS,
+// call Firebase.refreshToken(&config) once -- a real, documented method on
+// this exact library (FirebaseESP32.h / Firebase.h: "void refreshToken(
+// FirebaseConfig *config);") that forces a fresh token using the stored
+// refresh token, no reboot, no dosing interruption, since a Firebase-only
+// outage is not itself a dosing safety issue.
+// Tier 2 (heavy, fallback only): if it's STILL broken FIREBASE_STALE_REBOOT_MS
+// after that, force-reboot to get a clean re-auth -- covers whatever case
+// even an explicit refresh can't clear (e.g. the stored refresh token itself
+// being invalid, not just the short-lived ID token).
+// Both tiers only ever queue a flag here -- loop() (never the callback
+// itself -- same "queue it in the callback, act in loop()" pattern already
+// used for OTA below) performs the actual network call / restart.
+unsigned long firebaseTokenErrorSinceMs = 0;
+bool firebaseRefreshAttemptedThisStreak = false;
+bool firebaseRefreshPending = false;
+bool firebaseStaleRebootPending = false;
+// Set by loop() at the moment Firebase.refreshToken() is actually called
+// (not by the callback, which only queues the request -- see
+// firebaseRefreshPending above). tokenStatusCallback() reads this on
+// token_status_ready to log whether recovery followed a refresh attempt or
+// happened on its own, so a real occurrence tells us whether refreshToken()
+// is doing real work or just coincidentally overlapping with the SDK's own
+// recovery -- timing correlation isn't proof of causation, but it's the
+// best signal available without instrumenting inside the library itself.
+unsigned long firebaseRefreshAttemptedAtMs = 0;
+const unsigned long FIREBASE_REFRESH_MS = 5UL * 60UL * 1000UL;      // 5 minutes -- try the light fix first
+const unsigned long FIREBASE_STALE_REBOOT_MS = 20UL * 60UL * 1000UL; // 20 minutes -- long enough to give the refresh a real chance to have worked, short enough that it wouldn't have let 9/21's 6.6-hour outage run more than a fraction of its length
 
 // Firmware version publish guard.
 // The first Firebase.setString can fail silently if called before Firebase.ready(),
@@ -1401,31 +1486,98 @@ float getPumpDailyRemainingMl(int pumpIndex) {
     return remaining > 0.0f ? remaining : 0.0f;
 }
 
+// Fixed 2026-10-09: the daily cap alone only limited TOTAL ml/day -- it
+// never limited the RATE within the day. Whenever a pump's bucket carries
+// a backlog bigger than one day's cap (chronically true any time the AI's
+// desired dose exceeds maxMlPerDay, which the allocator itself flags as
+// "insufficient chemical capacity"), the instant the daily counter resets
+// at midnight, the backlog fires doses back-to-back at the minimum
+// INTER_PUMP_DELAY_MS spacing until the WHOLE day's cap is used up --
+// often within 15-20 minutes of midnight. Confirmed in the field on
+// reefDoser7: dailyUsed went 0 -> 1500 -> 1750 ml inside about an hour of
+// the 10-08/10-09 rollover, i.e. most of a day's kalkwasser dumped in one
+// burst right after midnight instead of spread across the day.
+//
+// This paces every pump on every system generically (no tank-specific
+// constants): it limits how much of TODAY's cap can be used by THIS point
+// in the local day, based on that pump's own existing getPumpMaxDayMl().
+// A pump with no backlog problem (dailyRemaining already tracks pace
+// naturally) is unaffected; only a pump sitting on a big backlog gets
+// throttled to a steady drip across the day instead of a burst.
+//
+// Fails OPEN (no extra restriction) if local time isn't available yet
+// (e.g. before NTP sync shortly after boot) -- this is an ADDITIONAL
+// limit on top of the existing daily-cap/max-dose checks, never a reason
+// to block dosing that would otherwise be allowed.
+float getFractionOfLocalDayElapsed() {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo, 10)) {
+        return -1.0f;
+    }
+    float secondsToday = (float)timeinfo.tm_hour * 3600.0f +
+                          (float)timeinfo.tm_min * 60.0f +
+                          (float)timeinfo.tm_sec;
+    return secondsToday / 86400.0f;
+}
+
+float getPumpPacedRemainingMl(int pumpIndex) {
+    float maxDay = getPumpMaxDayMl(pumpIndex);
+    float frac = getFractionOfLocalDayElapsed();
+    if (frac < 0.0f) return maxDay; // time unknown -- don't add a restriction
+    if (frac > 1.0f) frac = 1.0f;
+
+    // 15% grace ahead of strict pace (~3.6 hours) so normal dosing cadence,
+    // scheduler jitter, and a tank that's genuinely behind don't get choked
+    // right at a time boundary -- this paces the BURST, it doesn't force a
+    // perfectly flat drip.
+    const float kPaceGraceFraction = 0.15f;
+    float pacedAllowedTotal = maxDay * (frac + kPaceGraceFraction);
+    if (pacedAllowedTotal > maxDay) pacedAllowedTotal = maxDay;
+
+    float maxDose = getPumpMaxDoseMl(pumpIndex);
+    if (pacedAllowedTotal < maxDose) pacedAllowedTotal = maxDose; // always allow at least one dose
+
+    float used = dailyDoseTotals[pumpIndex];
+    if (!isfinite(used) || used < 0.0f) used = 0.0f;
+    float pacedRemaining = pacedAllowedTotal - used;
+    return pacedRemaining > 0.0f ? pacedRemaining : 0.0f;
+}
+
 float applyPumpSafetyCaps(int pumpIndex, float requestedMl, const char* source) {
     if (pumpIndex < 0 || pumpIndex >= 4 || requestedMl <= 0.0f) return 0.0f;
+    DailyAccountingLock lock; // reads dailyDoseTotals[]; see dailyAccountingMutex's comment
 
     float maxDose = getPumpMaxDoseMl(pumpIndex);
     float dailyRemaining = getPumpDailyRemainingMl(pumpIndex);
+    float pacedRemaining = getPumpPacedRemainingMl(pumpIndex);
     float capped = requestedMl;
 
     if (capped > maxDose) capped = maxDose;
     if (capped > dailyRemaining) capped = dailyRemaining;
 
+    bool pacedThisTime = false;
+    if (capped > pacedRemaining) {
+        capped = pacedRemaining;
+        pacedThisTime = true;
+    }
+
     if (capped < 0.01f) {
-        Serial.printf("PUMP SAFETY [%s]: P%d blocked. requested=%.2f maxDose=%.2f dailyUsed=%.2f maxDay=%.2f\n",
-                      source ? source : "dose", pumpIndex + 1, requestedMl, maxDose,
-                      dailyDoseTotals[pumpIndex], getPumpMaxDayMl(pumpIndex));
-        logger.printf("PUMP SAFETY [%s]: P%d blocked. requested=%.2f maxDose=%.2f dailyUsed=%.2f maxDay=%.2f\n",
-                      source ? source : "dose", pumpIndex + 1, requestedMl, maxDose,
-                      dailyDoseTotals[pumpIndex], getPumpMaxDayMl(pumpIndex));
+        const char* why = pacedThisTime ? "paced" : "dailyCap";
+        Serial.printf("PUMP SAFETY [%s]: P%d blocked (%s). requested=%.2f maxDose=%.2f dailyUsed=%.2f maxDay=%.2f pacedRemaining=%.2f\n",
+                      source ? source : "dose", pumpIndex + 1, why, requestedMl, maxDose,
+                      dailyDoseTotals[pumpIndex], getPumpMaxDayMl(pumpIndex), pacedRemaining);
+        logger.printf("PUMP SAFETY [%s]: P%d blocked (%s). requested=%.2f maxDose=%.2f dailyUsed=%.2f maxDay=%.2f pacedRemaining=%.2f\n",
+                      source ? source : "dose", pumpIndex + 1, why, requestedMl, maxDose,
+                      dailyDoseTotals[pumpIndex], getPumpMaxDayMl(pumpIndex), pacedRemaining);
         return 0.0f;
     }
 
     if (capped < requestedMl - 0.01f) {
-        Serial.printf("PUMP SAFETY [%s]: P%d capped %.2f ml -> %.2f ml. maxDose=%.2f dailyRemaining=%.2f\n",
-                      source ? source : "dose", pumpIndex + 1, requestedMl, capped, maxDose, dailyRemaining);
-        logger.printf("PUMP SAFETY [%s]: P%d capped %.2f ml -> %.2f ml. maxDose=%.2f dailyRemaining=%.2f\n",
-                      source ? source : "dose", pumpIndex + 1, requestedMl, capped, maxDose, dailyRemaining);
+        const char* why = pacedThisTime ? "paced" : "dailyRemaining";
+        Serial.printf("PUMP SAFETY [%s]: P%d capped %.2f ml -> %.2f ml (%s). maxDose=%.2f dailyRemaining=%.2f pacedRemaining=%.2f\n",
+                      source ? source : "dose", pumpIndex + 1, requestedMl, capped, why, maxDose, dailyRemaining, pacedRemaining);
+        logger.printf("PUMP SAFETY [%s]: P%d capped %.2f ml -> %.2f ml (%s). maxDose=%.2f dailyRemaining=%.2f pacedRemaining=%.2f\n",
+                      source ? source : "dose", pumpIndex + 1, requestedMl, capped, why, maxDose, dailyRemaining, pacedRemaining);
     }
 
     return capped;
@@ -1596,6 +1748,7 @@ void saveChemicalReservoirs() {
 
 void recordChemicalDispense(int pumpIndex, float ml, const char* source) {
     if (pumpIndex < 0 || pumpIndex > 3 || ml <= 0.0f) return;
+    DailyAccountingLock lock; // writes dailyDoseTotals[]; see dailyAccountingMutex's comment
 
     // Single source of truth for daily dosing totals.
     // Count the actual mL returned by Doser::doseMl(), after any runtime safety cap.
@@ -1643,6 +1796,38 @@ struct dailyStats dailyStats;
 
 bool reportPushedToday = false;
 String dailyAccountingDate = "";
+// Fixed 2026-10-01: integer day-number shadow of dailyAccountingDate -- see
+// getTodayDayNumber()/rolloverDailyAccountingIfNeeded() above/below. -1
+// means "not yet established this boot", same meaning as dailyAccountingDate
+// being empty.
+long dailyAccountingDayNumber = -1;
+
+// Fixed 2026-10-06: root cause of reefDoser7's P1 safety-cap intermittently
+// never clearing, found after v47/v48/v49/v50 (each a logically-sound fix
+// to the SEQUENTIAL comparison logic) kept failing unpredictably anyway.
+// It was never a logic bug -- it's a data race. addCurrentAiPlanToBuckets()
+// calls saveDosingState() (-> rolloverDailyAccountingIfNeeded(), which reads
+// and writes dailyAccountingDate/dailyAccountingDayNumber/dailyDoseTotals[])
+// and is called from TWO different FreeRTOS tasks: the main loop() task
+// (the periodic "AI BUCKET SLICE [Scheduler]" tick) AND streamCallback()'s
+// CloudManual path (addCurrentAiPlanToBuckets("CloudManual", true)) --
+// Firebase-ESP32-Client runs stream callbacks on their OWN dedicated task,
+// never on the Arduino loop task. Two tasks touching the same unsynchronized
+// String/long/float[] globals is a genuine race: usually harmless (the
+// window is tiny), but if a cloud manual-test update lands in the same
+// instant as a scheduled rollover check, the comparison or the clear can
+// be corrupted or lost entirely -- consistent with every symptom seen:
+// intermittent (not every midnight), immune to any amount of purely
+// sequential logic review, and the failures getting WORSE the more
+// cloud/Apex activity is happening (more chances for the two tasks to
+// collide), not better.
+//
+// Recursive (not plain) mutex: rolloverDailyAccountingIfNeeded() is called
+// both directly and from inside saveDosingState() on the same call stack,
+// on the same task -- a plain mutex would deadlock a task against itself.
+// (Declared near the top of the file -- see its forward-reference comment
+// right after the includes -- because applyPumpSafetyCaps() and
+// recordChemicalDispense() both need it well before this point.)
 
 
 bool isValidSystemMode(int mode) {
@@ -2623,6 +2808,27 @@ void tokenStatusCallback(TokenInfo info) {
             lastErrorLogMs = now;
         }
 
+        // Two-tier stale-token recovery (see firebaseTokenErrorSinceMs's
+        // declaration for the full reasoning). Marks when this continuous
+        // error streak started, independent of the rate-limited logging
+        // above, then queues tier 1 (refreshToken) at 5 minutes and tier 2
+        // (reboot) at 20 minutes if tier 1 didn't clear it. Never acts
+        // directly here -- only sets flags; loop() performs the actual
+        // network call / restart, same "queue in the callback, act in
+        // loop()" pattern this file already uses for OTA.
+        if (firebaseTokenErrorSinceMs == 0) {
+            firebaseTokenErrorSinceMs = now;
+        } else {
+            unsigned long brokenForMs = now - firebaseTokenErrorSinceMs;
+            if (!firebaseRefreshAttemptedThisStreak && brokenForMs >= FIREBASE_REFRESH_MS) {
+                firebaseRefreshAttemptedThisStreak = true;
+                firebaseRefreshPending = true;
+            }
+            if (!firebaseStaleRebootPending && brokenForMs >= FIREBASE_STALE_REBOOT_MS) {
+                firebaseStaleRebootPending = true;
+            }
+        }
+
         readyLogged = false;
         return;
     }
@@ -2632,11 +2838,38 @@ void tokenStatusCallback(TokenInfo info) {
         if (!readyLogged) {
             Serial.println("Firebase token ready.");
             logger.println("Firebase token ready.");
+
+            // Diagnostic attribution: did this recovery follow a tier-1
+            // refreshToken() attempt, or did the token clear before one was
+            // ever needed? Timing correlation isn't proof of causation, but
+            // over real occurrences it tells us whether refreshToken() is
+            // doing real work or just coincidentally overlapping with the
+            // SDK's own recovery -- see firebaseRefreshAttemptedAtMs's
+            // declaration for the full reasoning.
+            if (firebaseRefreshAttemptedThisStreak) {
+                unsigned long sinceRefreshMs = millis() - firebaseRefreshAttemptedAtMs;
+                Serial.printf("FIREBASE TOKEN RECOVERED: %lu ms after the Firebase.refreshToken() attempt.\n", sinceRefreshMs);
+                logger.printf("FIREBASE TOKEN RECOVERED: %lu ms after the Firebase.refreshToken() attempt.\n", sinceRefreshMs);
+            } else {
+                Serial.println("FIREBASE TOKEN RECOVERED: on its own, before a refreshToken() attempt was needed.");
+                logger.println("FIREBASE TOKEN RECOVERED: on its own, before a refreshToken() attempt was needed.");
+            }
+
             readyLogged = true;
         }
 
         lastErrorMessage = "";
         lastErrorLogMs = 0;
+
+        // Token recovered (on its own, or because tier 1's refreshToken()
+        // call worked) before the reboot threshold hit -- clear everything
+        // so a future, unrelated error starts counting fresh instead of
+        // inheriting an old start time or skipping tier 1 because this
+        // streak already "used" its one refresh attempt.
+        firebaseTokenErrorSinceMs = 0;
+        firebaseRefreshAttemptedThisStreak = false;
+        firebaseRefreshPending = false;
+        firebaseStaleRebootPending = false;
     }
 }
 
@@ -2651,7 +2884,44 @@ String getTodayDateKey() {
     return String(today);
 }
 
+// Fixed 2026-10-01: reefDoser7 ran v47 AND v48 (both confirmed, by diff,
+// built from exactly this file) through multiple real local-midnight
+// crossings with P1 permanently stuck at dailyUsed==maxDay -- and across a
+// full 2-day log capture there is not ONE "DAILY ACCOUNTING ROLLOVER" or
+// "DAILY ACCOUNTING RESET" line, even though v48 added an unconditional,
+// Firebase/WiFi-independent per-minute check specifically to guarantee that
+// log line. That means dailyAccountingDate (a String) was never being seen
+// as different from "today" (also a String) at the moment of comparison --
+// despite getTodayDateKey() clearly working correctly everywhere else in
+// this file (the log's own [YYYY-MM-DD HH:MM:SS] timestamps roll the date
+// over correctly at midnight via the exact same getLocalTime() call).
+// Root cause not conclusively identified from logs alone -- could be an
+// Arduino String comparison/heap edge case, could be something else -- but
+// rather than ship a fourth guess at the SAME string-compare mechanism,
+// this replaces it with a plain integer day-number comparison (immune to
+// String equality edge cases) and, just as importantly, logs the
+// comparison on EVERY check, not only on a detected mismatch. If this
+// still doesn't clear it, the next log pull will show the actual
+// today/stored values being compared instead of nothing at all.
+long getTodayDayNumber() {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo, 10)) {
+        return -1;
+    }
+    // Local midnight of the current local day, as an epoch-day count.
+    // mktime() interprets the struct tm fields as LOCAL time, consistent
+    // with configTime()'s TZ/DST settings already applied in setup().
+    struct tm midnight = timeinfo;
+    midnight.tm_hour = 0;
+    midnight.tm_min = 0;
+    midnight.tm_sec = 0;
+    time_t localMidnightEpoch = mktime(&midnight);
+    if (localMidnightEpoch < 0) return -1;
+    return (long)(localMidnightEpoch / 86400L);
+}
+
 void clearDailyAccountingOnly(const char* reason) {
+    DailyAccountingLock lock; // see dailyAccountingMutex's comment -- called from rollover, already locked, recursive-safe
     memset(&dailyStats, 0, sizeof(dailyStats));
     for (int i = 0; i < 4; i++) {
         dailyDoseTotals[i] = 0.0f;
@@ -2665,33 +2935,68 @@ void clearDailyAccountingOnly(const char* reason) {
 }
 
 void rolloverDailyAccountingIfNeeded(const char* reason) {
+    DailyAccountingLock lock; // held for the whole read-compare-clear-write sequence below
     String today = getTodayDateKey();
-    if (today.length() == 0) return;
+    long todayNum = getTodayDayNumber();
 
-    if (dailyAccountingDate.length() == 0) {
-        dailyAccountingDate = today;
+    // Fixed 2026-10-01: log this comparison EVERY time, unconditionally --
+    // not just when a mismatch is found. This is the one piece of
+    // visibility that was missing every previous time this was debugged
+    // from logs alone: with the old code, a check that found no mismatch
+    // produced zero output, so there was no way to tell "correctly found
+    // no rollover needed" apart from "silently never ran" or "silently
+    // couldn't compare." One line, once a minute, is cheap.
+    Serial.printf("DAILY ACCT CHECK [%s]: storedDate='%s' storedDayNum=%ld todayDate='%s' todayDayNum=%ld used=[%.2f,%.2f,%.2f,%.2f]\n",
+                  reason ? reason : "check",
+                  dailyAccountingDate.c_str(), dailyAccountingDayNumber,
+                  today.c_str(), todayNum,
+                  dailyDoseTotals[0], dailyDoseTotals[1], dailyDoseTotals[2], dailyDoseTotals[3]);
+    logger.printf("DAILY ACCT CHECK [%s]: storedDate='%s' storedDayNum=%ld todayDate='%s' todayDayNum=%ld used=[%.2f,%.2f,%.2f,%.2f]\n",
+                  reason ? reason : "check",
+                  dailyAccountingDate.c_str(), dailyAccountingDayNumber,
+                  today.c_str(), todayNum,
+                  dailyDoseTotals[0], dailyDoseTotals[1], dailyDoseTotals[2], dailyDoseTotals[3]);
+
+    if (todayNum < 0) return; // getLocalTime() failed this call; try again next time.
+
+    if (dailyAccountingDayNumber < 0) {
+        // Not yet established this boot (fresh String compare path still
+        // runs below too, kept only for the NVS string field / dashboard
+        // display -- the day-number field below is now the one actually
+        // gating the clear).
+        dailyAccountingDayNumber = todayNum;
+        if (today.length() > 0) dailyAccountingDate = today;
         return;
     }
 
-    if (dailyAccountingDate != today) {
-        Serial.printf("DAILY ACCOUNTING ROLLOVER: saved='%s' today='%s'. Clearing daily totals.\n",
-                      dailyAccountingDate.c_str(), today.c_str());
-        logger.printf("DAILY ACCOUNTING ROLLOVER: saved='%s' today='%s'. Clearing daily totals.\n",
-                      dailyAccountingDate.c_str(), today.c_str());
+    if (dailyAccountingDayNumber != todayNum) {
+        Serial.printf("DAILY ACCOUNTING ROLLOVER: storedDayNum=%ld todayDayNum=%ld (storedDate='%s' todayDate='%s'). Clearing daily totals.\n",
+                      dailyAccountingDayNumber, todayNum, dailyAccountingDate.c_str(), today.c_str());
+        logger.printf("DAILY ACCOUNTING ROLLOVER: storedDayNum=%ld todayDayNum=%ld (storedDate='%s' todayDate='%s'). Clearing daily totals.\n",
+                      dailyAccountingDayNumber, todayNum, dailyAccountingDate.c_str(), today.c_str());
         clearDailyAccountingOnly(reason ? reason : "date-rollover");
-        dailyAccountingDate = today;
+        dailyAccountingDayNumber = todayNum;
+        if (today.length() > 0) dailyAccountingDate = today;
     }
 }
 
 void saveDosingState() {
+    DailyAccountingLock lock; // covers the rollover check below PLUS the NVS write of the same fields
     // Prevent old daily totals from being stamped with today's date after midnight.
     rolloverDailyAccountingIfNeeded("save-date-rollover");
 
-    String today = getTodayDateKey();
-    if (today.length() > 0) {
-        dailyAccountingDate = today;
-    }
-
+    // Fixed 2026-10-01: this used to ALSO do its own independent
+    // getTodayDateKey() call here and force dailyAccountingDate = today
+    // unconditionally, immediately after the rollover check above. That is
+    // a genuine bug: it is a SEPARATE call to getLocalTime() than the one
+    // rolloverDailyAccountingIfNeeded() just made, so it can silently
+    // "catch up" the stored date to today without ever having compared it
+    // against the OLD stored date -- erasing the one signal
+    // rolloverDailyAccountingIfNeeded() needs to detect a rollover, before
+    // it ever gets a chance to see it, on any call that happens to land
+    // near a midnight boundary. dailyAccountingDate/dailyAccountingDayNumber
+    // are now owned ENTIRELY by rolloverDailyAccountingIfNeeded() (called
+    // just above) -- nothing else should assign them.
     prefs.begin("doser-state", false);
     // Save buckets separately from daily accounting; buckets may safely survive reboot.
     prefs.putBytes("buckets", &pumpBuckets, sizeof(pumpBuckets));
@@ -2702,14 +3007,19 @@ void saveDosingState() {
     if (dailyAccountingDate.length() > 0) {
         prefs.putString("date", dailyAccountingDate);
     }
+    prefs.putInt("dayNum", (int32_t)dailyAccountingDayNumber);
     prefs.end();
 }
 
 void loadDosingState() {
+    DailyAccountingLock lock; // boot-time only in practice, but cheap and keeps this function consistent with the others
     String today = getTodayDateKey();
+    long todayNum = getTodayDayNumber();
     String savedDate = "";
+    int32_t savedDayNum = -1;
     bool loadedBuckets = false;
     bool loadedDailyAccounting = false;
+    bool hadDayNumKey = false;
 
     prefs.begin("doser-state", true); // Read-only mode
     if (prefs.isKey("buckets")) {
@@ -2725,37 +3035,64 @@ void loadDosingState() {
         loadedDailyAccounting = true;
     }
     savedDate = prefs.getString("date", "");
+    if (prefs.isKey("dayNum")) {
+        savedDayNum = prefs.getInt("dayNum", -1);
+        hadDayNumKey = true;
+    }
     prefs.end();
 
     dailyAccountingDate = savedDate;
+    // Fixed 2026-10-01: firmware built before this fix never wrote a
+    // "dayNum" key, so hadDayNumKey is false on the first boot after this
+    // update -- fall back to the old date STRING at that point (parsed
+    // indirectly by just forcing a re-check below), rather than trusting an
+    // absent/zero int that would otherwise look like a real day number and
+    // could suppress a real mismatch on this one transitional boot.
+    dailyAccountingDayNumber = hadDayNumKey ? (long)savedDayNum : -1;
 
     // Critical fix: never carry yesterday's or undated daily totals into today.
     // Older firmware did not store a date, so an empty savedDate is treated as stale
     // once time is available. Buckets remain restored; only daily stats/totals clear.
-    if (today.length() > 0 && loadedDailyAccounting && savedDate != today) {
-        Serial.printf("DAILY ACCOUNTING DATE MISMATCH: saved='%s' today='%s'. Clearing stale totals.\n",
-                      savedDate.c_str(), today.c_str());
-        logger.printf("DAILY ACCOUNTING DATE MISMATCH: saved='%s' today='%s'. Clearing stale totals.\n",
-                      savedDate.c_str(), today.c_str());
+    // Fixed 2026-10-01: now ALSO (and primarily) compared by integer day
+    // number, not just the String date -- see rolloverDailyAccountingIfNeeded()
+    // for why the String-only comparison was dropped as the sole gate.
+    bool mismatch = false;
+    if (todayNum >= 0 && loadedDailyAccounting) {
+        if (hadDayNumKey) {
+            mismatch = (savedDayNum != todayNum);
+        } else {
+            mismatch = (today.length() > 0 && savedDate != today);
+        }
+    }
+
+    if (mismatch) {
+        Serial.printf("DAILY ACCOUNTING DATE MISMATCH: saved='%s'(day %d) today='%s'(day %ld). Clearing stale totals.\n",
+                      savedDate.c_str(), (int)savedDayNum, today.c_str(), todayNum);
+        logger.printf("DAILY ACCOUNTING DATE MISMATCH: saved='%s'(day %d) today='%s'(day %ld). Clearing stale totals.\n",
+                      savedDate.c_str(), (int)savedDayNum, today.c_str(), todayNum);
         clearDailyAccountingOnly("boot-date-mismatch");
         dailyAccountingDate = today;
+        dailyAccountingDayNumber = todayNum;
         saveDosingState();
         return;
     }
 
-    if (today.length() > 0 && dailyAccountingDate.length() == 0) {
+    if (todayNum >= 0 && dailyAccountingDayNumber < 0) {
         dailyAccountingDate = today;
+        dailyAccountingDayNumber = todayNum;
         saveDosingState();
     }
 
-    Serial.printf("Dosing state recovered from memory. buckets=%s daily=%s date=%s\n",
+    Serial.printf("Dosing state recovered from memory. buckets=%s daily=%s date=%s dayNum=%ld\n",
                   loadedBuckets ? "yes" : "no",
                   loadedDailyAccounting ? "yes" : "no",
-                  dailyAccountingDate.length() ? dailyAccountingDate.c_str() : "none");
-    logger.printf("Dosing state recovered from memory. buckets=%s daily=%s date=%s\n",
+                  dailyAccountingDate.length() ? dailyAccountingDate.c_str() : "none",
+                  dailyAccountingDayNumber);
+    logger.printf("Dosing state recovered from memory. buckets=%s daily=%s date=%s dayNum=%ld\n",
                   loadedBuckets ? "yes" : "no",
                   loadedDailyAccounting ? "yes" : "no",
-                  dailyAccountingDate.length() ? dailyAccountingDate.c_str() : "none");
+                  dailyAccountingDate.length() ? dailyAccountingDate.c_str() : "none",
+                  dailyAccountingDayNumber);
 }
 
 bool planPublishChangeIsSignificant(float oldVal, float newVal) {
@@ -3910,6 +4247,26 @@ bool mirrorStatusToFirebase() {
     stateJson.set("alertState/message", currentAlertMessage);
     stateJson.set("systemMode", systemMode);
     stateJson.set("dosingMode", dosingMode);
+    // Fixed 2026-10-05: the per-minute DAILY ACCT CHECK diagnostic (added in
+    // v49) is real but worthless in practice -- it only reaches the cloud
+    // through the Logger's local upload queue, which has repeatedly been
+    // confirmed (reefDoser7, reefDoser1) to evict exactly the files written
+    // around a busy midnight window before they ever upload. Two of the
+    // last three real midnight rollovers on this device were silently
+    // missed with zero surviving evidence of why. This mirror call, by
+    // contrast, has run reliably every 1-3 hours through that same period
+    // with no gaps -- so the same daily-accounting state goes here too,
+    // independent of the log queue entirely, visible directly in the
+    // Firebase console within a few hours of any miss instead of waiting
+    // on the next zip export.
+    stateJson.set("debug/dailyAccountingDate", dailyAccountingDate);
+    stateJson.set("debug/dailyAccountingDayNumber", (double)dailyAccountingDayNumber);
+    stateJson.set("debug/todayDayNumber", (double)getTodayDayNumber());
+    stateJson.set("debug/dailyUsed/p1", dailyDoseTotals[0]);
+    stateJson.set("debug/dailyUsed/p2", dailyDoseTotals[1]);
+    stateJson.set("debug/dailyUsed/p3", dailyDoseTotals[2]);
+    stateJson.set("debug/dailyUsed/p4", dailyDoseTotals[3]);
+    stateJson.set("debug/mirrorUnix", (uint32_t)time(nullptr));
     // Preserve legacy flow keys and add chemical aliases so Firebase reflects local status better.
     // Physical pump keys are always published; chemical keys below are corrected for Mode 7.
     stateJson.set("flowMlPerMin/p1", pumpFlowRates[0]);
@@ -4469,8 +4826,31 @@ void syncAllTruths() {
         // and getDate()'s own comment in apexapi.h, for the full reasoning.
         String nextDate = apex.getDate();
 
+        // Fixed 2026-10-09: Temp and Cond (-> SG/PPT) come from their own
+        // independent probes, not from Trident -- but they used to sit
+        // AFTER the Alk/Ca/Mg/pH validity gate below, so a single bad/out-
+        // of-range Trident reading (reagent hiccup, in-progress test, etc.)
+        // hit the `return` and skipped updating currentTempF/currentCond
+        // for that entire poll too, even though those two readings were
+        // fine. Over enough rejected polls that's a dashboard showing Temp
+        // and SG permanently stuck/blank while Alk/Ca/Mg/pH look normal --
+        // which is the exact symptom reported in the field. Each field now
+        // only updates when IT is individually sane, independent of the
+        // other.
+        if (isfinite(nextTempF) && nextTempF > 32.0f && nextTempF < 100.0f) {
+            currentTempF = nextTempF;
+        } else {
+            Serial.printf("Apex Temp rejected: out of range/invalid (%.2f)\n", nextTempF);
+        }
+        if (isfinite(nextCond) && nextCond > 0.0f) {
+            currentCond = nextCond;
+        } else {
+            Serial.printf("Apex Cond rejected: out of range/invalid (%.2f)\n", nextCond);
+        }
+
         // Reject bad Apex parser/fallback values before they poison saved state or Firebase.
-        // This blocks the earlier 650.00 dKH style failure.
+        // This blocks the earlier 650.00 dKH style failure. Only gates
+        // Alk/Ca/Mg/pH now -- Temp/Cond are handled independently above.
         if (nextAlk <= 0.0f || nextAlk > 20.0f ||
             nextCa  < 250.0f || nextCa  > 700.0f ||
             nextMg  < 800.0f || nextMg  > 1800.0f ||
@@ -4482,12 +4862,10 @@ void syncAllTruths() {
             return;
         }
 
-        currentTempF = nextTempF;
         currentPh    = nextPh;
         currentAlk   = nextAlk;
         currentCa    = nextCa;
         currentMg    = nextMg;
-        currentCond  = nextCond;
 
         // Distinguish a genuinely new Trident test from a repeated Apex poll.
         // The AI plan still recalculates every poll (settings/targets may
@@ -4605,8 +4983,23 @@ void connectToFirebase() {
         auth.user.email.c_str()
     );
 
+    // Fixed <date>: real, confirmed cause of reefDoser7's reboot loop --
+    // this function had zero watchdog protection around three blocking
+    // network calls (Firebase.begin/setString/beginStream), while the
+    // stream-RECONNECT path elsewhere in this file already learned this
+    // lesson (see loop()'s "Overnight resets were from Firebase stream SSL
+    // recovery hanging long enough to trip the watchdog" comment) and was
+    // fixed with exactly this serviceWatchdogAndUi() pattern. On a weak/
+    // congested WiFi signal, a slow TLS handshake or DNS lookup inside any
+    // of these three calls could exceed the 30s watchdog timeout with
+    // nothing resetting it -- hard panic-reboot, then the same race again
+    // on the next boot. Applying the same proven pattern here closes that
+    // gap for the FIRST connect, not just reconnects.
+    serviceWatchdogAndUi(5);
     Firebase.begin(&config, &auth);
+    serviceWatchdogAndUi(5);
     Firebase.reconnectWiFi(true);
+    serviceWatchdogAndUi(5);
 
     // Publish current notification setting once after Firebase starts.
     Firebase.setString(
@@ -4614,9 +5007,11 @@ void connectToFirebase() {
         ("/devices/" + deviceID + "/settings/notificationLevel").c_str(),
         notificationLevel
     );
+    serviceWatchdogAndUi(5);
 
     // Try now, then loop() will retry once Firebase.ready() is true.
     publishFirmwareVersionIfReady(true);
+    serviceWatchdogAndUi(5);
 
     String path = "/devices/" + deviceID + "/commands";
     if (!Firebase.beginStream(streamFbdo, path.c_str())) {
@@ -4795,23 +5190,74 @@ void pushDailyReport() {
     // Path: devices/reefDoser1/history/2026-05/15
     String path = "/devices/" + deviceID + "/history/" + String(monthFolder) + "/" + String(dayFolder);
 
+    // Fixed 2026-09-30: clearing dailyDoseTotals/dailyStats used to happen
+    // ONLY after Firebase.updateNode() below succeeded -- which meant any
+    // pump that had used up its daily cap stayed blocked in
+    // applyPumpSafetyCaps() (dailyUsed==maxDay forever) for every day the
+    // midnight cloud write failed, with no independent way to recover.
+    // Confirmed in the field on reefDoser7: pushDailyReport() hit "Firebase
+    // not ready" during its 10-minute midnight window on back-to-back
+    // nights, and P1 sat fully blocked (dailyUsed=2500.00=maxDay) for 7+
+    // straight days, every single dose request rejected, because this
+    // local safety-accounting reset was hostage to a cloud write
+    // succeeding at one specific moment.
+    //
+    // A local dosing-safety counter must never depend on network/cloud
+    // availability to function correctly. All the values this history
+    // record needs (avgPh/avgAlk/.../totalDose and the per-pump dosing
+    // totals) are already captured above into `json` BEFORE this point, so
+    // clearing the live totals here does not lose anything the report
+    // needs -- it only means a failed push below leaves that one day's
+    // *cloud history entry* incomplete (same best-effort tradeoff already
+    // accepted for the mirror/GDrive uploads elsewhere in this file), never
+    // the dosing pumps themselves.
+    clearDailyAccountingOnly("midnight-history-pushed");
+    dailyAccountingDate = getTodayDateKey();
+    dailyAccountingDayNumber = getTodayDayNumber();
+    saveDosingState();
+    Serial.println("Midnight: daily stats/totals cleared and saved.");
+    logger.println("Midnight: daily stats/totals cleared and saved.");
+
     if (Firebase.updateNode(writeFbdo, path.c_str(), json)) {
         Serial.printf("Midnight daily history pushed: %s/%s totalDose=%.2f ml\n", monthFolder, dayFolder, totalDose);
         logger.printf("Midnight daily history pushed: %s/%s totalDose=%.2f ml\n", monthFolder, dayFolder, totalDose);
     } else {
-        Serial.printf("Midnight report push failed: %s\n", writeFbdo.errorReason().c_str());
-        logger.printf("Midnight report push failed: %s\n", writeFbdo.errorReason().c_str());
-        return; // Keep totals in NVS and try again in the midnight window.
+        // Cloud history record for this day is incomplete -- dosing safety
+        // state is unaffected, it was already cleared above.
+        Serial.printf("Midnight report push failed: %s (dosing totals already cleared locally)\n", writeFbdo.errorReason().c_str());
+        logger.printf("Midnight report push failed: %s (dosing totals already cleared locally)\n", writeFbdo.errorReason().c_str());
     }
-
-    clearDailyAccountingOnly("midnight-history-pushed");
-    dailyAccountingDate = getTodayDateKey();
-    saveDosingState();
-    Serial.println("Midnight: daily stats/totals cleared and saved.");
-    logger.println("Midnight: daily stats/totals cleared and saved.");
 }
 
 // handlePostManualTest() moved to lib/WebRoutes/WebRoutes.cpp
+
+// Added for field WiFi-range testing: WiFi.status()/RSSI are only ever
+// checked on a polling cadence elsewhere in this file (30s in loop()'s
+// background reconnect, 5min in the GDRIVE DIAG snapshot) -- neither is
+// fast enough to watch live while physically walking a device out of
+// range. WiFi.onEvent() fires the instant the radio itself reports the
+// state change, independent of any polling loop, so this is the fastest
+// possible signal short of a hardware RSSI meter. Safe to add alongside
+// any other WiFi handling in this file -- ESP32 Arduino supports multiple
+// registered onEvent() callbacks without conflict.
+void logWifiConnectionEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+    switch (event) {
+        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+            Serial.printf("WIFI EVENT: DISCONNECTED (reason=%d)\n", info.wifi_sta_disconnected.reason);
+            logger.printf("WIFI EVENT: DISCONNECTED (reason=%d)\n", info.wifi_sta_disconnected.reason);
+            break;
+        case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+            Serial.println("WIFI EVENT: STA associated to AP");
+            logger.println("WIFI EVENT: STA associated to AP");
+            break;
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            Serial.printf("WIFI EVENT: GOT IP %s (rssi=%d)\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+            logger.printf("WIFI EVENT: GOT IP %s (rssi=%d)\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+            break;
+        default:
+            break;
+    }
+}
 
 void setup() {
     // FIRST EXECUTABLE SAFETY ACTION:
@@ -4821,7 +5267,17 @@ void setup() {
     delay(5);
     forcePumpPinsOffDirect();
 
+    // Fixed 2026-10-06: must exist before WiFi/Firebase start, since
+    // Firebase's stream callback runs on its own task from that point on
+    // and can call into the same dailyAccounting state as loop(). See
+    // dailyAccountingMutex's declaration/comment near the top of this file.
+    dailyAccountingMutex = xSemaphoreCreateRecursiveMutex();
+
     Serial.begin(115200);
+
+    // Registered before any WiFi.begin() call so no early connect/disconnect
+    // event is missed.
+    WiFi.onEvent(logWifiConnectionEvent);
 
     // Capture the reset reason immediately, before network or logger startup.
     esp_reset_reason_t reason = esp_reset_reason();
@@ -4863,15 +5319,30 @@ esp_reset_reason_t reason = esp_reset_reason();*/
     logger.begin(deviceID, GOOGLE_LOG_URL);
     forcePumpPinsOffDirect();
 
-    logger.println();
-    logger.println("================================");
-    logger.println("ESP32 BOOT INFORMATION");
-    logger.printf("RESET REASON: %s (%d)\n", resetReasonToString(reason), (int)reason);
-    logger.printf("DEVICE ID: %s\n", deviceID.c_str());
-    logger.printf("FIRMWARE: %s\n", FW_VERSION);
-    logger.printf("MAC Address: %s\n", WiFi.macAddress().c_str());
-    logger.printf("Chip ID: %04X%08X\n", (uint16_t)(chipid >> 32), (uint32_t)chipid);
-    logger.println("================================");
+    // This one-time-per-boot banner is written through logBootRecord(),
+    // not logger.println()/printf(). The ordinary logger queue is capped
+    // at 5 files and drains at only one file per 30-minute upload cycle;
+    // since this banner is always the oldest thing in that queue right
+    // after a reboot, it was reliably evicted before it could ever be
+    // uploaded -- which is exactly why reboot cause could never be
+    // confirmed from the uploaded logs. logBootRecord() writes to a small
+    // dedicated file that skips that eviction and uploads first.
+    {
+        char chipIdBuf[20];
+        snprintf(chipIdBuf, sizeof(chipIdBuf), "%04X%08X",
+                  (uint16_t)(chipid >> 32), (uint32_t)chipid);
+
+        logger.logBootRecord("");
+        logger.logBootRecord("================================");
+        logger.logBootRecord("ESP32 BOOT INFORMATION");
+        logger.logBootRecord("RESET REASON: " + String(resetReasonToString(reason)) +
+                              " (" + String((int)reason) + ")");
+        logger.logBootRecord("DEVICE ID: " + deviceID);
+        logger.logBootRecord("FIRMWARE: " + String(FW_VERSION));
+        logger.logBootRecord("MAC Address: " + WiFi.macAddress());
+        logger.logBootRecord("Chip ID: " + String(chipIdBuf));
+        logger.logBootRecord("================================");
+    }
 
     WebSerial.println();
     WebSerial.println("================================");
@@ -5044,15 +5515,37 @@ if (root && root.isDirectory()) {
             logger.print("IP Address: ");
             logger.println(WiFi.localIP().toString());
             logGoogleDriveDiagnostics("boot-wifi-connected");
-
-            doser.begin();
-            state.transitionTo(SystemState::IDLE);
         } else {
-            Serial.println("\nWiFi Connection Failed. Reverting to Hotspot...");
-            logger.println("\nWiFi Connection Failed. Reverting to Hotspot...");
-            provisioner.startPortal("ReefDoser_Setup");
-            state.transitionTo(SystemState::PROVISIONING);
+            // Fixed <date>: a device with SAVED credentials must never be
+            // dropped into PROVISIONING just because this one boot's WiFi
+            // attempt missed the 10-second window (weak signal, router
+            // still coming up after a power event, etc). Reverting to the
+            // captive portal here silently disabled the ENTIRE dosing
+            // scheduler until the next boot happened to win the race --
+            // confirmed as the reefDoser7 failure mode: loop() returns
+            // early on SystemState::PROVISIONING, before ever reaching the
+            // bucket-check/dump code, even though the system was designed
+            // to keep dosing offline. A previously-paired tank now stays
+            // local instead: dosing, the AI engine, and the on-device
+            // dashboard all keep running from cached state, and WiFi
+            // keeps retrying in the background (see setAutoReconnect and
+            // the periodic reconnect attempt in loop()) so Firebase comes
+            // back on its own once the signal allows it -- no reboot, no
+            // lost dosing time, and no captive-portal takeover of an
+            // already-configured tank.
+            Serial.println("\nWiFi not connected yet. Continuing offline -- dosing will run locally and WiFi will keep retrying in the background.");
+            logger.println("\nWiFi not connected yet. Continuing offline -- dosing will run locally and WiFi will keep retrying in the background.");
+            WiFi.setAutoReconnect(true);
         }
+
+        // Local dosing must never depend on Firebase/internet ever coming up:
+        // start the doser and enter IDLE regardless of whether WiFi/Firebase
+        // are ready yet. Firebase-dependent features (remote plan, Apex
+        // polling, dashboard mirroring) simply activate later, on their own,
+        // once loop()'s existing `!firebaseStarted && WiFi.status()==WL_CONNECTED`
+        // gate sees a connection -- nothing else needs to change for that.
+        doser.begin();
+        state.transitionTo(SystemState::IDLE);
     }
     // Local dashboard HTTP routes are registered in lib/WebRoutes/WebRoutes.cpp
     registerWebRoutes();
@@ -5135,6 +5628,91 @@ void loop() {
     servicePumpRuntimeSafety();
     yield();
     esp_task_wdt_reset(); // Tell the system "I'm still alive"
+
+    // Background WiFi recovery: if station WiFi isn't connected right now
+    // (booted offline, or dropped mid-session on a weak/congested signal),
+    // periodically ask the radio to try again -- WiFi.reconnect() returns
+    // immediately and does not block loop(), so this is safe to call from
+    // here regardless of SystemState. This is what actually lets a device
+    // that booted into offline/local dosing (see setup()'s WiFi block)
+    // come back online on its own instead of needing a manual reboot.
+    {
+        static unsigned long lastWifiRetryMs = 0;
+        const unsigned long WIFI_RETRY_INTERVAL_MS = 30000UL; // every 30s
+        unsigned long wifiNowMs = millis();
+        if (WiFi.status() != WL_CONNECTED &&
+            (lastWifiRetryMs == 0 || wifiNowMs - lastWifiRetryMs >= WIFI_RETRY_INTERVAL_MS)) {
+            lastWifiRetryMs = wifiNowMs;
+            Serial.println("WIFI RECOVERY: not connected, attempting background reconnect...");
+            logger.println("WIFI RECOVERY: not connected, attempting background reconnect...");
+            WiFi.reconnect();
+        }
+    }
+
+    // Fixed 2026-09-30: daily dosing-safety accounting (dailyDoseTotals[],
+    // checked by applyPumpSafetyCaps()) must clear on a real calendar-date
+    // change no matter what else is or isn't working. It used to only ever
+    // get cleared as a side effect of pushDailyReport() succeeding, which
+    // is itself gated behind BOTH a successful Firebase write AND at least
+    // one new chemistry sample having arrived that day
+    // (dailyStats.count==0 short-circuits the whole function, see its top).
+    // Confirmed in the field on reefDoser7: a pump that hit its daily cap
+    // stayed blocked for a week because the midnight Firebase push kept
+    // failing. Even with that push decoupled from the reset (see
+    // pushDailyReport() below), a day with no fresh chemistry sample would
+    // still skip the reset entirely through the sample-count gate. This
+    // unconditional, timer-only check is the actual fix: it depends on
+    // nothing but wall-clock date, runs every loop() cycle (cheap -- just a
+    // millis() compare and, at most once a minute, a string compare), and
+    // cannot be blocked by Firebase, WiFi, or missing chemistry samples.
+    // pushDailyReport()'s own reset is left in place too (harmless no-op
+    // once this has already run) since it still gates the Firebase history
+    // push itself.
+    {
+        static unsigned long lastDailyRolloverCheckMs = 0;
+        const unsigned long DAILY_ROLLOVER_CHECK_MS = 60000UL; // once a minute
+        unsigned long rolloverNowMs = millis();
+        if (lastDailyRolloverCheckMs == 0 ||
+            rolloverNowMs - lastDailyRolloverCheckMs >= DAILY_ROLLOVER_CHECK_MS) {
+            lastDailyRolloverCheckMs = rolloverNowMs;
+            rolloverDailyAccountingIfNeeded("loop-unconditional-check");
+        }
+    }
+
+    // Firebase stale-token recovery, tier 1 (light): see
+    // firebaseRefreshPending's declaration and tokenStatusCallback() for the
+    // full reasoning. Firebase.refreshToken(&config) is a real, documented
+    // method on this library (Firebase.h: "void refreshToken(FirebaseConfig
+    // *config);") that forces a fresh token from the stored refresh token --
+    // no reboot, no dosing interruption, since a Firebase-only outage isn't
+    // itself a dosing safety issue. Executed here, never inside
+    // tokenStatusCallback() itself, same "queue in the callback, act in
+    // loop()" pattern already used for OTA below (a network call from
+    // inside a Firebase callback risks the same nested-SSL stall that
+    // pattern exists to avoid).
+    if (firebaseRefreshPending) {
+        firebaseRefreshPending = false;
+        Serial.println("FIREBASE STALE RECOVERY: token broken 5+ min, attempting Firebase.refreshToken()...");
+        logger.println("FIREBASE STALE RECOVERY: token broken 5+ min, attempting Firebase.refreshToken()...");
+        Firebase.refreshToken(&config);
+        firebaseRefreshAttemptedAtMs = millis(); // read by tokenStatusCallback() on recovery -- see its declaration
+    }
+
+    // Firebase stale-token recovery, tier 2 (heavy, fallback only): reaches
+    // here only if tier 1's refreshToken() above did not clear the error
+    // within a further 15 minutes (20 total) -- see FIREBASE_STALE_REBOOT_MS.
+    // Covers whatever tier 1 alone can't fix (e.g. the stored refresh token
+    // itself being invalid, not just the short-lived ID token). Stops pumps
+    // first via triggerEmergencyStop() -- same safety step OTA already
+    // takes before its own reboot -- then restarts to force a clean re-auth
+    // instead of waiting indefinitely on the SDK's own internal retry.
+    if (firebaseStaleRebootPending) {
+        Serial.println("FIREBASE STALE WATCHDOG: still broken after refreshToken(); rebooting to force a clean re-auth.");
+        logger.println("FIREBASE STALE WATCHDOG: still broken after refreshToken(); rebooting to force a clean re-auth.");
+        triggerEmergencyStop("Firebase token stale too long; rebooting to recover", "FirebaseWatchdog");
+        delay(500); // let the emergency-stop log lines and pump-off state land before reset
+        ESP.restart();
+    }
 
     // Execute OTA outside the Firebase stream callback. This prevents nested
     // Firebase/SSL work from stalling between command receipt and manifest download.
@@ -5484,6 +6062,16 @@ void loop() {
         }
     }
 
+    // Added: unconditional heartbeat, independent of which (if any) branch
+    // of the dosing decision chain below fires. Everything else in that
+    // chain only logs when ITS OWN specific condition is true -- so if a
+    // future bug produces some combination of states none of those
+    // branches anticipated, it could still go unlogged even with the
+    // catch-all "else" added below. This can't miss anything: it always
+    // fires, on a fixed 5-minute cadence (matches the existing GDRIVE DIAG
+    // interval, so it doesn't add meaningfully to log volume/rotation).
+    // (Placed below, after bootDosingGraceActive exists -- see there.)
+
     // One-pump-at-a-time bucket service. This runs every loop, so if Pump 1
     // takes 20+ seconds, Pump 2/Pump 4 will start as soon as Pump 1 finishes
     // instead of waiting for the next 10-minute slot.
@@ -5496,6 +6084,25 @@ void loop() {
     }
 
     bool bootDosingGraceActive = (now < BOOT_DOSING_GRACE_MS);
+
+    {
+        static unsigned long lastDosingHeartbeatMs = 0;
+        if (lastDosingHeartbeatMs == 0 || now - lastDosingHeartbeatMs >= 300000UL) {
+            lastDosingHeartbeatMs = now;
+            Serial.printf(
+                "[HEARTBEAT] state=%s emergencyStop=%d otaInProgress=%d interPumpDelayActive=%d bootGrace=%d thresholds: P1=%.2f P2=%.2f P3=%.2f P4=%.2f buckets: P1=%.2f P2=%.2f P3=%.2f P4=%.2f\n",
+                state.getStateName().c_str(), emergencyStop, otaInProgress, interPumpDelayActive, bootDosingGraceActive,
+                getPumpDoseThresholdMl(0), getPumpDoseThresholdMl(1), getPumpDoseThresholdMl(2), getPumpDoseThresholdMl(3),
+                pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3]
+            );
+            logger.printf(
+                "[HEARTBEAT] state=%s emergencyStop=%d otaInProgress=%d interPumpDelayActive=%d bootGrace=%d thresholds: P1=%.2f P2=%.2f P3=%.2f P4=%.2f buckets: P1=%.2f P2=%.2f P3=%.2f P4=%.2f\n",
+                state.getStateName().c_str(), emergencyStop, otaInProgress, interPumpDelayActive, bootDosingGraceActive,
+                getPumpDoseThresholdMl(0), getPumpDoseThresholdMl(1), getPumpDoseThresholdMl(2), getPumpDoseThresholdMl(3),
+                pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3]
+            );
+        }
+    }
 
     if (bootDosingGraceActive && !emergencyStop) {
         static unsigned long lastBootGraceLogMs = 0;
@@ -5604,6 +6211,36 @@ void loop() {
                 }
             }
         }
+    } else {
+        // Added: every prior branch above is now accounted for
+        // (bootDosingGraceActive, otaInProgress, the real dosing branch,
+        // interPumpDelayActive, anyPumpRunning) -- reaching this branch
+        // means none of them matched, which given the guard conditions can
+        // only happen with emergencyStop true and no pump currently
+        // running. Before this, that specific combination fell through
+        // completely silently: zero log output, every single loop pass,
+        // for as long as emergencyStop stayed set. Confirmed directly:
+        // searched a live customer device's entire log archive for
+        // "EMERGENCY STOP" and found zero matches -- which was previously
+        // read as "it never tripped," but genuinely could not distinguish
+        // that from "it tripped once, outside this archive's window, and
+        // has silently stayed latched ever since." This closes that gap.
+        static unsigned long lastNoActionLogMs = 0;
+        if (lastNoActionLogMs == 0 || now - lastNoActionLogMs >= 60000UL) {
+            lastNoActionLogMs = now;
+            Serial.printf(
+                "[SLOT %lu] NO DOSING ACTION this cycle: state=%s emergencyStop=%d reason=\"%s\" otaInProgress=%d anyPumpRunning=%d interPumpDelayActive=%d bootGrace=%d buckets: P1=%.2f P2=%.2f P3=%.2f P4=%.2f\n",
+                doseSlotId, state.getStateName().c_str(), emergencyStop, emergencyStopReason.c_str(),
+                otaInProgress, anyPumpRunning, interPumpDelayActive, bootDosingGraceActive,
+                pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3]
+            );
+            logger.printf(
+                "[SLOT %lu] NO DOSING ACTION this cycle: state=%s emergencyStop=%d reason=\"%s\" otaInProgress=%d anyPumpRunning=%d interPumpDelayActive=%d bootGrace=%d buckets: P1=%.2f P2=%.2f P3=%.2f P4=%.2f\n",
+                doseSlotId, state.getStateName().c_str(), emergencyStop, emergencyStopReason.c_str(),
+                otaInProgress, anyPumpRunning, interPumpDelayActive, bootDosingGraceActive,
+                pumpBuckets[0], pumpBuckets[1], pumpBuckets[2], pumpBuckets[3]
+            );
+        }
     }
 
 
@@ -5669,12 +6306,23 @@ void loop() {
     // from static code reading, this logs the actual live state of every
     // gating condition on a matching cadence, so the next real
     // occurrence shows directly which one is actually false/blocking,
-    // rather than continuing to guess. Deliberately logs unconditionally
-    // on this same 5-min cadence (using lastApexPull itself, so it can't
-    // drift out of sync with the real check above) rather than only on
-    // failure, so a working period looks visibly different from a
-    // blocked one instead of only ever seeing the blocked case.
-    if (millis() - lastApexPull > 300000UL) {
+    // rather than continuing to guess.
+    //
+    // Fixed <date>: this used to gate on `millis() - lastApexPull`, on
+    // the assumption lastApexPull always advances every 5 minutes. It
+    // only advances inside the apexEnabled branch below, though -- so on
+    // any device with Apex disabled (apexEnabled=0, e.g. this bench
+    // chip), lastApexPull stays 0 forever and the gate is permanently
+    // true, printing on EVERY loop iteration instead of every 5 minutes.
+    // Confirmed in the field: this alone was filling the 4KB log-rotate
+    // threshold every 5-6 seconds, so with maxQueue=5 only the last ~30s
+    // of local history survived at any moment -- silently destroying an
+    // entire offline field test's logs before WiFi ever came back to
+    // upload them. Now uses its own timer so it can never regress to
+    // depending on lastApexPull's update conditions again.
+    static unsigned long lastApexGateLogMs = 0;
+    if (millis() - lastApexGateLogMs > 300000UL) {
+        lastApexGateLogMs = millis();
         Serial.printf("APEX POLL GATE CHECK: apexEnabled=%d emulatorForDevice=%d msSinceLastPull=%lu willPoll=%d\n",
                       apexEnabled, useApexLogEmulatorForThisDevice(),
                       millis() - lastApexPull,

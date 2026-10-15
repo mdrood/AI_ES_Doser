@@ -217,3 +217,41 @@ then go merge everything go back to main and runt this
 
 
    email is soho email mrood@aidoser.tech
+
+
+YouTube video
+
+have chatgpt write script
+
+open a page  setup.html  hit window-alt-r button to record
+it will record and save under videos/captured
+
+in heygen go to media - mymedia -drag the video in.
+move curster to scrip and paste script.
+note:  the video recording and the script should be about same length
+
+
+
+Your EIN is 42-5345975. The name control associated with this EIN is SYMB.
+
+
+ok moving to the new pcb chip have to use: ESP32-S3 Dev Module.
+Enable PSRAM in Settings: The extra 8MB of PSRAM will not be utilized by default. You must explicitly toggle the PSRAM selection to "OPI PSRAM" in your IDE compile settings so the firmware initializes it at startup.
+
+ Critical S3 Pin Safety Rules
+
+1. Never use GPIO 26 through 32: These are permanently bound to the internal SPI Flash package.
+2. Never use GPIO 33 through 37: On 8MB Octal PSRAM variants like this one, these pins drive the high-speed PSRAM interface. Toggling them will instantly crash the module.
+3. GPIO 22, 25, 26, 27 mapping: As noted in our previous discussion, GPIO 22 and 25 do not physically exist on the internal ESP32-S3 chip structure. GPIO 26 and 27 are trapped inside the internal memory bus.
+
+
+{
+  "ota": {
+    "deviceId": "reefDoser7",
+    "file": "reefDoser7.bin",
+    "firstTime": false,
+    "trigger": true,
+    "ts": 1790650256964,
+    "url": "https://aiesdoser.web.app/devices/reefDoser7/reefDoser7.bin"
+  }
+}
