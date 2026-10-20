@@ -1,0 +1,24 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "5LEDs",
+			"path": "../Projects/5LEDs"
+		},
+		{
+			"name": "quanta-1",
+			"path": "../quanta-1"
+		},
+		{
+			"name": "quanta-1",
+			"path": "../quanta-1/quanta-1"
+		},
+		{
+			"name": "quantaBBTest",
+			"path": "../Projects/quantaBBTest"
+		}
+	],
+	"settings": {}
+}
