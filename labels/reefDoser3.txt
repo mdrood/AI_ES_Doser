@@ -1,0 +1,10 @@
+AIDoser
+
+Device ID: reefDoser3
+Serial Label: AIES-00003
+Claim Code: NMDN-PLLH
+MAC Address: 00:70:07:33:9E:9C
+Chip ID: 9C9E33077000
+
+Setup:
+https://aiesdoser.web.app/setup

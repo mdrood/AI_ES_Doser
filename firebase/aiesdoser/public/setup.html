@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AIDoser Setup</title>
+  <style>
+    :root{--bg:#07121f;--panel:#0d1d2d;--panel2:#11283b;--text:#f4f8fb;--muted:#9eb2c4;--accent:#30c7d9;--danger:#ff6b6b;--success:#48d597;--border:rgba(255,255,255,.10)}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;font-family:Arial,Helvetica,sans-serif;color:var(--text);background:radial-gradient(circle at top right,rgba(48,199,217,.18),transparent 34%),radial-gradient(circle at bottom left,rgba(19,151,170,.16),transparent 30%),var(--bg);display:flex;align-items:center;justify-content:center;padding:28px 16px}
+    .page{width:100%;max-width:980px;display:grid;grid-template-columns:minmax(0,.9fr) minmax(360px,1.1fr);overflow:hidden;border:1px solid var(--border);border-radius:24px;background:rgba(13,29,45,.96);box-shadow:0 24px 70px rgba(0,0,0,.35)}
+    .intro{padding:54px 44px;background:linear-gradient(150deg,rgba(48,199,217,.16),rgba(17,40,59,.25)),var(--panel2);display:flex;flex-direction:column;justify-content:center}
+    .brand{font-size:14px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);margin-bottom:22px}
+    .intro h1{margin:0 0 18px;font-size:clamp(36px,6vw,58px);line-height:1.02}
+    .intro p{margin:0;color:var(--muted);line-height:1.7;font-size:17px}
+    .steps{margin-top:34px;display:grid;gap:14px}
+    .step{display:flex;gap:12px;align-items:center;color:#dce8f1}
+    .step-number{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;flex:0 0 auto;background:rgba(48,199,217,.16);border:1px solid rgba(48,199,217,.42);color:var(--accent);font-weight:700}
+    .form-panel{padding:46px 42px;background:var(--panel)}
+    .form-panel h2{margin:0 0 8px;font-size:30px}
+    .subtitle{margin:0 0 30px;color:var(--muted);line-height:1.5}
+    .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+    .field{display:flex;flex-direction:column;gap:8px}
+    .field.full{grid-column:1/-1}
+    label{font-size:14px;font-weight:700;color:#dce8f1}
+    input{width:100%;border:1px solid var(--border);border-radius:12px;padding:14px 15px;font-size:16px;color:var(--text);background:rgba(255,255,255,.045);outline:none}
+    input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(48,199,217,.14)}
+    input::placeholder{color:#6f8799}
+    .hint{color:var(--muted);font-size:12px;line-height:1.4}
+    .actions{margin-top:26px}
+    button{width:100%;border:0;border-radius:12px;padding:15px 18px;font-size:16px;font-weight:800;cursor:pointer;color:#031014;background:linear-gradient(135deg,var(--accent),#64e6dd)}
+    button:disabled{cursor:not-allowed;opacity:.65}
+    .message{display:none;margin-top:18px;padding:13px 14px;border-radius:11px;line-height:1.45;font-size:14px}
+    .message.error{display:block;color:#ffd5d5;border:1px solid rgba(255,107,107,.42);background:rgba(255,107,107,.10)}
+    .message.success{display:block;color:#d9ffec;border:1px solid rgba(72,213,151,.42);background:rgba(72,213,151,.10)}
+    .footer-note{margin-top:20px;text-align:center;font-size:12px;color:var(--muted)}
+    .terms-box{margin-top:22px;padding:16px;border:1px solid var(--border);border-radius:14px;background:rgba(255,255,255,.035)}
+    .terms-row{display:flex;gap:12px;align-items:flex-start}
+    .terms-row input[type="checkbox"]{width:20px;height:20px;margin-top:2px;accent-color:var(--accent);flex:0 0 auto}
+    .terms-copy{font-size:14px;line-height:1.55;color:#dce8f1}
+    .terms-copy a{color:var(--accent);font-weight:700;text-decoration:none}
+    .terms-copy a:hover{text-decoration:underline}
+    .modal-backdrop{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.74);z-index:1000}
+    .modal-backdrop.open{display:flex}
+    .modal{width:min(820px,100%);max-height:90vh;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:18px;background:var(--panel);box-shadow:0 24px 70px rgba(0,0,0,.55)}
+    .modal-header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 22px;border-bottom:1px solid var(--border)}
+    .modal-header h3{margin:0;font-size:24px}
+    .modal-close{width:auto;padding:9px 13px;color:var(--text);background:rgba(255,255,255,.08)}
+    .terms-scroll{padding:22px;overflow:auto;line-height:1.65;color:#dce8f1}
+    .terms-scroll h4{margin:22px 0 8px;color:var(--text)}
+    .terms-scroll p{margin:0 0 12px}
+    .terms-scroll ul{margin:0 0 16px;padding-left:22px}
+    .modal-footer{display:flex;gap:12px;padding:18px 22px;border-top:1px solid var(--border)}
+    .modal-footer button{width:auto;flex:1}
+    .secondary-button{color:var(--text);background:rgba(255,255,255,.08)}
+    .scroll-note{font-size:12px;color:var(--muted);margin-top:8px}
+
+    @media(max-width:780px){.page{grid-template-columns:1fr}.intro{padding:38px 28px}.form-panel{padding:34px 24px}}
+    @media(max-width:520px){.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="intro">
+      <div class="brand">AIDoser</div>
+      <h1>Set up your new doser.</h1>
+      <p>Create your customer account and connect the AIDoser assigned to you. Your device ID and claim code are printed on the setup label included with your unit.</p>
+      <div class="steps">
+        <div class="step"><div class="step-number">1</div><div>Create your customer account</div></div>
+        <div class="step"><div class="step-number">2</div><div>Claim your labeled AIDoser</div></div>
+        <div class="step"><div class="step-number">3</div><div>Connect Wi-Fi and open the dashboard</div></div>
+      </div>
+    </section>
+
+    <section class="form-panel">
+      <h2>Create your account</h2>
+      <p class="subtitle">Enter the information printed on your AIDoser setup label.</p>
+
+      <form id="setupForm" novalidate>
+        <div class="form-grid">
+          <div class="field full">
+            <label for="customerName">Full name</label>
+            <input id="customerName" type="text" autocomplete="name" placeholder="Eric Rood" maxlength="80" required>
+          </div>
+
+          <div class="field full">
+            <label for="email">Email address</label>
+            <input id="email" type="email" autocomplete="email" placeholder="customer@example.com" maxlength="160" required>
+          </div>
+
+          <div class="field">
+            <label for="password">Password</label>
+            <input id="password" type="password" autocomplete="new-password" placeholder="At least 8 characters" minlength="8" maxlength="128" required>
+          </div>
+
+          <div class="field">
+            <label for="confirmPassword">Confirm password</label>
+            <input id="confirmPassword" type="password" autocomplete="new-password" placeholder="Enter it again" minlength="8" maxlength="128" required>
+          </div>
+
+          <div class="field">
+            <label for="deviceId">Device ID</label>
+            <input id="deviceId" type="text" placeholder="reefDoser4" value="reefDoser4" maxlength="40" required>
+            <div class="hint">Use the exact ID printed on the AIDoser label.</div>
+          </div>
+
+          <div class="field">
+            <label for="claimCode">Claim code</label>
+            <input id="claimCode" type="text" placeholder="TEST-7392" maxlength="40" autocapitalize="characters" required>
+            <div class="hint">Use the one-time code printed with the device.</div>
+          </div>
+
+          <div class="field full">
+            <label for="deviceAlias">Device name</label>
+            <input id="deviceAlias" type="text" placeholder="Main Room Reef" maxlength="80">
+            <div class="hint">This friendly name is shown on the dashboard.</div>
+          </div>
+        </div>
+
+        <div class="terms-box">
+          <div class="terms-row">
+            <input id="termsAccepted" type="checkbox" disabled required>
+            <div class="terms-copy">
+              <label for="termsAccepted">
+                I have read and agree to the
+                <a href="#" id="openTerms">AIDoser Terms of Service &amp; Liability Disclaimer</a>.
+              </label>
+              <div class="scroll-note">Open the agreement and scroll to the bottom before “I Agree” is enabled.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="submitButton" type="submit">Create Account and Claim AIDoser</button>
+        </div>
+
+        <div id="message" class="message" role="alert" aria-live="polite"></div>
+      </form>
+
+      <div class="footer-note">AIDoser customer setup</div>
+    </section>
+  </main>
+
+  <div id="termsModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="termsTitle">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="termsTitle">AIDoser Terms of Service &amp; Liability Disclaimer</h3>
+          <div class="hint">Version 2026-06-v1</div>
+        </div>
+        <button id="closeTerms" class="modal-close" type="button">Close</button>
+      </div>
+      <div id="termsScroll" class="terms-scroll">
+
+        <p><strong>Last Updated:</strong> June 2026</p>
+        <p>Please read these Terms of Service ("Terms") carefully before using the AIDoser automated dosing system, software, firmware, and associated local or cloud services (collectively, the "System"). By checking the "I Agree" box, or by installing, accessing, or using the System, you agree to be bound by these Terms. If you do not agree, do not use the System.</p>
+        <h4>1. Educational and Supplementary Purpose Only</h4>
+        <p>The System is provided solely as an assistive tool to aid aquarium hobbyists ("Reefers") in managing their aquariums. It is not a substitute for manual monitoring, regular water testing, and personal oversight.</p>
+        <h4>2. Ultimate User Responsibility</h4>
+        <p><strong>The Reefkeeper’s Responsibility:</strong> You acknowledge and agree that maintaining the health, stability, and safety of the aquarium ecosystem, livestock, and surrounding property is entirely your responsibility.</p>
+        <p>Automated systems can and do experience unexpected behavior. You are strictly required to:</p>
+        <ul>
+          <li>Regularly calibrate all pumps, sensors, and equipment.</li>
+          <li>Manually verify water parameters, including alkalinity, salinity, and calcium, using independent test kits.</li>
+          <li>Implement physical fail-safes, such as secondary float switches, siphon breaks, or independent controller limits, to prevent catastrophic over-dosing, under-dosing, or flooding.</li>
+        </ul>
+        <h4>3. Disclaimer of Warranties</h4>
+        <p>The System is provided on an "AS IS" and "AS AVAILABLE" basis, without warranties of any kind, either express or implied. To the fullest extent permitted by law, AIDoser disclaims all warranties, including but not limited to:</p>
+        <ul>
+          <li>Implied warranties of merchantability or fitness for a particular purpose.</li>
+          <li>Warranties that the System will be uninterrupted, error-free, completely secure, or free of bugs or firmware glitches.</li>
+          <li>Warranties regarding the accuracy or reliability of any data, sensor readings, or automated dosing schedules.</li>
+        </ul>
+        <h4>4. Absolute Limitation of Liability</h4>
+        <p>To the maximum extent permitted by applicable law, in no event shall AIDoser, its developers, creators, or affiliates be liable for any direct, indirect, incidental, special, consequential, or punitive damages arising out of or relating to your use of or inability to use the System.</p>
+        <p>This explicit exclusion of liability includes, but is not limited to:</p>
+        <ul>
+          <li><strong>Livestock Loss:</strong> The death, illness, or bleaching of coral, fish, invertebrates, or any other biological organisms.</li>
+          <li><strong>Property Damage:</strong> Water damage, flooding, electrical fires, or structural damage to floors, basements, or dwellings caused by equipment failure, plumbing issues, or overflow.</li>
+          <li><strong>Hardware Failure:</strong> Damage to third-party equipment, including return pumps, heaters, lighting, or secondary controllers.</li>
+        </ul>
+        <h4>5. Indemnification</h4>
+        <p>You agree to defend, indemnify, and hold harmless AIDoser and its developers from and against any claims, liabilities, damages, judgments, awards, losses, costs, or expenses, including reasonable attorneys' fees, arising out of your violation of these Terms or your misuse of the System.</p>
+        <h4>6. Firmware Updates</h4>
+        <p>You understand that firmware updates may modify features, dosing logic, safety systems, cloud services, artificial-intelligence recommendations, or communication protocols. AIDoser does not guarantee that future firmware versions will operate identically to prior versions.</p>
+        <h4>7. Electronic Acceptance and Records</h4>
+        <p>By selecting "I Agree" and continuing, you electronically accept these Terms. AIDoser may store the agreement version, exact agreement hash, acceptance date and time, account UID, email address, customer name, device ID, device label, browser user-agent, setup page, and available request metadata as evidence of acceptance.</p>
+
+        <div id="termsBottom" aria-hidden="true"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="declineTerms" class="secondary-button" type="button">Decline</button>
+        <button id="acceptTerms" type="button" disabled>Scroll to Bottom to Agree</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Firebase Hosting supplies your project configuration automatically. -->
+  <script src="/__/firebase/12.1.0/firebase-app-compat.js"></script>
+  <script src="/__/firebase/12.1.0/firebase-auth-compat.js"></script>
+  <script src="/__/firebase/12.1.0/firebase-functions-compat.js"></script>
+  <script src="/__/firebase/init.js"></script>
+
+  <script>
+    const form = document.getElementById("setupForm");
+    const message = document.getElementById("message");
+    const button = document.getElementById("submitButton");
+
+    const TERMS_VERSION = "2026-06-v1";
+    const TERMS_SHA256 = "b52bf7079294df46c55e062f9324278c680206806e41b2cf609703c7f662e8fd";
+    const termsCheckbox = document.getElementById("termsAccepted");
+    const termsModal = document.getElementById("termsModal");
+    const termsScroll = document.getElementById("termsScroll");
+    const openTerms = document.getElementById("openTerms");
+    const closeTerms = document.getElementById("closeTerms");
+    const acceptTerms = document.getElementById("acceptTerms");
+    const declineTerms = document.getElementById("declineTerms");
+    let termsScrolledToBottom = false;
+
+    const auth = firebase.auth();
+    const functions = firebase.app().functions("us-central1");
+    const claimDevice = functions.httpsCallable("claimDevice");
+
+    function show(type, text) {
+      message.className = "message " + type;
+      message.textContent = text;
+    }
+
+    function setBusy(isBusy, text = "Create Account and Claim AIDoser") {
+      button.disabled = isBusy;
+      button.textContent = text;
+    }
+
+    function showTerms() {
+      termsScrolledToBottom = false;
+      acceptTerms.disabled = true;
+      acceptTerms.textContent = "Scroll to Bottom to Agree";
+      termsScroll.scrollTop = 0;
+      termsModal.classList.add("open");
+      document.body.style.overflow = "hidden";
+    }
+
+    function hideTerms() {
+      termsModal.classList.remove("open");
+      document.body.style.overflow = "";
+    }
+
+    function updateTermsScrollState() {
+      const remaining = termsScroll.scrollHeight - termsScroll.scrollTop - termsScroll.clientHeight;
+      if (remaining <= 12) {
+        termsScrolledToBottom = true;
+        acceptTerms.disabled = false;
+        acceptTerms.textContent = "I Agree";
+      }
+    }
+
+    openTerms.addEventListener("click", (event) => {
+      event.preventDefault();
+      showTerms();
+    });
+
+    closeTerms.addEventListener("click", hideTerms);
+    termsScroll.addEventListener("scroll", updateTermsScrollState);
+
+    declineTerms.addEventListener("click", () => {
+      termsCheckbox.checked = false;
+      termsCheckbox.disabled = true;
+      hideTerms();
+      show("error", "You must accept the Terms before setup can continue.");
+    });
+
+    acceptTerms.addEventListener("click", () => {
+      if (!termsScrolledToBottom) return;
+      termsCheckbox.disabled = false;
+      termsCheckbox.checked = true;
+      hideTerms();
+      message.className = "message";
+      message.textContent = "";
+    });
+
+    termsModal.addEventListener("click", (event) => {
+      if (event.target === termsModal) hideTerms();
+    });
+
+    function friendlyError(error) {
+      const code = error && error.code ? String(error.code) : "";
+      const raw = error && error.message ? String(error.message) : "Setup failed.";
+
+      if (code.includes("email-already-in-use")) return "That email address already has an account.";
+      if (code.includes("invalid-email")) return "Enter a valid email address.";
+      if (code.includes("weak-password")) return "Choose a stronger password with at least 8 characters.";
+      if (code.includes("unauthenticated")) return "Your account session was lost. Please submit the form again.";
+      if (code.includes("not-found")) return "That device ID or claim code was not found.";
+      if (code.includes("already-exists")) return "That AIDoser has already been claimed.";
+      if (code.includes("permission-denied")) return raw.replace(/^FirebaseError:\\s*/i, "");
+      if (code.includes("failed-precondition")) return raw.replace(/^FirebaseError:\s*/i, "");
+      return raw.replace(/^FirebaseError:\s*/i, "");
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      message.className = "message";
+      message.textContent = "";
+
+      const customerName = document.getElementById("customerName").value.trim();
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+      const confirmPassword = document.getElementById("confirmPassword").value;
+      const deviceId = document.getElementById("deviceId").value.trim();
+      const claimCode = document.getElementById("claimCode").value.trim().toUpperCase();
+      const alias = document.getElementById("deviceAlias").value.trim();
+
+      if (!customerName) return show("error", "Enter your full name.");
+      if (!email || !email.includes("@")) return show("error", "Enter a valid email address.");
+      if (password.length < 8) return show("error", "The password must be at least 8 characters.");
+      if (password !== confirmPassword) return show("error", "The passwords do not match.");
+      if (!/^reefDoser\d+$/.test(deviceId)) return show("error", "The device ID must look like reefDoser4.");
+      if (claimCode.length < 6) return show("error", "Enter the claim code printed with the device.");
+      if (!termsCheckbox.checked) return show("error", "You must open, review, and accept the AIDoser Terms before continuing.");
+
+      let createdUser = null;
+
+      try {
+        setBusy(true, "Creating account...");
+
+        const credential = await auth.createUserWithEmailAndPassword(email, password);
+        createdUser = credential.user;
+
+        await createdUser.updateProfile({ displayName: customerName });
+        await createdUser.getIdToken(true);
+
+        setBusy(true, "Claiming AIDoser...");
+
+        const result = await claimDevice({
+          deviceId,
+          claimCode,
+          customerName,
+          alias,
+          termsAccepted: true,
+          termsVersion: TERMS_VERSION,
+          termsSha256: TERMS_SHA256,
+          termsAcceptedAtClient: new Date().toISOString(),
+          termsPage: window.location.pathname,
+          userAgent: navigator.userAgent
+        });
+
+        const claimedId = result.data && result.data.deviceId
+          ? result.data.deviceId
+          : deviceId;
+
+        show("success", `${claimedId} is now connected to your account. Opening device setup...`);
+        setBusy(true, "Opening Device Setup");
+
+        const wizardUrl = new URL("/device-setup.html", window.location.origin);
+        wizardUrl.searchParams.set("device", claimedId);
+        if (alias) wizardUrl.searchParams.set("alias", alias);
+
+        setTimeout(() => {
+          window.location.href = wizardUrl.toString();
+        }, 1200);
+        
+      } catch (error) {
+        console.error(error);
+
+        // Avoid leaving behind an unclaimed account if the claim operation fails.
+        if (createdUser) {
+          try {
+            await createdUser.delete();
+          } catch (deleteError) {
+            console.warn("Could not remove account after claim failure:", deleteError);
+          }
+        }
+
+        show("error", friendlyError(error));
+        setBusy(false);
+      }
+    });
+  </script>
+</body>
+</html>

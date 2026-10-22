@@ -1,0 +1,19 @@
+{
+    "ok": true,
+    "deviceId": "reefDoser2",
+    "customer": "Eric",
+    "label": "AIES-00002",
+    "firmwareVersion": "P-1.2.1",
+    "version": "P-1.2.1",
+    "board": "vintlabs-devkit-v1",
+    "chipId": "409D33077000",
+    "macAddress": "00:70:07:33:9D:40",
+    "otaBinName": "reefDoser2.bin",
+    "otaJsonName": "reefDoser2.json",
+    "firmwarePath": "/devices/reefDoser2/reefDoser2.bin",
+    "firmwareUrl": "https://aiesdoser.web.app/devices/reefDoser2/reefDoser2.bin",
+    "binUrl": "https://aiesdoser.web.app/devices/reefDoser2/reefDoser2.bin",
+    "size": 1748352,
+    "sha256": "d02de2f6106d96508f481be4a047e62a8991c3b1e7d006afa14b176133b9fc53",
+    "builtAt": "2026-07-30T11:27:56"
+}

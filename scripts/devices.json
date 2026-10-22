@@ -21,7 +21,7 @@
         "customer": "Joe Test",
         "label": "AIES-00003",
         "deviceId": "reefDoser3",
-        "firmwareVersion": "T-1.0.57",
+        "firmwareVersion": "P-3.0.2",
         "chipId": "9C9E33077000",
         "macAddress": "00:70:07:33:9E:9C",
         "board": "vintlabs-devkit-v1",
@@ -34,7 +34,10 @@
         "alkDemandBootstrapEnabled": true,
         "alkDemandBootstrapDkhDay": 0.73,
         "apexEmulatorTestEnabled": true,
-        "firebasePasswordPending": ""
+        "firebasePasswordPending": "",
+        "claimCode": "NMDN-PLLH",
+        "claimBatch": "BATCH-20260714",
+        "claimSequence": 11
     },
     "reefDoser2": {
         "customer": "Eric Rood",
@@ -192,7 +195,7 @@
         "customer": "Burn-In Pending",
         "label": "AIES-00008",
         "deviceId": "reefDoser8",
-        "firmwareVersion": "P-1.1.42",
+        "firmwareVersion": "T-0.0.1",
         "chipId": "101FC1FE8CE0",
         "macAddress": "E0:8C:FE:C1:1F:10",
         "board": "vintlabs-devkit-v1",

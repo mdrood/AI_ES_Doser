@@ -429,6 +429,13 @@ int daysSinceLastManualTest();
 extern bool setupWizardCompleted;
 bool shouldShowSetupWizard();
 void saveSetupWizardCompleted(bool completed);
+
+// TEST ONLY (compiled only when platformio build_flags has -DAIDOSER_TEST_BUILD=1):
+// wipes the wizard/setup data so the wizard runs again. See TestReset.cpp.
+#if defined(AIDOSER_TEST_BUILD) && AIDOSER_TEST_BUILD
+bool aidoserTestResetSetup();
+void aidoserTestPoll();   // call from main.cpp loop()
+#endif
 // §8.5 chemistry targets -- previously hardcoded compile-time constants
 // with no customer-facing way to change them at all.
 extern float targetAlk;

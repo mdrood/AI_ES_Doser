@@ -1,0 +1,19 @@
+{
+    "ok": true,
+    "deviceId": "reefDoser11",
+    "customer": "Burn-In Pending",
+    "label": "AIES-00011",
+    "firmwareVersion": "P-1.1.43",
+    "version": "P-1.1.43",
+    "board": "vintlabs-devkit-v1",
+    "chipId": "A063C2FE8CE0",
+    "macAddress": "E0:8C:FE:C2:63:A0",
+    "otaBinName": "reefDoser11.bin",
+    "otaJsonName": "reefDoser11.json",
+    "firmwarePath": "/devices/reefDoser11/reefDoser11.bin",
+    "firmwareUrl": "https://aiesdoser.web.app/devices/reefDoser11/reefDoser11.bin",
+    "binUrl": "https://aiesdoser.web.app/devices/reefDoser11/reefDoser11.bin",
+    "size": 1741296,
+    "sha256": "b55c8c8798dc70928b5170412cbd3c4e2c232e2d3379c41f34b4b0bb168d899b",
+    "builtAt": "2026-09-10T16:39:05"
+}

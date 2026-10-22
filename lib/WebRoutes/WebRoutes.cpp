@@ -2082,6 +2082,16 @@ void registerWebRoutes() {
     server.on("/api/chemical-presets", HTTP_GET, handleGetChemicalPresets);
     server.on("/api/setup-wizard/complete", HTTP_POST, handlePostSetupWizardComplete);
     server.on("/api/setup-wizard/reset", HTTP_POST, handlePostSetupWizardReset);
+
+#if defined(AIDOSER_TEST_BUILD) && AIDOSER_TEST_BUILD
+    // TEST ONLY: full wizard wipe (see TestReset.cpp). Not present in customer builds.
+    server.on("/api/test/reset-setup", HTTP_POST, []() {
+        bool ok = aidoserTestResetSetup();
+        server.send(ok ? 200 : 500, "application/json",
+            ok ? "{\"ok\":true}"
+               : "{\"ok\":false,\"error\":\"Reset ran but chemicals could not be saved to storage\"}");
+    });
+#endif
     server.on("/api/config/chemistry-targets", HTTP_POST, handlePostChemistryTargets);
     server.on("/api/config/ph-target-range", HTTP_POST, handlePostPhTargetRange);
 

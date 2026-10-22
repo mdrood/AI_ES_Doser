@@ -1,0 +1,19 @@
+{
+    "ok": true,
+    "deviceId": "reefDoser6",
+    "customer": "TBD",
+    "label": "AIES-00006",
+    "firmwareVersion": "P-3.0.0",
+    "version": "P-3.0.0",
+    "board": "vintlabs-devkit-v1",
+    "chipId": "F09C33077000",
+    "macAddress": "00:70:07:33:9C:F0",
+    "otaBinName": "reefDoser6.bin",
+    "otaJsonName": "reefDoser6.json",
+    "firmwarePath": "/devices/reefDoser6/reefDoser6.bin",
+    "firmwareUrl": "https://aiesdoser.web.app/devices/reefDoser6/reefDoser6.bin",
+    "binUrl": "https://aiesdoser.web.app/devices/reefDoser6/reefDoser6.bin",
+    "size": 1752848,
+    "sha256": "81fdf5a13aad4b6a7d46408b785748d7a8a602164a77fc67802476b87d61d986",
+    "builtAt": "2026-10-09T14:10:41"
+}

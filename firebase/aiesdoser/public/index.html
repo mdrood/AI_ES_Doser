@@ -1,0 +1,2811 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Reef AI Doser</title>
+<style>
+  :root {
+    --bg: #04141a;
+    --bg-card: rgba(9, 36, 45, 0.88);
+    --accent: #ff6b4a;
+    --accent-soft: rgba(255, 107, 74, 0.18);
+    --accent-strong: #ff8b6e;
+    --text: #eaf6f1;
+    --text-soft: #7fa6a0;
+    --border: rgba(127, 166, 160, 0.35);
+    --danger: #ff5470;
+    --success: #4fe0a8;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: system-ui, -apple-system, sans-serif;
+    background: radial-gradient(circle at top, #0ea5e9 0, #04141a 40%, #04141a 100%);
+    color: var(--text);
+    display: flex;
+    justify-content: center;
+    padding: 16px;
+  }
+  .shell { width: 100%; max-width: 1100px; }
+  .glass-panel {
+    background: var(--bg-card);
+    border-radius: 18px;
+    border: 1px solid var(--border);
+    padding: 25px;
+    backdrop-filter: blur(20px);
+    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.9);
+  }
+
+  header { display:flex; align-items:center; justify-content:space-between; margin-bottom: 30px; gap: 12px; }
+  .header-left { display:flex; align-items:center; gap: 15px; }
+
+  .reef-icon {
+    width: 48px; height: 48px; border-radius: 50%;
+    background: radial-gradient(circle at 30% 20%, #e0f2fe, #0ea5e9 40%, #0369a1 70%, #04141a 100%);
+    box-shadow: 0 0 0 2px rgba(8, 47, 73, 0.8), 0 12px 26px rgba(12, 74, 110, 0.7);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .reef-icon-wave {
+    width: 70%; height: 70%;
+    border-radius: 50%;
+    border: 2.5px solid rgba(255,255,255,0.9);
+    border-top-color: transparent;
+    border-left-color: transparent;
+    transform: rotate(25deg);
+  }
+
+  .pill {
+    font-size: 0.7rem;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 3px 10px;
+    border-radius: 999px;
+    display: inline-block;
+    margin-top: 5px;
+    font-weight: 600;
+  }
+
+  /* Compact header buttons (mobile-friendly) */
+  .btn-compact {
+    padding: 8px 12px;
+    font-size: 0.75rem;
+    border-radius: 999px;
+    line-height: 1;
+  }
+
+  .header-right {
+    display:flex;
+    gap: 12px;
+    align-items:center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .pill-sensor{
+    background: rgba(34, 211, 238, 0.15);
+    border: 1px solid rgba(34, 211, 238, 0.35);
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  /* Tighten header spacing on small screens */
+  @media (max-width: 600px) {
+    header {
+      flex-direction: column;
+      align-items: center;
+      gap: 15px;
+    }
+
+    .header-right {
+      width: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      padding-bottom: 0;
+      overflow-x: visible;
+    }
+
+    .header-right > * {
+      flex: 0 1 auto;
+    }
+
+    .btn-compact {
+      padding: 10px 14px;
+      font-size: 0.8rem;
+    }
+
+    .pill-sensor {
+      font-size: 0.75rem;
+      padding: 5px 10px;
+    }
+  }
+
+  /* Emergency Stop Button Styling (single definition; no duplicates) */
+  .btn-emergency {
+    background: linear-gradient(135deg, #ff5470, #b91c1c);
+    color: #fff;
+    border: 2px solid rgba(255,255,255,0.2);
+    padding: 10px 20px;
+    font-weight: 800;
+    border-radius: 999px;
+    animation: pulse-red 2s infinite;
+    cursor: pointer;
+    box-shadow: 0 0 20px rgba(249, 115, 115, 0.25);
+  }
+  .btn-emergency.active {
+    background: linear-gradient(135deg, #4fe0a8, #166534);
+    box-shadow: 0 0 20px rgba(74, 222, 128, 0.25);
+    animation: none;
+  }
+  @keyframes pulse-red {
+    0% { box-shadow: 0 0 0 0px rgba(249, 115, 115, 0.55); }
+    70% { box-shadow: 0 0 0 15px rgba(249, 115, 115, 0); }
+    100% { box-shadow: 0 0 0 0px rgba(249, 115, 115, 0); }
+  }
+  @media (max-width: 600px) {
+    .btn-emergency {
+      padding: 8px 12px;
+      font-size: 0.75rem;
+      min-height: auto;
+      box-shadow: 0 0 10px rgba(249,115,115,0.35);
+    }
+    .btn-emergency.active {
+      box-shadow: 0 0 10px rgba(74,222,128,0.35);
+    }
+  }
+
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 25px; margin-bottom: 25px; }
+  .card {
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    background: rgba(15, 23, 42, 0.8);
+    padding: 22px;
+    position: relative;
+  }
+
+  label { font-size: 0.75rem; color: var(--text-soft); display:block; margin-top: 12px; font-weight: 500; }
+  input {
+    width: 100%;
+    padding: 12px;
+    border-radius: 10px;
+    background: #000;
+    border: 1px solid #333;
+    color: #fff;
+    margin-top: 6px;
+    font-size: 1rem;
+  }
+
+  /* NEW: style selects to match inputs */
+  select {
+    width: 100%;
+    padding: 12px;
+    border-radius: 10px;
+    background: #000;
+    border: 1px solid #333;
+    color: #fff;
+    margin-top: 6px;
+    font-size: 1rem;
+  }
+
+  .filter-row {
+    display: flex;
+    gap: 10px;
+    align-items: end;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
+  .filter-row > div {
+    min-width: 140px;
+    flex: 0 0 auto;
+  }
+
+  button { cursor:pointer; border-radius: 999px; border: none; padding: 12px 24px; font-weight:bold; transition: all 0.2s; }
+  .btn-action {
+    background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+    color: #fff;
+    width: 100%;
+    margin-top: 20px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  }
+  .btn-action:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .btn-outline-soft {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-soft);
+    font-size: 0.8rem;
+  }
+  .btn-outline-soft:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-outline-soft.active-param-tab {
+    color:#fff;
+    border-color:rgba(34,211,238,.75);
+    background:rgba(34,211,238,.18);
+    box-shadow:0 0 16px rgba(34,211,238,.12);
+  }
+
+  .btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-soft);
+    font-size: 0.85rem;
+    border-radius: 999px;
+    padding: 10px 16px;
+    font-weight: 700;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .muted { color: var(--text-soft); font-size: 0.85rem; margin-top: 8px; }
+
+  .tag {
+    font-size: 0.75rem;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgba(0,0,0,0.4);
+    border: 1px solid #444;
+    color: #fff;
+    margin: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+  }
+  .tag-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+  }
+
+  .log-table { width:100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 15px; }
+  .log-table th { text-align:left; color: var(--text-soft); padding: 12px 8px; border-bottom: 2px solid var(--border); }
+  .log-table td { padding: 12px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(2, 8, 23, 0.98);
+    z-index: 10000;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding: 14px;
+  }
+  .hidden { display: none !important; }
+
+  code { background: rgba(0,0,0,0.35); padding: 2px 6px; border-radius: 8px; }
+
+  .plan-grid{
+    grid-column: 1 / -1;
+    display:grid;
+    grid-template-columns: 1fr 1fr;
+    gap:16px;
+    align-items:stretch;
+  }
+  @media (max-width: 900px){
+    .plan-grid{grid-template-columns:1fr;}
+  }
+
+  /* Active plan rows (fixes the "doesn't look right") */
+  .plan-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(148,163,184,0.22);
+    background: rgba(0,0,0,0.25);
+  }
+  .plan-left{
+    display:flex;
+    align-items:center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .plan-name{
+    font-weight: 800;
+    color: var(--text);
+    text-transform: uppercase;
+    letter-spacing: .02em;
+    font-size: .85rem;
+  }
+  .plan-sub{
+    font-size: .75rem;
+    color: var(--text-soft);
+  }
+  .plan-amt{
+    font-weight: 900;
+    color: var(--accent);
+    font-size: 1.05rem;
+    white-space: nowrap;
+  }
+  .plan-dot{
+    width:10px;
+    height:10px;
+    border-radius:50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px rgba(34,211,238,.45);
+    flex: 0 0 auto;
+  }
+
+  /* Dosing History graph polish */
+  .dose-summary-grid{
+    display:grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap:10px;
+    margin: 12px 0 14px;
+  }
+  .dose-summary-card{
+    border:1px solid rgba(148,163,184,.22);
+    background:rgba(0,0,0,.24);
+    border-radius:14px;
+    padding:12px;
+  }
+  .dose-summary-label{
+    font-size:.72rem;
+    color:var(--text-soft);
+    text-transform:uppercase;
+    letter-spacing:.08em;
+  }
+  .dose-summary-value{
+    margin-top:5px;
+    font-size:1.25rem;
+    font-weight:900;
+    color:var(--text);
+  }
+  .dose-summary-sub{
+    margin-top:3px;
+    font-size:.75rem;
+    color:var(--text-soft);
+  }
+  .dose-legend-note{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    align-items:center;
+    margin-top:10px;
+  }
+  .dose-chip{
+    display:inline-flex;
+    align-items:center;
+    gap:7px;
+    border:1px solid rgba(148,163,184,.22);
+    border-radius:999px;
+    padding:6px 10px;
+    background:rgba(0,0,0,.22);
+    color:var(--text-soft);
+    font-size:.75rem;
+    font-weight:700;
+  }
+  .dose-swatch{
+    width:10px;
+    height:10px;
+    border-radius:50%;
+    box-shadow:0 0 10px rgba(255,255,255,.12);
+  }
+  .btn-outline-soft.active-dose-tab{
+    color:#fff;
+    border-color:rgba(34,211,238,.7);
+    background:rgba(34,211,238,.18);
+    box-shadow:0 0 18px rgba(34,211,238,.12);
+  }
+
+</style>
+</head>
+
+<body>
+
+  <!-- LOGIN MODAL -->
+  <div id="loginModal" class="modal-overlay">
+    <div class="glass-panel" style="width:360px; text-align:center;">
+      <h2 style="color:var(--accent); margin-bottom:25px; font-size: 2rem;">Reef AI</h2>
+      <input id="loginEmail" type="email" placeholder="Email">
+      <input id="loginPassword" type="password" placeholder="Password" style="margin-top: 15px;">
+      <button id="loginButton" class="btn-action">Sign In</button>
+      <div id="loginError" style="color:var(--danger); margin-top:15px; font-size:0.85rem;"></div>
+    </div>
+  </div>
+
+  <div class="shell">
+    <div class="glass-panel">
+
+<header>
+  <div class="header-left">
+    <div class="reef-icon"><div class="reef-icon-wave"></div></div>
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <input id="tankSizeInput" type="number" style="width: 80px; text-align: center;" placeholder="Gallons">
+      <span style="font-size: 0.8rem; color: var(--accent);">Gallons</span>
+    </div>
+  </div>
+  <div class="header-right">
+<span id="alkPill" class="pill pill-sensor">Alk --</span>
+<span id="caPill" class="pill pill-sensor">Ca --</span>
+<span id="mgPill" class="pill pill-sensor">Mg --</span>
+<span id="phPill" class="pill pill-sensor">pH --</span>
+<span id="pptPill" class="pill pill-sensor">PPT --</span>
+<span id="sgPill" class="pill pill-sensor">SG --</span>
+
+    <button id="openDoseGraphBtn" class="btn-outline-soft btn-compact">📊 History</button>
+    
+    <button id="eStopBtn" class="btn-emergency btn-compact">🛑 EMERGENCY STOP</button>
+    <button id="logoutBtn" class="btn-outline-soft btn-compact" style="color:var(--danger);">Logout</button>
+  </div>
+</header>
+
+
+      <!-- MARK-ONLY ADMIN TOOLS -->
+      <div id="markAdminPanel" class="card hidden" style="margin-bottom:25px; border-color:rgba(249,115,115,.55);">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <div>
+            <h3 style="color:var(--danger); margin:0;">Mark Admin Tools</h3>
+            <div class="muted" style="margin-top:6px;">
+              Visible and callable only while signed in as <code>markdamonrood@gmail.com</code>.
+            </div>
+          </div>
+          <div id="anonymousUserCount" class="tag" style="margin:0;">Anonymous users: not counted</div>
+        </div>
+
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:16px;">
+          <button id="refreshAnonymousCountBtn" type="button" class="btn-outline-soft">
+            Refresh Anonymous Count
+          </button>
+          <button id="deleteAnonymousUsersBtn" type="button" class="btn-outline-soft"
+            style="color:#fff; border-color:rgba(249,115,115,.75); background:rgba(185,28,28,.45);">
+            Delete All Anonymous Users
+          </button>
+        </div>
+
+        <div id="anonymousAdminStatus" class="muted" style="margin-top:12px;">
+          No cleanup action has been run.
+        </div>
+      </div>
+
+      <!-- PARAMETER CHART -->
+      <div class="card" style="margin-bottom: 25px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+          <div>
+            <h3 style="color:var(--accent); margin:0;">Parameter Trends</h3>
+            <div id="paramsMeta" class="muted" style="margin-top:6px;">Loading parameter history…</div>
+          </div>
+          <div class="filter-row" style="margin:0;">
+            <div><label style="margin-top:0;">Year</label><select id="paramsYear"></select></div>
+            <div><label style="margin-top:0;">Month</label><select id="paramsMonth"></select></div>
+            <button id="viewParamsHistoryBtn" type="button" class="btn-outline-soft" style="margin-bottom:0;">View Parameter History</button>
+          </div>
+        </div>
+        <div id="paramChartTabs" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:14px;">
+          <button type="button" class="btn-outline-soft active-param-tab" data-param="all">All</button>
+          <button type="button" class="btn-outline-soft" data-param="ph">pH</button>
+          <button type="button" class="btn-outline-soft" data-param="alk">Alk</button>
+          <button type="button" class="btn-outline-soft" data-param="ca">Calcium</button>
+          <button type="button" class="btn-outline-soft" data-param="mg">Magnesium</button>
+          <button type="button" class="btn-outline-soft" data-param="temp">Temperature</button>
+          <button type="button" class="btn-outline-soft" data-param="ppt">Salinity</button>
+          <button type="button" class="btn-outline-soft" data-param="sg">Specific Gravity</button>
+          <button type="button" class="btn-outline-soft" data-param="cond">Conductivity</button>
+        </div>
+        <div style="height:360px; margin-top:12px;"><canvas id="paramsChart"></canvas></div>
+      </div>
+
+      <div class="grid">
+
+        <div class="card">
+          <h3 style="color:var(--accent); margin-top:0;">Active Dosing Plan</h3>
+          <div id="dosingContainer" style="display:flex; flex-direction: column; gap: 10px;"></div>
+        </div>
+      </div>
+
+      <!-- DEVICE & OTA -->
+      <div class="card" style="margin-bottom: 25px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; gap: 10px; flex-wrap: wrap;">
+          <h3 style="color:var(--accent); margin:0;">Device & Firmware</h3>
+          <div style="display:flex; gap: 8px; flex-wrap: wrap; justify-content:flex-end;">
+            <div id="deviceIdPill" class="tag" style="margin:0;">Device: —</div>
+            <div id="liveStatusPill" class="tag" style="margin:0;">
+              <div class="tag-dot" style="background:#ff5470; box-shadow: 0 0 10px rgba(249,115,115,0.7);"></div>Offline
+            </div>
+            <div id="firmwareInfo" class="tag" style="margin:0;">FW: --</div>
+            <div id="updateBadge" class="tag" style="background:rgba(74,222,128,0.15); color:var(--text); font-weight:bold; gap:10px; align-items:center;">
+              <span id="updateBadgeText">OTA Ready</span>
+              <label title="Use only for a brand-new / bootstrap device build" style="display:inline-flex; align-items:center; gap:6px; margin:0; color:var(--text-soft); font-size:0.75rem; font-weight:700; white-space:nowrap;">
+                <input id="firstTimeOtaCheck" type="checkbox" style="width:auto; margin:0; transform:translateY(1px);">
+                First-time
+              </label>
+              <button id="sendOtaBtn" type="button" onclick="triggerOTA(); return false;" class="btn-outline-soft" style="margin:0; padding:8px 14px; color:#fff; border-color:rgba(255,255,255,0.2); background:#e67e22; pointer-events:auto;">OTA Update</button>
+            </div>
+
+        </div>
+
+        <div style="margin-top:14px; display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;">
+          <div style="min-width:220px; flex: 0 0 auto;">
+            <label style="margin-top:0;">Dosing Implementation</label>
+      <select id="dosingModeSelect">
+        <option value="1">Mode 1: Kalk</option>
+        <option value="2">Mode 2: AFR (Pump 1)</option>
+        <option value="3">Mode 3: Kalk + AFR + Mg</option>
+        <option value="4">Mode 4: 2-Part (Alk/Ca) + Mg</option>
+        <option value="5">Mode 5: Kalk + 2-Part (Alk/Ca) + Mg</option>
+        <option value="6">Mode 6: Kalk + CaCl2 + NaOH + Mg</option>
+        <option value="7">Mode 7: Kalk + CaCl2 + NaOH + Alk (old Mg pump)</option>
+      </select>
+            <div class="muted" style="margin-top:6px;">This controls which pumps/labels the UI and ESP32 use.</div>
+          </div>
+          <div class="tag" style="margin:0; flex: 1 1 auto; min-width:240px;">
+            <div class="tag-dot"></div>
+            <span id="dosingModePill">Mode: —</span>
+          </div>
+        </div>
+        <div id="dosingModeStatus" class="muted" style="margin-top:8px;"></div>
+        <button id="saveDosingModeBtn" class="btn-outline-soft" style="margin-top:10px;">Save Mode to Device</button>
+
+
+
+        <div style="background: rgba(0,0,0,0.3); padding: 20px; border-radius: 12px; display:flex; gap: 15px; align-items:center;">
+          <div style="flex:1; font-size:0.8rem; color:var(--text-soft);">
+            OTA source:
+            <span id="otaUrlText" style="color:var(--accent); font-weight:700;"></span>
+          </div>
+        </div>
+
+        <div id="otaStatus" style="font-size:0.75rem; margin-top:10px; text-align:center; color: var(--accent); font-weight: 600;"></div>
+
+      <div class="card" style="margin-top:20px;">
+        <h3 style="color:var(--accent); margin-top:0;">Firebase Notifications</h3>
+        <p class="muted" style="line-height:1.5;">
+          Use this from the Firebase-hosted HTTPS dashboard. On iPhone, add
+          <code>https://aiesdoser.web.app</code> to the Home Screen first, then
+          open the Home Screen icon and enable push.
+        </p>
+        <button onclick="enableFirebasePushNotifications()" class="btn-action">
+          Enable iPhone / Browser Push Notifications
+        </button>
+        <div id="pushStatus" class="muted" style="margin-top:10px;">
+          Push notifications not enabled from this browser.
+        </div>
+      </div>
+      </div>
+
+      <!-- TEST LOG -->
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+          <h3 style="color:var(--accent); margin:0;">Historical Logs</h3>
+
+          <div class="filter-row" style="margin:0;">
+            <div>
+              <label style="margin-top:0;">Year</label>
+              <select id="testsYear"></select>
+            </div>
+            <div>
+              <label style="margin-top:0;">Month</label>
+              <select id="testsMonth"></select>
+            </div>
+            <div class="muted" id="testsMeta" style="margin:0; align-self:center;">Loading…</div>
+          </div>
+        </div>
+
+        <table class="log-table">
+          <thead><tr><th>Date</th><th>Alk</th><th>Ca</th><th>Mg</th><th>pH</th></tr></thead>
+          <tbody id="logBody"></tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- CALIBRATION OVERLAY -->
+  <div id="calibrationOverlay" class="hidden modal-overlay">
+    <div class="glass-panel" style="width:90%; max-width:900px; max-height:90vh; overflow-y:auto;">
+      <div style="display:flex; justify-content:space-between; margin-bottom:25px; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <div>
+          <h2 style="margin:0;">Pump Calibration</h2>
+          <div id="calibrationAck" class="muted" style="font-size:12px;margin-top:6px;"></div>
+        </div>
+        <button id="closeCalibrationBtn" class="btn-outline-soft" style="background:var(--danger); color:white; border:none; padding: 10px 20px;">Close</button>
+      </div>
+      <div class="grid">
+
+
+
+  <!-- Pump cards still go here -->
+  <div id="calGrid" class="grid" style="grid-column: 1 / -1;"></div>
+</div>
+    </div>
+  </div>
+
+  <!-- DOSE GRAPH OVERLAY -->
+  <div id="doseGraphOverlay" class="hidden modal-overlay">
+    <div class="glass-panel" style="width:90%; max-width:1180px; max-height:90vh; overflow-y:auto;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:18px; flex-wrap: wrap;">
+        <div>
+          <h2 style="margin:0;">Dosing History</h2>
+          <div class="muted" style="margin-top:6px;">
+            Daily <b>actual dosed mL</b> from the one-per-day midnight record: <code>devices/&lt;deviceId&gt;/history/YYYY-MM/DD</code>.
+          </div>
+        </div>
+        <button id="closeDoseGraphBtn" class="btn-outline-soft"
+          style="background:var(--danger); color:white; border:none; padding: 10px 20px;">
+          Close
+        </button>
+      </div>
+
+      <div class="card" style="margin-bottom:16px;">
+        <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; justify-content:space-between;">
+          <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
+            <span class="tag" style="margin:0;"><div class="tag-dot"></div>Filter</span>
+            <button class="btn-outline-soft" id="doseTabAll">All</button>
+            <button class="btn-outline-soft" id="doseTabKalk">Kalk</button>
+            <button class="btn-outline-soft" id="doseTabAfr">AFR</button>
+            <button class="btn-outline-soft" id="doseTabAlk">Alk</button>
+            <button class="btn-outline-soft" id="doseTabCacl2">CaCl2</button>
+            <button class="btn-outline-soft" id="doseTabNaoh">NaOH</button>
+            <button class="btn-outline-soft" id="doseTabMg">Mg</button>
+            <button class="btn-outline-soft" id="doseTabAux">Aux</button>
+          </div>
+
+<div class="filter-row">
+  <div class="input-group">
+    <label>Year</label>
+    <select id="doseYear"></select>
+  </div>
+  <div class="input-group">
+    <label>Month</label>
+    <select id="doseMonth"></select>
+  </div>
+  <button class="btn-outline-soft" onclick="attachDailyDoseHistoryListener();" style="margin-top:22px">View Dosing History</button>
+</div>        </div>
+      </div>
+
+      <div class="card">
+        <div class="dose-summary-grid" id="doseSummaryGrid"></div>
+        <div style="height:430px;"><canvas id="doseChart"></canvas></div>
+        <div id="doseGraphMeta" class="muted" style="margin-top:10px;">No daily history loaded yet.</div>
+
+        <div class="muted" style="margin-top:10px;">
+          Graph source: one Firebase read for the selected month. It uses chemical aliases when present and falls back to physical pump totals <code>p1..p4</code> only if needed.
+        </div>
+
+        <table class="log-table" style="margin-top:14px;">
+          <thead><tr><th>Day</th><th>Total</th><th>Breakdown</th></tr></thead>
+          <tbody id="doseRunsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- LIBS -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-functions.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-messaging.js"></script>
+  <!-- Firebase Cloud Messaging is used for browser/iPhone push registration. -->
+
+  <script>
+    const firebaseConfig = {
+  apiKey: "AIzaSyB4XtC5Pvxw6To58EKTLMADQLqR_hTZK0M",
+  authDomain: "aiesdoser.firebaseapp.com",
+  databaseURL: "https://aiesdoser-default-rtdb.firebaseio.com",
+  projectId: "aiesdoser",
+  storageBucket: "aiesdoser.firebasestorage.app",
+  messagingSenderId: "449222824743",
+  appId: "1:449222824743:web:06e34fc591d5af0f1a8f02",
+  measurementId: "G-0G1175QWM0"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.database();
+    const functions = firebase.app().functions("us-central1");
+
+    // Fixed 2026-08-06: this page previously relied entirely on the
+    // Firebase SDK's own reconnection backoff to notice its websocket had
+    // gone stale (e.g. tab backgrounded/idle for a while) -- confirmed via
+    // the ESP32 side that a firmware-version write is synchronous with no
+    // delay at all, so a real ~5 minute gap between the value landing on
+    // Firebase's server and this page's listener firing was happening
+    // entirely here, client-side. Forcing goOnline() whenever the tab
+    // regains focus makes the SDK actively re-verify its connection right
+    // away instead of passively waiting out its own backoff timer.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        try { firebase.database().goOnline(); } catch (e) { console.warn('goOnline failed:', e); }
+      }
+    });
+
+    // Do not initialize Firebase Messaging at page load.
+    // Some iPhone/Safari contexts can throw here and prevent login wiring.
+    // Messaging is initialized only when the user taps the push button.
+
+    const FIREBASE_WEB_PUSH_VAPID_KEY =
+      "BNEHGv71r2Ac8cvVOtthjvCJfPPGeYC-IUEOesBK_EFU4yCASj-LTlx7yeei-8HgsPxo1HUanXStPrdUQZF20aw";
+
+    function setPushStatus(message) {
+      const el = document.getElementById("pushStatus");
+      if (el) el.innerText = message;
+    }
+
+    async function enableFirebasePushNotifications() {
+      try {
+        if (!activeDeviceId) {
+          setPushStatus("Sign in and wait for the active device to load first.");
+          alert("Sign in and wait for the active device to load first.");
+          return;
+        }
+
+        if (!window.isSecureContext || location.protocol !== "https:") {
+          setPushStatus("Open https://aiesdoser.web.app, not the local ESP32 IP.");
+          alert("Open the Firebase-hosted HTTPS dashboard, not the local ESP32 IP.");
+          return;
+        }
+
+        if (!("Notification" in window)) {
+          setPushStatus("This browser does not support notifications.");
+          alert("This browser does not support notifications.");
+          return;
+        }
+
+        if (!("serviceWorker" in navigator)) {
+          setPushStatus("Service workers are not supported here.");
+          alert("Service workers are not supported here.");
+          return;
+        }
+
+        setPushStatus("Registering service worker...");
+        const registration = await navigator.serviceWorker.register(
+          "/firebase-messaging-sw.js"
+        );
+
+        setPushStatus("Requesting notification permission...");
+        const permission = await Notification.requestPermission();
+
+        if (permission !== "granted") {
+          setPushStatus("Notification permission denied.");
+          return;
+        }
+
+        setPushStatus("Getting Firebase Cloud Messaging token...");
+        const messaging = firebase.messaging();
+        const token = await messaging.getToken({
+          vapidKey: FIREBASE_WEB_PUSH_VAPID_KEY,
+          serviceWorkerRegistration: registration
+        });
+
+        if (!token) {
+          setPushStatus("No FCM token returned.");
+          return;
+        }
+
+        await db.ref(`devices/${activeDeviceId}/fcmTokens`).push({
+          token: token,
+          active: true,
+          deviceId: activeDeviceId,
+          platform: navigator.platform || "web",
+          userAgent: navigator.userAgent || "",
+          createdAt: firebase.database.ServerValue.TIMESTAMP,
+          lastSeen: firebase.database.ServerValue.TIMESTAMP
+        });
+
+        setPushStatus("Push notifications enabled for " + activeDeviceId + ".");
+        console.log("FCM TOKEN:", token);
+        alert("Push notifications enabled for " + activeDeviceId + ".");
+      } catch (err) {
+        console.error("Push setup failed", err);
+        const msg = err && err.message ? err.message : String(err);
+        setPushStatus("Push setup failed: " + msg);
+        alert("Push setup failed: " + msg);
+      }
+    }
+
+    let activeDeviceId = null;
+    // Dosing implementation (drives labels + which pumps show)
+    // settings/dosingMode is an int: 1..7 (see DOSING_MODES below)
+    let dosingMode = 1;
+    let latestDosingPlan = null;
+    const DOSING_MODES = {
+  1: {
+    pill: "Method 1 • Kalk (Pump 1)",
+    pumps: ["kalk"],
+    labels: { kalk: "Kalk" },
+    tabs: [{ id: "doseTabKalk", key: "kalk", text: "Kalk" }],
+    calNames: ["Kalk (P1)", "— (P2)", "— (P3)", "— (P4)"]
+  },
+  2: {
+    pill: "Method 2 • AFR (Pump 1)",
+    pumps: ["afr"],
+    labels: { afr: "AFR" },
+    tabs: [{ id: "doseTabAfr", key: "afr", text: "AFR" }],
+    calNames: ["AFR (P1)", "— (P2)", "— (P3)", "— (P4)"]
+  },
+  3: {
+    pill: "Method 3 • Kalk + AFR + Mg (P1–P3)",
+    pumps: ["kalk","afr","mg"],
+    labels: { kalk: "Kalk", afr: "AFR", mg: "Mg" },
+    tabs: [
+      { id: "doseTabKalk", key: "kalk", text: "Kalk" },
+      { id: "doseTabAfr", key: "afr", text: "AFR" },
+      { id: "doseTabMg", key: "mg", text: "Mg" }
+    ],
+    calNames: ["Kalk (P1)", "AFR (P2)", "Mg (P3)", "— (P4)"]
+  },
+  4: {
+    pill: "Method 4 • Alk + Calcium + Mg (P1–P3)",
+    pumps: ["alk","ca","mg"],
+    labels: { alk: "Alk", ca: "Calcium", cacl2: "CaCl2", mg: "Mg" },
+    tabs: [
+      { id: "doseTabAlk", key: "alk", text: "Alk" },
+      { id: "doseTabCacl2", key: "ca", text: "Calcium" },
+      { id: "doseTabMg", key: "mg", text: "Mg" }
+    ],
+    calNames: ["Alk (P1)", "Calcium (P2)", "Mg (P3)", "— (P4)"]
+  },
+  5: {
+    pill: "Method 5 • Kalk + 2‑Part (Alk/Ca) + Mg (P1–P4)",
+    pumps: ["kalk","alk","ca","mg"],
+    labels: { kalk: "Kalk", alk: "Alk (2‑Part)", ca: "Calcium (2‑Part)", mg: "Mg" },
+    tabs: [
+      { id: "doseTabKalk", key: "kalk", text: "Kalk" },
+      { id: "doseTabAlk", key: "alk", text: "Alk" },
+      { id: "doseTabCacl2", key: "ca", text: "Calcium" },
+      { id: "doseTabMg", key: "mg", text: "Mg" }
+    ],
+    calNames: ["Kalk (P1)", "Alk (P2)", "Calcium (P3)", "Mg (P4)"]
+  },
+  6: {
+    pill: "Method 6 • Kalk + CaCl2 + NaOH + Mg (P1–P4)",
+    pumps: ["kalk","cacl2","naoh","mg"],
+    labels: { kalk: "Kalk", cacl2: "Calcium Chloride (CaCl2)", naoh: "Sodium Hydroxide (NaOH)", mg: "Mg" },
+    tabs: [
+      { id: "doseTabKalk", key: "kalk", text: "Kalk" },
+      { id: "doseTabCacl2", key: "cacl2", text: "CaCl2" },
+      { id: "doseTabNaoh", key: "naoh", text: "NaOH" },
+      { id: "doseTabMg", key: "mg", text: "Mg" }
+    ],
+    calNames: ["Kalk (P1)", "CaCl2 (P2)", "NaOH (P3)", "Mg (P4)"]
+  },
+  7: {
+    pill: "Method 7 • Kalk + CaCl2 + NaOH + Alk (P1–P4)",
+    pumps: ["kalk","cacl2","naoh","alk"],
+    labels: { kalk: "Kalk", cacl2: "Calcium Chloride (CaCl2)", naoh: "Sodium Hydroxide (NaOH)", alk: "Alk (Baking Soda, P4)" },
+    tabs: [
+      { id: "doseTabKalk", key: "kalk", text: "Kalk" },
+      { id: "doseTabCacl2", key: "cacl2", text: "CaCl2" },
+      { id: "doseTabNaoh", key: "naoh", text: "NaOH" },
+      { id: "doseTabAlk", key: "alk", text: "Alk" }
+    ],
+    calNames: ["Kalk (P1)", "CaCl2 (P2)", "NaOH (P3)", "Alk (P4 / old Mg pump)"]
+  }
+};
+
+    function modeCfg() {
+      return DOSING_MODES[dosingMode] || DOSING_MODES[1];
+    }
+
+    function prettyPumpKey(k) {
+      const key = String(k || "").toLowerCase();
+      const cfg = modeCfg();
+      if (cfg.labels && cfg.labels[key]) return cfg.labels[key];
+
+      
+// Back-compat / aliases (in case older firmware wrote different keys)
+if (key === "tbd") return "Aux";
+if (key === "aux") return "Aux";
+
+if (key === "alk") return (dosingMode === 7 ? "Alk (Baking Soda, P4)" : (dosingMode === 4 ? "Alk" : "Alk (2‑Part)"));
+if (key === "ca") return (dosingMode === 4 ? "Calcium" : "Calcium (2‑Part)");
+if (key === "cacl2") return "Calcium Chloride (CaCl2)";
+if (key === "naoh") return "Sodium Hydroxide (NaOH)";
+
+if (key === "brs2alk" || key === "brsalk") return "BRS Alk";
+if (key === "brs2ca"  || key === "brsca")  return "BRS Ca";
+
+if (key === "nacl") return "2-Part A (NaCl)";
+if (key === "afr") return "AFR";
+
+return key.toUpperCase();
+    }
+
+
+    // charts
+    let paramsChart = null;
+    let latestParameterRows = [];
+    let selectedParameterKey = "all";
+    let latestParameterRangeDays = 31;
+    let doseChart = null;
+
+    // daily dose-history listener
+    let doseRunsUnsub = null;
+    let doseFilter = "all"; // all | kalk | afr | alk | cacl2 | naoh | mg | tbd
+
+    // NEW: tests listener + month filters
+    let testsUnsub = null;
+    // NEW: params chart listener (unfiltered so Parameter Trends always shows)
+    let paramsUnsub = null;
+
+    // Month filters (default to current month; dropdowns start at Jan 2026)
+    let testsFilterYear = null;
+    let testsFilterMonth = null;
+
+    let doseFilterYear = null;
+    let doseFilterMonth = null;
+
+    const activeRealtimeUnsubs = [];
+    let lastFwVersionChecked = {};
+
+    function watchRef(path, handler, eventName = "value") {
+      const ref = db.ref(path);
+      ref.on(eventName, handler);
+      const unsub = () => ref.off(eventName, handler);
+      activeRealtimeUnsubs.push(unsub);
+      return ref;
+    }
+
+    function clearRealtimeListeners() {
+      while (activeRealtimeUnsubs.length) {
+        const unsub = activeRealtimeUnsubs.pop();
+        try { unsub(); } catch (e) {}
+      }
+    }
+
+    const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+
+    const MARK_ADMIN_EMAIL = "markdamonrood@gmail.com";
+    const countAnonymousUsersCallable =
+      functions.httpsCallable("countAnonymousUsers");
+    const deleteAnonymousUsersCallable =
+      functions.httpsCallable("deleteAnonymousUsers");
+
+    function setAnonymousAdminStatus(text, isError = false) {
+      const el = document.getElementById("anonymousAdminStatus");
+      if (!el) return;
+      el.textContent = text;
+      el.style.color = isError ? "var(--danger)" : "var(--text-soft)";
+    }
+
+    function setAnonymousCount(value) {
+      const el = document.getElementById("anonymousUserCount");
+      if (!el) return;
+      el.textContent =
+        value === null
+          ? "Anonymous users: not counted"
+          : `Anonymous users: ${Number(value).toLocaleString()}`;
+    }
+
+    function setAdminButtonsBusy(isBusy) {
+      const refreshBtn = document.getElementById("refreshAnonymousCountBtn");
+      const deleteBtn = document.getElementById("deleteAnonymousUsersBtn");
+      if (refreshBtn) refreshBtn.disabled = isBusy;
+      if (deleteBtn) deleteBtn.disabled = isBusy;
+    }
+
+    async function refreshAnonymousUserCount() {
+      try {
+        setAdminButtonsBusy(true);
+        setAnonymousAdminStatus("Counting anonymous Authentication users...");
+        const result = await countAnonymousUsersCallable();
+        const count = Number(result?.data?.count || 0);
+        setAnonymousCount(count);
+        setAnonymousAdminStatus(`Count complete: ${count.toLocaleString()} anonymous users.`);
+        return count;
+      } catch (error) {
+        console.error("Anonymous user count failed", error);
+        const message = error?.message || String(error);
+        setAnonymousAdminStatus("Count failed: " + message, true);
+        throw error;
+      } finally {
+        setAdminButtonsBusy(false);
+      }
+    }
+
+    async function deleteAllAnonymousUsers() {
+      let count;
+
+      try {
+        count = await refreshAnonymousUserCount();
+      } catch (error) {
+        return;
+      }
+
+      if (count === 0) {
+        setAnonymousAdminStatus("There are no anonymous users to delete.");
+        return;
+      }
+
+      const confirmation = prompt(
+        `This will permanently delete ${count.toLocaleString()} anonymous Firebase Authentication users.\n\n` +
+        `Email/password users will not be deleted.\n\n` +
+        `Type DELETE ${count} to continue:`
+      );
+
+      if (confirmation !== `DELETE ${count}`) {
+        setAnonymousAdminStatus("Deletion cancelled. Nothing was deleted.");
+        return;
+      }
+
+      try {
+        setAdminButtonsBusy(true);
+        setAnonymousAdminStatus("Deleting anonymous users...");
+        const result = await deleteAnonymousUsersCallable({
+          expectedCount: count,
+          confirmation: `DELETE ${count}`
+        });
+
+        const deleted = Number(result?.data?.deleted || 0);
+        const failed = Number(result?.data?.failed || 0);
+
+        setAnonymousCount(failed);
+        setAnonymousAdminStatus(
+          `Cleanup complete. Deleted ${deleted.toLocaleString()}; failed ${failed.toLocaleString()}.`,
+          failed > 0
+        );
+      } catch (error) {
+        console.error("Anonymous user deletion failed", error);
+        const message = error?.message || String(error);
+        setAnonymousAdminStatus("Deletion failed: " + message, true);
+      } finally {
+        setAdminButtonsBusy(false);
+      }
+    }
+
+    function configureMarkAdminPanel(user) {
+      const panel = document.getElementById("markAdminPanel");
+      if (!panel) return;
+
+      const isMark =
+        !!user &&
+        String(user.email || "").toLowerCase() === MARK_ADMIN_EMAIL;
+
+      panel.classList.toggle("hidden", !isMark);
+
+      if (!isMark) {
+        setAnonymousCount(null);
+        setAnonymousAdminStatus("No cleanup action has been run.");
+        return;
+      }
+
+      const refreshBtn = document.getElementById("refreshAnonymousCountBtn");
+      const deleteBtn = document.getElementById("deleteAnonymousUsersBtn");
+
+      if (refreshBtn && !refreshBtn.dataset.wired) {
+        refreshBtn.dataset.wired = "true";
+        refreshBtn.addEventListener("click", refreshAnonymousUserCount);
+      }
+
+      if (deleteBtn && !deleteBtn.dataset.wired) {
+        deleteBtn.dataset.wired = "true";
+        deleteBtn.addEventListener("click", deleteAllAnonymousUsers);
+      }
+
+      refreshAnonymousUserCount().catch(() => {});
+    }
+
+    // ---- AUTH UI ----
+    document.getElementById('loginButton').onclick = () => {
+      const errEl = document.getElementById('loginError');
+      if (errEl) errEl.innerText = "Signing in...";
+      auth.signInWithEmailAndPassword(
+        document.getElementById('loginEmail').value,
+        document.getElementById('loginPassword').value
+      ).then(() => {
+        if (errEl) errEl.innerText = "";
+      }).catch(e => {
+        console.error("Login failed", e);
+        if (errEl) errEl.innerText = e && e.message ? e.message : String(e);
+      });
+    };
+    document.getElementById('logoutBtn').onclick = () => auth.signOut();
+
+    auth.onAuthStateChanged(user => {
+      configureMarkAdminPanel(user);
+      if (user) {
+        document.getElementById('loginModal').classList.add('hidden');
+        db.ref(`users/${user.uid}/devices`).once('value', snap => {
+          if (snap.exists()) {
+            clearRealtimeListeners();
+            const devices = snap.val() || {};
+
+              const deviceIds = Object.keys(devices || {});
+
+// Prefer the user's saved/default device if present
+const savedDeviceId = localStorage.getItem("activeDeviceId");
+
+if (savedDeviceId && devices[savedDeviceId]) {
+  activeDeviceId = savedDeviceId;
+} else if (devices.reefDoser1) {
+  activeDeviceId = "reefDoser1";
+} else {
+  activeDeviceId = deviceIds[0] || null;
+}
+
+localStorage.setItem("activeDeviceId", activeDeviceId);
+
+            lastFwVersionChecked = {};
+
+            console.log("ACTIVE DEVICE ID:", activeDeviceId);
+
+            const devPill = document.getElementById('deviceIdPill');
+            if (devPill) devPill.innerText = "Device: " + activeDeviceId;
+
+            // Tank Size Sync
+            const tankSizeRef = db.ref(`devices/${activeDeviceId}/settings/tankSize`);
+            watchRef(`devices/${activeDeviceId}/settings/tankSize`, (snapshot) => {
+              const val = snapshot.val();
+              if (val !== null && val !== undefined) document.getElementById('tankSizeInput').value = val;
+            });
+
+            document.getElementById('tankSizeInput').onchange = async (e) => {
+              const newSize = parseFloat(e.target.value);
+              if (isNaN(newSize) || newSize <= 0) return;
+              await tankSizeRef.set(newSize);
+            };
+
+            initApp();            // starts logs + plan + ota badge + schedule
+            subscribeSensors();   // starts temp/pH/SG pills
+            initEmergencyStop();  // stop button logic
+          }
+        });
+      } else {
+        activeDeviceId = null;
+        clearRealtimeListeners();
+        lastFwVersionChecked = {};
+
+        // cleanup listeners
+        if (testsUnsub) { try { testsUnsub(); } catch(e){} testsUnsub = null; }
+        if (paramsUnsub) { try { paramsUnsub(); } catch(e){} paramsUnsub = null; }
+        if (doseRunsUnsub) { try { doseRunsUnsub(); } catch(e){} doseRunsUnsub = null; }
+
+        document.getElementById('loginModal').classList.remove('hidden');
+      }
+    });
+
+    // ---------------- Dosing Schedule (settings/doseSchedule) ----------------
+    function _fmtHour(h){
+      const hr = ((h % 24) + 24) % 24;
+      const ampm = hr >= 12 ? "PM" : "AM";
+      const hr12 = (hr % 12) === 0 ? 12 : (hr % 12);
+      return `${hr12}:00 ${ampm}`;
+    }
+
+    function _setSchedDot(state){
+      const dot = document.getElementById("schedDot");
+      if(!dot) return;
+      if(state === "dirty"){
+        dot.style.background = "rgba(250,204,21,.85)";
+        dot.style.boxShadow = "0 0 10px rgba(250,204,21,.35)";
+      } else if(state === "ok"){
+        dot.style.background = "rgba(74,222,128,.9)";
+        dot.style.boxShadow = "0 0 10px rgba(74,222,128,.35)";
+      } else if(state === "bad"){
+        dot.style.background = "rgba(248,113,113,.9)";
+        dot.style.boxShadow = "0 0 10px rgba(248,113,113,.35)";
+      } else {
+        dot.style.background = "rgba(148,163,184,.6)";
+        dot.style.boxShadow = "none";
+      }
+    }
+
+    function initDoseScheduleUI(){
+      const elEnabled = document.getElementById("schedEnabled");
+      const elStart = document.getElementById("schedStart");
+      const elEnd = document.getElementById("schedEnd");
+      const elEvery = document.getElementById("schedEvery");
+      const elStatus = document.getElementById("schedStatus");
+      const elSummary = document.getElementById("schedSummary");
+
+      if(!elEnabled || !elStart || !elEnd || !elEvery) return;
+      if(!db || !activeDeviceId) return;
+
+      if(elStart.options.length === 0){
+        for(let h=0; h<24; h++){
+          const o1 = document.createElement("option");
+          o1.value = String(h);
+          o1.textContent = _fmtHour(h);
+          elStart.appendChild(o1);
+
+          const o2 = document.createElement("option");
+          o2.value = String(h);
+          o2.textContent = _fmtHour(h);
+          elEnd.appendChild(o2);
+        }
+      }
+
+      const ref = db.ref(`devices/${activeDeviceId}/settings/doseSchedule`);
+
+      watchRef(`devices/${activeDeviceId}/settings/doseSchedule`, snap => {
+        const v = snap.val() || {};
+        const enabled = v.enabled === true || v.enabled === "true" || v.enabled === 1 || v.enabled === "1";
+        const startHour = (v.startHour ?? 0);
+        const endHour = (v.endHour ?? 9);
+        const everyMin = (v.everyMin ?? 15);
+
+        if(document.activeElement !== elStart) elStart.value = String(startHour);
+        if(document.activeElement !== elEnd) elEnd.value = String(endHour);
+        if(document.activeElement !== elEvery) elEvery.value = String(everyMin);
+        if(document.activeElement !== elEnabled) elEnabled.checked = enabled;
+
+        const windowText = `${_fmtHour(Number(startHour))} → ${_fmtHour(Number(endHour))}`;
+        const everyText = everyMin === 15 ? "15 min" : everyMin === 60 ? "1 hr" : everyMin === 120 ? "2 hr" : `${everyMin/60} hr`;
+        if(elSummary) elSummary.textContent = `${enabled ? "Enabled" : "Disabled"} • ${windowText} • Every ${everyText}`;
+
+        _setSchedDot("ok");
+        if(elStatus) elStatus.textContent = "Synced";
+      });
+
+      let t = null;
+      const save = async () => {
+        const startHour = Number(elStart.value);
+        const endHour = Number(elEnd.value);
+        const everyMin = Number(elEvery.value);
+        const enabled = !!elEnabled.checked;
+
+        if(!isFinite(startHour) || startHour<0 || startHour>23) { _setSchedDot("bad"); elStatus.textContent="Invalid start"; return; }
+        if(!isFinite(endHour) || endHour<0 || endHour>23) { _setSchedDot("bad"); elStatus.textContent="Invalid end"; return; }
+        if(![15,60,120,240].includes(everyMin)) { _setSchedDot("bad"); elStatus.textContent="Invalid interval"; return; }
+
+        try{
+          await ref.set({
+            enabled,
+            startHour,
+            endHour,
+            everyMin,
+            updatedAt: firebase.database.ServerValue.TIMESTAMP
+          });
+          _setSchedDot("ok");
+          if(elStatus) elStatus.textContent = "Saved";
+        }catch(e){
+          console.error("doseSchedule save failed", e);
+          _setSchedDot("bad");
+          if(elStatus) elStatus.textContent = "Save failed";
+        }
+      };
+
+      const scheduleSave = () => {
+        _setSchedDot("dirty");
+        if(elStatus) elStatus.textContent = "Saving…";
+        if(t) clearTimeout(t);
+        t = setTimeout(save, 500);
+      };
+
+      elEnabled.addEventListener("change", save);
+      elStart.addEventListener("change", scheduleSave);
+      elEnd.addEventListener("change", scheduleSave);
+      elEvery.addEventListener("change", scheduleSave);
+    }
+
+    // NEW: month range helpers + dropdown population
+    function monthRangeMs(year, month1to12) {
+      const start = new Date(year, month1to12 - 1, 1, 0, 0, 0, 0).getTime();
+      const end = new Date(year, month1to12, 1, 0, 0, 0, 0).getTime() - 1;
+      return { start, end };
+    }
+
+    function populateYearMonthSelects(yearEl, monthEl, minYear = 2026) {
+      if (!yearEl || !monthEl) return;
+
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = now.getMonth() + 1;
+
+      yearEl.innerHTML = "";
+      const yStart = Math.min(minYear, currentYear);
+      const yEnd = Math.max(minYear, currentYear);
+
+      for (let y = yStart; y <= yEnd; y++) {
+        const opt = document.createElement("option");
+        opt.value = String(y);
+        opt.textContent = String(y);
+        yearEl.appendChild(opt);
+      }
+
+      monthEl.innerHTML = "";
+      for (let m = 1; m <= 12; m++) {
+        const opt = document.createElement("option");
+        opt.value = String(m);
+        opt.textContent = MONTHS[m - 1];
+        monthEl.appendChild(opt);
+      }
+
+      const defaultYear = Math.max(minYear, currentYear);
+      yearEl.value = String(defaultYear);
+      monthEl.value = String(currentMonth);
+    }
+
+    function initTestLogFilterUI() {
+      const yEl = document.getElementById("testsYear");
+      const mEl = document.getElementById("testsMonth");
+      const metaEl = document.getElementById("testsMeta");
+      if (!yEl || !mEl) return;
+
+      if (yEl.options.length === 0 || mEl.options.length === 0) {
+        populateYearMonthSelects(yEl, mEl, 2026);
+      }
+
+      testsFilterYear = Number(yEl.value);
+      testsFilterMonth = Number(mEl.value);
+
+      const onChange = () => {
+        testsFilterYear = Number(yEl.value);
+        testsFilterMonth = Number(mEl.value);
+        if (metaEl) metaEl.textContent = "Loading…";
+        attachTestsListenerForSelectedMonth();
+      };
+
+      yEl.onchange = onChange;
+      mEl.onchange = onChange;
+    }
+
+    function historyDayToRow(monthKey, day, rec) {
+      const params = rec?.params || rec || {};
+      const dosing = rec?.dosing || {};
+      const plan = rec?.plan || {};
+      return {
+        timestamp: new Date(`${monthKey}-${day}T12:00:00`).getTime(),
+        alk: Number(params.alk ?? rec?.alk ?? NaN),
+        ca: Number(params.ca ?? rec?.ca ?? NaN),
+        mg: Number(params.mg ?? rec?.mg ?? NaN),
+        ph: Number(params.ph ?? rec?.ph ?? NaN),
+        temp: Number(params.tempF ?? params.temp ?? rec?.tempF ?? rec?.temp ?? NaN),
+        ppt: Number(params.ppt ?? params.salinity ?? rec?.ppt ?? rec?.salinity ?? NaN),
+        sg: Number(params.sg ?? params.specificGravity ?? rec?.sg ?? rec?.specificGravity ?? NaN),
+        cond: Number(params.cond ?? params.conductivity ?? rec?.cond ?? rec?.conductivity ?? NaN),
+        dosing,
+        plan
+      };
+    }
+
+    function normalizeHistoryMonth(historyData, monthKey) {
+      return Object.keys(historyData || {})
+        .filter(day => /^\d{1,2}$/.test(String(day)))
+        .sort((a,b) => Number(a) - Number(b))
+        .map(day => historyDayToRow(monthKey, String(day).padStart(2, "0"), historyData[day] || {}))
+        .filter(r => Number.isFinite(r.timestamp));
+    }
+
+    function initParameterHistoryFilterUI() {
+      const yEl = document.getElementById("paramsYear");
+      const mEl = document.getElementById("paramsMonth");
+      const viewBtn = document.getElementById("viewParamsHistoryBtn");
+      if (!yEl || !mEl) return;
+      if (yEl.options.length === 0 || mEl.options.length === 0) populateYearMonthSelects(yEl, mEl, 2026);
+      if (viewBtn && !viewBtn.dataset.wired) {
+        viewBtn.dataset.wired = "true";
+        viewBtn.addEventListener("click", attachParamsListenerAll);
+      }
+
+      const tabs = document.querySelectorAll("#paramChartTabs [data-param]");
+      tabs.forEach(btn => {
+        if (btn.dataset.wired) return;
+        btn.dataset.wired = "true";
+        btn.addEventListener("click", () => {
+          selectedParameterKey = btn.dataset.param || "all";
+          tabs.forEach(b => b.classList.toggle("active-param-tab", b === btn));
+          updateParamsChart(latestParameterRows, latestParameterRangeDays);
+        });
+      });
+    }
+
+    function attachParamsListenerAll() {
+      if (!activeDeviceId) return;
+      if (paramsUnsub) { try { paramsUnsub(); } catch(e){} paramsUnsub = null; }
+
+      const yEl = document.getElementById("paramsYear");
+      const mEl = document.getElementById("paramsMonth");
+      const metaEl = document.getElementById("paramsMeta");
+      const year = Number(yEl?.value);
+      const month = Number(mEl?.value);
+      if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+        if (metaEl) metaEl.textContent = "Select a valid year and month.";
+        return;
+      }
+
+      const startSec = Math.floor(new Date(year, month - 1, 1).getTime() / 1000);
+      const endSec = Math.floor(new Date(year, month, 1).getTime() / 1000) - 1;
+      const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+      const monthLabel = `${MONTHS[month - 1]} ${year}`;
+      if (metaEl) metaEl.textContent = `Loading ${monthLabel} parameter history…`;
+
+      const continuousRef = db.ref(`devices/${activeDeviceId}/waterHistory/continuous`).orderByKey().startAt(String(startSec)).endAt(String(endSec));
+      const chemistryRef = db.ref(`devices/${activeDeviceId}/waterHistory/chemistry6h`).orderByKey().startAt(String(startSec)).endAt(String(endSec));
+      const legacyRef = db.ref(`devices/${activeDeviceId}/history/${monthKey}`);
+      const data = { continuous:null, chemistry:null, legacy:null };
+
+      const render = () => {
+        if (data.continuous === null || data.chemistry === null || data.legacy === null) return;
+        const byTs = new Map();
+        const rowFor = ts => {
+          const k = String(ts);
+          if (!byTs.has(k)) byTs.set(k, { timestamp:ts });
+          return byTs.get(k);
+        };
+        const put = (row, key, value) => { const n = Number(value); if (Number.isFinite(n)) row[key] = n; };
+
+        Object.entries(data.continuous || {}).forEach(([key, raw]) => {
+          const sec = Number(raw?.t ?? key);
+          if (!Number.isFinite(sec) || sec < startSec || sec > endSec) return;
+          const row = rowFor(sec * 1000);
+          put(row, "ph", raw?.ph); put(row, "temp", raw?.tempF ?? raw?.temp); put(row, "ppt", raw?.ppt); put(row, "sg", raw?.sg); put(row, "cond", raw?.cond);
+        });
+        Object.entries(data.chemistry || {}).forEach(([key, raw]) => {
+          const sec = Number(raw?.sampledAt ?? raw?.t ?? key);
+          if (!Number.isFinite(sec) || sec < startSec || sec > endSec) return;
+          const row = rowFor(sec * 1000);
+          put(row, "alk", raw?.alk); put(row, "ca", raw?.ca); put(row, "mg", raw?.mg);
+        });
+
+        let rows = Array.from(byTs.values()).sort((a,b) => a.timestamp - b.timestamp);
+        const permanentCount = rows.length;
+        if (!permanentCount) rows = normalizeHistoryMonth(data.legacy || {}, monthKey);
+        updateParamsChart(rows, 31);
+
+        if (metaEl) {
+          if (permanentCount) metaEl.textContent = `${monthLabel} • ${Object.keys(data.continuous || {}).length.toLocaleString()} probe points • ${Object.keys(data.chemistry || {}).length.toLocaleString()} chemistry points`;
+          else if (rows.length) metaEl.textContent = `${monthLabel} • ${rows.length} legacy daily record${rows.length === 1 ? "" : "s"} (older firmware)`;
+          else metaEl.textContent = `${monthLabel} • No parameter history found`;
+        }
+      };
+
+      const offs = [];
+      const attach = (ref, key) => {
+        const handler = snap => { data[key] = snap.val() || {}; render(); };
+        const error = err => { console.error(`Parameter history read failed: ${key}`, err); data[key] = {}; render(); };
+        ref.on("value", handler, error);
+        offs.push(() => ref.off("value", handler));
+      };
+      attach(continuousRef, "continuous");
+      attach(chemistryRef, "chemistry");
+      attach(legacyRef, "legacy");
+      paramsUnsub = () => offs.forEach(fn => { try { fn(); } catch(e){} });
+    }
+
+    function normalizeTimestampMs(v) {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      // ESP32 history sometimes stores seconds; browser/manual logs store milliseconds.
+      return n < 20000000000 ? n * 1000 : n;
+    }
+
+    function rowFromManualTest(raw, key, sourceLabel) {
+      if (!raw || key === "latest") return null;
+      const ts = normalizeTimestampMs(raw.timestamp ?? raw.createdAt ?? raw.ts ?? raw.time);
+      if (!ts) return null;
+      return {
+        timestamp: ts,
+        alk: Number(raw.alk ?? raw.Alk ?? NaN),
+        ca: Number(raw.ca ?? raw.Ca ?? NaN),
+        mg: Number(raw.mg ?? raw.Mg ?? NaN),
+        ph: Number(raw.ph ?? raw.pH ?? NaN),
+        source: sourceLabel || raw.source || "manual"
+      };
+    }
+
+    function rowFromDailyHistory(monthKey, day, rec) {
+      const base = historyDayToRow(monthKey, String(day).padStart(2, "0"), rec || {});
+      return {
+        ...base,
+        source: "daily"
+      };
+    }
+
+    function mergeAndRenderHistoricalRows(sources, y, m, metaEl) {
+      const { start, end } = monthRangeMs(y, m);
+      const rows = [];
+
+      const tests = sources.tests || {};
+      Object.keys(tests).forEach(key => {
+        const row = rowFromManualTest(tests[key], key, "manual");
+        if (row && row.timestamp >= start && row.timestamp <= end) rows.push(row);
+      });
+
+      // Older dashboard/code paths used logs/manualTests, so include it too.
+      const manualLogs = sources.manualLogs || {};
+      Object.keys(manualLogs).forEach(key => {
+        const row = rowFromManualTest(manualLogs[key], key, "manual-log");
+        if (row && row.timestamp >= start && row.timestamp <= end) rows.push(row);
+      });
+
+      // Firmware midnight summaries live under history/YYYY-MM/DD.
+      const monthKey = `${y}-${String(m).padStart(2, "0")}`;
+      const history = sources.history || {};
+      Object.keys(history)
+        .filter(day => /^\d{1,2}$/.test(String(day)))
+        .forEach(day => {
+          const row = rowFromDailyHistory(monthKey, day, history[day]);
+          if (row && row.timestamp >= start && row.timestamp <= end) rows.push(row);
+        });
+
+      rows.sort((a,b) => (a.timestamp || 0) - (b.timestamp || 0));
+      if (metaEl) metaEl.textContent = `${MONTHS[m-1]} ${y} • ${rows.length} record${rows.length === 1 ? "" : "s"}`;
+      updateTestTable(rows);
+    }
+
+    function attachTestsListenerForSelectedMonth() {
+      if (!activeDeviceId) return;
+
+      const metaEl = document.getElementById("testsMeta");
+      const y = Number(testsFilterYear);
+      const m = Number(testsFilterMonth);
+      if (!isFinite(y) || !isFinite(m) || m < 1 || m > 12) return;
+
+      if (testsUnsub) { try { testsUnsub(); } catch(e){} testsUnsub = null; }
+      if (metaEl) metaEl.textContent = "Loading…";
+
+      const monthKey = `${y}-${String(m).padStart(2, "0")}`;
+      const sources = { tests: null, manualLogs: null, history: null };
+      const unsubs = [];
+
+      const attach = (path, key) => {
+        const ref = db.ref(path);
+        const handler = snap => {
+          sources[key] = snap.val() || {};
+          mergeAndRenderHistoricalRows(sources, y, m, metaEl);
+        };
+        ref.on("value", handler, err => {
+          console.error("Historical logs read failed", path, err);
+          if (metaEl) metaEl.textContent = "History read failed: " + (err && err.message ? err.message : err);
+        });
+        unsubs.push(() => ref.off("value", handler));
+      };
+
+      attach(`devices/${activeDeviceId}/tests`, "tests");
+      attach(`devices/${activeDeviceId}/logs/manualTests`, "manualLogs");
+      attach(`devices/${activeDeviceId}/history/${monthKey}`, "history");
+
+      testsUnsub = () => {
+        unsubs.forEach(fn => { try { fn(); } catch(e){} });
+      };
+    }
+
+    function initDoseMonthFilterUI() {
+      const yEl = document.getElementById("doseYear");
+      const mEl = document.getElementById("doseMonth");
+      if (!yEl || !mEl) return;
+
+      if (yEl.options.length === 0 || mEl.options.length === 0) {
+        populateYearMonthSelects(yEl, mEl, 2026);
+      }
+
+      doseFilterYear = Number(yEl.value);
+      doseFilterMonth = Number(mEl.value);
+
+      const onChange = () => {
+        doseFilterYear = Number(yEl.value);
+        doseFilterMonth = Number(mEl.value);
+        attachDailyDoseHistoryListener();
+      };
+
+      yEl.onchange = onChange;
+      mEl.onchange = onChange;
+    }
+
+    
+    function configureDoseTabs(){
+      const cfg = modeCfg();
+
+      // Always show All tab
+      const tAll = document.getElementById("doseTabAll");
+      if (tAll) tAll.textContent = "All";
+
+      // Hide all pump tabs by default, then enable per mode config
+      const tabIds = ["doseTabKalk","doseTabAfr","doseTabAlk","doseTabCacl2","doseTabNaoh","doseTabMg","doseTabAux"];
+      tabIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.add("hidden");
+      });
+
+      // Apply mode-specific mapping
+      (cfg.tabs || []).forEach(t => {
+        const el = document.getElementById(t.id);
+        if (!el) return;
+        el.classList.remove("hidden");
+        el.textContent = t.text;
+        el.onclick = () => setDoseFilter(t.key);
+      });
+
+      // If Aux tab shouldn't show, ensure it is hidden
+      const aux = document.getElementById("doseTabAux");
+      if (aux && !cfg.showAuxTab) aux.classList.add("hidden");
+    }
+
+    function initDosingModeUI(){
+      const select = document.getElementById('dosingModeSelect');
+      const pill = document.getElementById('dosingModePill');
+      const status = document.getElementById('dosingModeStatus');
+      const saveBtn = document.getElementById('saveDosingModeBtn');
+      if(!db || !activeDeviceId) return;
+
+      const settingsRef = db.ref(`devices/${activeDeviceId}/settings/dosingMode`);
+      let requestedMode = 1;
+      let actualMode = 1;
+      let actualModeLabel = "";
+
+      function renderModeUi(){
+        const actCfg = DOSING_MODES[actualMode] || DOSING_MODES[1];
+
+        if (select && document.activeElement !== select) {
+          select.value = String(requestedMode);
+        }
+
+        if (pill) {
+          pill.textContent = actCfg.pill || (`Method ` + actualMode);
+        }
+
+        if (status) {
+          if (requestedMode === actualMode) {
+            status.textContent = actualModeLabel
+              ? (`Device running Mode ` + actualMode + ` - ` + actualModeLabel)
+              : (`Device running Mode ` + actualMode);
+          } else {
+            status.textContent = actualModeLabel
+              ? (`Requested Mode ` + requestedMode + ` saved. Device still running Mode ` + actualMode + ` - ` + actualModeLabel)
+              : (`Requested Mode ` + requestedMode + ` saved. Device still running Mode ` + actualMode);
+          }
+        }
+      }
+
+      watchRef(`devices/${activeDeviceId}/settings/dosingMode`, (snap) => {
+        const v = Number(snap.val());
+        requestedMode = ([1,2,3,4,5,6,7].includes(v) ? v : 1);
+        renderModeUi();
+      });
+
+      watchRef(`devices/${activeDeviceId}/state/dosingMode`, (snap) => {
+        const actual = Number(snap.val());
+        if ([1,2,3,4,5,6,7].includes(actual)) {
+          actualMode = actual;
+          dosingMode = actual;
+          try { configureDoseTabs(); } catch(e) {}
+          try { setupCalibrationUI(); } catch(e) {}
+          try { if (latestDosingPlan) renderActivePlan(latestDosingPlan); } catch(e) {}
+        }
+        renderModeUi();
+      });
+
+      watchRef(`devices/${activeDeviceId}/state/dosingModeLabel`, (s) => {
+        actualModeLabel = s.val() || "";
+        renderModeUi();
+      });
+
+      const saveMode = async (nm) => {
+        if(![1,2,3,4,5,6,7].includes(nm)) return;
+        try {
+          requestedMode = nm;
+
+          // Update the UI immediately so the calibration page and labels follow
+          // the selected implementation even if the ESP32/state echo is delayed.
+          dosingMode = nm;
+          try { configureDoseTabs(); } catch(e) {}
+          try { setupCalibrationUI(); } catch(e) {}
+          try { if (latestDosingPlan) renderActivePlan(latestDosingPlan); } catch(e) {}
+
+          renderModeUi();
+          if (status) status.textContent = `Saving Mode ${nm}...`;
+          await settingsRef.set(nm);
+          renderModeUi();
+        } catch (err) {
+          console.error('Failed to save dosing mode', err);
+          if (status) status.textContent = `Failed to save Mode ${nm}: ${err && err.message ? err.message : err}`;
+          alert('Failed to save dosing mode: ' + (err && err.message ? err.message : err));
+        }
+      };
+
+      if(select){
+        select.addEventListener('change', async (e) => {
+          await saveMode(Number(e.target.value));
+        });
+      }
+
+      if(saveBtn && select){
+        saveBtn.addEventListener('click', async () => {
+          await saveMode(Number(select.value));
+        });
+      }
+
+      // Draw the selected mode immediately so calibration is usable
+      // even before the device echoes state/dosingMode back.
+      dosingMode = requestedMode;
+      try { setupCalibrationUI(); } catch(e) {}
+      renderModeUi();
+    }
+
+    function renderActivePlan(planObj){
+      const container = document.getElementById('dosingContainer');
+      if(!container) return;
+
+      const plan = planObj || {};
+
+      // Fixed 2026-08-05: always show all 4 physical pumps directly by
+      // their pump1-4 keys, rather than filtering through the old
+      // mode-based modeCfg().pumps list of hardcoded chemical-name keys.
+      // That filtering is exactly what caused this card to show nothing
+      // (or the wrong thing) once a tank's declared chemicals stopped
+      // matching those old hardcoded names -- see the comment on the
+      // Firebase watch above for the full explanation.
+      const pumpKeys = ["pump1", "pump2", "pump3", "pump4"];
+      const pumpLabels = { pump1: "Pump 1", pump2: "Pump 2", pump3: "Pump 3", pump4: "Pump 4" };
+      const rows = [];
+
+      for(const key of pumpKeys){
+        const raw = (plan[key] != null) ? plan[key] : null;
+        const num = Number(raw);
+        const amtText = Number.isFinite(num) ? num.toFixed(2) : (raw != null ? String(raw) : '--');
+        rows.push({ label: pumpLabels[key], amtText });
+      }
+
+      container.innerHTML = '';
+      if(rows.length === 0){
+        container.innerHTML = `<div class="muted">No dosing plan yet (waiting for ESP32 state).</div>`;
+        return;
+      }
+
+      for(const r of rows){
+        const row = document.createElement('div');
+        row.className = 'plan-row';
+        row.innerHTML = `
+          <div class="plan-left">
+            <div class="plan-dot"></div>
+            <div style="min-width:0;">
+              <div class="plan-name">${r.label}</div>
+              <div class="plan-sub">ml per day</div>
+            </div>
+          </div>
+          <div class="plan-amt">${r.amtText}</div>
+        `;
+        container.appendChild(row);
+      }
+    }
+
+function initApp() {
+      initDoseScheduleUI();
+      initDosingModeUI();
+
+      // OTA button is wired inline via onclick so it still works even if later startup code throws.
+      const badge = document.getElementById('updateBadge');
+      if (badge) badge.classList.remove('hidden');
+
+      // Active Dosing Plan
+      //
+      // Fixed 2026-08-05: this used to watch state/dosingMlPerDay and
+      // filter to a small set of hardcoded legacy chemical-name keys
+      // ("kalk","naoh","cacl2","alk"...) chosen by the old fixed
+      // dosingMode (1-7). The local ESP32 dashboard moved away from that
+      // system months ago -- customers can now name chemicals anything
+      // ("Sodium Hydroxide", "Calcium", "Alkalinity", etc.) and assign
+      // them to any of the 4 physical pumps, not fixed chemical-type
+      // slots. dosingMlPerDayByPump (keyed pump1..pump4) is the field the
+      // device actually keeps correct for any declared chemical set --
+      // the legacy dosingMlPerDay field the old code depended on doesn't
+      // reliably reflect a tank's real plan anymore, which is why this
+      // card showed nothing useful. This card intentionally shows pump
+      // numbers rather than chemical names -- this remote page doesn't
+      // have the declared-chemicals list mirrored to Firebase the way the
+      // local dashboard does, so there's no chemical name to label with.
+
+      watchRef(`devices/${activeDeviceId}/state/dosingMlPerDayByPump`, snap => {
+        const plan = snap.val() || {};
+        latestDosingPlan = plan;
+        renderActivePlan(plan);
+      });
+
+      // Online / offline only
+      watchRef(`devices/${activeDeviceId}/state/online`, snap => {
+        const online = snap.val() === true || snap.val() === 1;
+        const pill = document.getElementById("liveStatusPill");
+        if (pill) {
+          pill.innerHTML = online
+            ? '<div class="tag-dot" style="background:#4fe0a8;"></div>Online'
+            : '<div class="tag-dot" style="background:#ff5470;"></div>Offline';
+        }
+      });
+
+      // Firmware version only; this avoids refetching firmware.json on every /state change
+      watchRef(`devices/${activeDeviceId}/state/fwVersion`, snap => {
+        const currentVersion = snap.val() || "--";
+        document.getElementById("firmwareInfo").innerText = "FW: " + currentVersion;
+        checkForUpdates(currentVersion);
+      });
+
+      // Parameter Trends: permanent history with automatic legacy fallback.
+      initParameterHistoryFilterUI();
+      attachParamsListenerAll();
+
+      // Historical Test Logs (month-filtered)
+      initTestLogFilterUI();
+      attachTestsListenerForSelectedMonth();
+
+      setupCalibrationUI();
+
+      // Push notifications removed (no-Blaze mode)
+    }
+
+    function initEmergencyStop() {
+      const eStopBtn = document.getElementById('eStopBtn');
+      const killRef = db.ref(`devices/${activeDeviceId}/settings/killSwitch`);
+
+      watchRef(`devices/${activeDeviceId}/settings/killSwitch`, (snapshot) => {
+        const isStopped = snapshot.val() === true;
+
+        if (isStopped) {
+          eStopBtn.innerText = "⚠️ SYSTEM STOPPED (Reset)";
+          eStopBtn.classList.add('active');
+        } else {
+          eStopBtn.innerText = "🛑 EMERGENCY STOP";
+          eStopBtn.classList.remove('active');
+        }
+      });
+
+      eStopBtn.onclick = async () => {
+        const currentState = eStopBtn.classList.contains('active');
+        const newState = !currentState;
+
+        const confirmMsg = newState
+          ? "KILL ALL PUMPS? This will stop all dosing immediately."
+          : "Re-enable dosing pumps?";
+
+        if (confirm(confirmMsg)) {
+          try {
+            await killRef.set(newState);
+            console.log("KillSwitch set to:", newState);
+          } catch (err) {
+            alert("Failed to update KillSwitch: " + err.message);
+          }
+        }
+      };
+    }
+
+    function updateParamsChart(tests, rangeDays = 1) {
+      const canvas = document.getElementById('paramsChart');
+      if (!canvas) return;
+
+      latestParameterRows = Array.isArray(tests) ? tests : [];
+      latestParameterRangeDays = rangeDays;
+
+      const ctx = canvas.getContext('2d');
+      const rows = latestParameterRows;
+      const labels = rows.map(t => {
+        const ts = Number(t?.timestamp || 0);
+        if (!ts) return '';
+        const d = new Date(ts);
+        return rangeDays <= 1
+          ? d.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' })
+          : d.toLocaleString([], { month:'short', day:'numeric', hour:'numeric' });
+      });
+      const mapNum = key => rows.map(t => {
+        const v = Number(t?.[key]);
+        return Number.isFinite(v) ? v : null;
+      });
+
+      const defs = {
+        ph:   { label:'pH',               key:'ph',   color:'#a78bfa', unit:'pH', pointRadius:0 },
+        alk:  { label:'Alkalinity',       key:'alk',  color:'#ff6b4a', unit:'dKH', pointRadius:3 },
+        ca:   { label:'Calcium',          key:'ca',   color:'#4fe0a8', unit:'ppm', pointRadius:3 },
+        mg:   { label:'Magnesium',        key:'mg',   color:'#ff5470', unit:'ppm', pointRadius:3 },
+        temp: { label:'Temperature',      key:'temp', color:'#f59e0b', unit:'°F', pointRadius:0 },
+        ppt:  { label:'Salinity',         key:'ppt',  color:'#ff8b6e', unit:'PPT', pointRadius:0 },
+        sg:   { label:'Specific Gravity', key:'sg',   color:'#f472b6', unit:'SG', pointRadius:0 },
+        cond: { label:'Conductivity',     key:'cond', color:'#c084fc', unit:'mS/cm', pointRadius:0 }
+      };
+
+      let datasets;
+      let scales;
+
+      if (selectedParameterKey !== 'all' && defs[selectedParameterKey]) {
+        const d = defs[selectedParameterKey];
+        datasets = [{
+          label:`${d.label} (${d.unit})`,
+          data:mapNum(d.key),
+          borderColor:d.color,
+          backgroundColor:'transparent',
+          yAxisID:'y',
+          pointRadius:d.pointRadius,
+          pointHoverRadius:4,
+          borderWidth:2,
+          tension:0.2,
+          spanGaps:true
+        }];
+        scales = {
+          x:{ grid:{ display:false }, ticks:{ color:'#7fa6a0', maxTicksLimit:14, maxRotation:0 } },
+          y:{
+            type:'linear',
+            position:'left',
+            beginAtZero:false,
+            grace:'8%',
+            grid:{ color:'rgba(255,255,255,0.1)' },
+            ticks:{ color:'#7fa6a0' },
+            title:{ display:true, text:`${d.label} (${d.unit})`, color:'#7fa6a0' }
+          }
+        };
+      } else {
+        datasets = [
+          { label:'pH', data:mapNum('ph'), borderColor:'#a78bfa', backgroundColor:'transparent', yAxisID:'yPhAlk', pointRadius:0, borderWidth:1.5, tension:0.2, spanGaps:true },
+          { label:'Alk (dKH)', data:mapNum('alk'), borderColor:'#ff6b4a', backgroundColor:'transparent', yAxisID:'yPhAlk', pointRadius:3, borderWidth:2, tension:0.2, spanGaps:true },
+          { label:'Temperature °F', data:mapNum('temp'), borderColor:'#f59e0b', backgroundColor:'transparent', yAxisID:'yTempSal', pointRadius:0, borderWidth:1.5, tension:0.2, spanGaps:true },
+          { label:'Salinity PPT', data:mapNum('ppt'), borderColor:'#ff8b6e', backgroundColor:'transparent', yAxisID:'yTempSal', pointRadius:0, borderWidth:1.5, tension:0.2, spanGaps:true },
+          { label:'Specific Gravity', data:mapNum('sg'), borderColor:'#f472b6', backgroundColor:'transparent', yAxisID:'yHidden', pointRadius:0, borderWidth:1.5, tension:0.2, spanGaps:true },
+          { label:'Conductivity', data:mapNum('cond'), borderColor:'#c084fc', backgroundColor:'transparent', yAxisID:'yHidden', pointRadius:0, borderWidth:1.5, tension:0.2, spanGaps:true },
+          { label:'Calcium ppm', data:mapNum('ca'), borderColor:'#4fe0a8', backgroundColor:'transparent', yAxisID:'yChem', pointRadius:3, borderWidth:2, tension:0.2, spanGaps:true },
+          { label:'Magnesium ppm', data:mapNum('mg'), borderColor:'#ff5470', backgroundColor:'transparent', yAxisID:'yChem', pointRadius:3, borderWidth:2, tension:0.2, spanGaps:true }
+        ];
+        scales = {
+          x:{ grid:{ display:false }, ticks:{ color:'#7fa6a0', maxTicksLimit:14, maxRotation:0 } },
+          yPhAlk:{ type:'linear', position:'left', beginAtZero:false, grace:'8%', grid:{ color:'rgba(255,255,255,0.1)' }, ticks:{ color:'#7fa6a0' }, title:{ display:true, text:'pH / Alk', color:'#7fa6a0' } },
+          yChem:{ type:'linear', position:'right', beginAtZero:false, grace:'8%', grid:{ drawOnChartArea:false }, ticks:{ color:'#7fa6a0' }, title:{ display:true, text:'Ca / Mg ppm', color:'#7fa6a0' } },
+          yTempSal:{ type:'linear', position:'right', display:false, beginAtZero:false, grace:'8%' },
+          yHidden:{ type:'linear', position:'right', display:false, beginAtZero:false, grace:'8%' }
+        };
+      }
+
+      if (paramsChart) paramsChart.destroy();
+      paramsChart = new Chart(ctx, {
+        type:'line',
+        data:{ labels, datasets },
+        options:{
+          responsive:true,
+          maintainAspectRatio:false,
+          interaction:{ mode:'nearest', intersect:false },
+          plugins:{
+            legend:{ labels:{ color:'#7fa6a0' } },
+            tooltip:{ callbacks:{ label:(c) => `${c.dataset.label}: ${c.parsed.y}` } }
+          },
+          scales
+        }
+      });
+    }
+
+    function fmtMaybeNumber(v, digits=2) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n.toFixed(digits) : "--";
+    }
+
+    function updateTestTable(tests) {
+      const body = document.getElementById('logBody');
+      if (!body) return;
+      body.innerHTML = '';
+
+      if (!tests || tests.length === 0) {
+        body.innerHTML = `<tr><td colspan="5" style="color:var(--text-soft);">No records found for this month yet.</td></tr>`;
+        return;
+      }
+
+      [...tests].reverse().forEach(t => {
+        const source = t.source ? ` <span style="color:var(--text-soft); font-size:.72rem;">${t.source}</span>` : "";
+        body.innerHTML += `<tr>
+          <td>${new Date(t.timestamp).toLocaleString()}${source}</td>
+          <td>${fmtMaybeNumber(t.alk, 2)}</td>
+          <td>${fmtMaybeNumber(t.ca, 0)}</td>
+          <td>${fmtMaybeNumber(t.mg, 0)}</td>
+          <td>${fmtMaybeNumber(t.ph, 2)}</td>
+        </tr>`;
+      });
+    }
+
+    // ---- CALIBRATION ----
+    function setupCalibrationUI() {
+      const cfg = modeCfg();
+      const names = (cfg.calNames || ["Kalkwasser (P1)","All-For-Reef (P2)","Magnesium (P3)"]);
+      const grid = document.getElementById('calGrid');
+      if (!grid) return;
+      grid.innerHTML = '';
+
+      names.forEach((name, i) => {
+        const label = String(name || '').trim();
+        if (!label) return;
+        if (label.startsWith('—') || label.startsWith('-')) return;
+
+        const n = i + 1;
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.style.textAlign = 'left';
+        card.innerHTML = `
+          <h3 style="margin-top:0; color:var(--accent);">${label}</h3>
+          <div class="muted">Pump ${n} calibration</div>
+          <button id="startCal${n}" class="btn-action" style="margin-top:14px;">Start 60s Test</button>
+          <label for="calPump${n}Ml">Measured output after 60 seconds (mL)</label>
+          <input id="calPump${n}Ml" type="number" step="0.1" placeholder="Enter mL caught">
+          <button id="saveCal${n}" class="btn-outline-soft" style="margin-top:14px;">Save Calibration</button>
+          <div id="calStatus${n}" class="muted" style="margin-top:10px;"></div>
+        `;
+        grid.appendChild(card);
+
+        const startBtn = document.getElementById(`startCal${n}`);
+        if (startBtn) {
+          startBtn.onclick = function() {
+            this.disabled = true;
+            db.ref(`devices/${activeDeviceId}/commands/calibrate`).update({
+              trigger: true,
+              pump: n,
+              durationSec: 60,
+              ts: firebase.database.ServerValue.TIMESTAMP
+            });
+
+            let seconds = 60;
+            this.innerText = `Running... ${seconds}s`;
+            const timer = setInterval(() => {
+              seconds--;
+              if (seconds >= 0) {
+                this.innerText = `Running... ${seconds}s`;
+              } else {
+                clearInterval(timer);
+                this.disabled = false;
+                this.innerText = 'Start 60s Test';
+              }
+            }, 1000);
+          };
+        }
+
+        const saveBtn = document.getElementById(`saveCal${n}`);
+        if (saveBtn) {
+          saveBtn.onclick = async () => {
+            const statusEl = document.getElementById(`calStatus${n}`);
+            const mlCaught = parseFloat(document.getElementById(`calPump${n}Ml`).value);
+            const durationSec = 60;
+            if (!isFinite(mlCaught) || mlCaught <= 0) {
+              alert('Measure output first (enter ml caught).');
+              return;
+            }
+
+            const mlPerMin = mlCaught * (60 / durationSec);
+            if (statusEl) statusEl.innerText = `Saving… (${mlPerMin.toFixed(1)} ml/min)`;
+            try {
+              await db.ref(`devices/${activeDeviceId}/calibration/pumps/pump${n}`).set({
+                unit: 'ml/min',
+                durationSec: durationSec,
+                ml_caught: mlCaught,
+                ml_per_min: mlPerMin,
+                ts: Date.now()
+              });
+              if (statusEl) statusEl.innerText = `✅ Saved ${mlPerMin.toFixed(1)} ml/min. Waiting for ESP32 to apply…`;
+            } catch (err) {
+              if (statusEl) statusEl.innerText = '❌ Save failed: ' + (err?.message || err);
+            }
+          };
+        }
+      });
+    }
+
+    let calStatusUnsub = null;
+    function attachCalibrationStatusListener() {
+      if (!activeDeviceId) return;
+      const ackEl = document.getElementById('calibrationAck');
+      if (!ackEl) return;
+
+      if (calStatusUnsub) { try { calStatusUnsub(); } catch(e){} calStatusUnsub = null; }
+
+      const ref = db.ref(`devices/${activeDeviceId}/calibration/status`);
+      const handler = (snap) => {
+        const v = snap.val();
+        if (!v) { ackEl.innerText = "No calibration status from ESP32 yet."; return; }
+        const when = v.appliedAt ? new Date(v.appliedAt).toLocaleString() : "—";
+        const flows = v.flows || {};
+        const k = flows.kalk ?? "—";
+        const a = flows.afr ?? "—";
+        const m = flows.mg ?? "—";
+        const x = flows.aux ?? "—";
+        ackEl.innerText = `ESP32 applied: ${when}  |  KALK ${k} ml/min, AFR ${a}, MG ${m}, AUX ${x}`;
+      };
+      ref.on('value', handler);
+      calStatusUnsub = () => ref.off('value', handler);
+    }
+
+    const _openCalibrationBtn = document.getElementById('openCalibrationBtn');
+    if (_openCalibrationBtn) _openCalibrationBtn.onclick = () => {
+      document.getElementById('calibrationOverlay').classList.remove('hidden');
+      attachCalibrationStatusListener();
+      initApexUi();
+    };
+    document.getElementById('closeCalibrationBtn').onclick = () => {
+      document.getElementById('calibrationOverlay').classList.add('hidden');
+      if (calStatusUnsub) { try { calStatusUnsub(); } catch(e){} calStatusUnsub = null; }
+      if (apexUnsub) { try { apexUnsub(); } catch(e){} apexUnsub = null; }
+    };
+
+    ////////////////////////Apex/////////////////////////////////////////
+    // ---- APEX / TRIDENT CONFIG (devices/<id>/sensors/Apex) ----
+    let apexUnsub = null;
+
+    function initApexUi() {
+      if (!activeDeviceId) return;
+
+      const enableEl = document.getElementById("apexEnable");
+      const ipEl = document.getElementById("apexIp");
+      const btn = document.getElementById("saveApexBtn");
+      const statusEl = document.getElementById("apexStatus");
+
+      if (!enableEl || !ipEl || !btn || !statusEl) return;
+
+      const ref = db.ref(`devices/${activeDeviceId}/sensors/Apex`);
+
+      // stop any prior listener
+      if (apexUnsub) { try { apexUnsub(); } catch(e){} apexUnsub = null; }
+
+      const handler = (snap) => {
+        const v = snap.val() || {};
+        const en = (v.enable === true || v.enable === 1 || v.enable === "true" || v.enable === "1");
+        enableEl.checked = !!en;
+
+        // only overwrite if user isn't currently typing
+        if (document.activeElement !== ipEl) {
+          ipEl.value = (v.ipAddress || "");
+        }
+
+        statusEl.textContent = "Loaded from Firebase ✅";
+      };
+
+      ref.on("value", handler);
+      apexUnsub = () => ref.off("value", handler);
+
+      btn.onclick = async () => {
+        const enable = !!enableEl.checked;
+        const ip = String(ipEl.value || "").trim();
+
+        // basic validation: allow blank IP if disabled
+        const ipOk = ip === "" || /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
+        if (enable && !ipOk) {
+          alert("Enter a valid IPv4 address (example: 192.168.1.50).");
+          return;
+        }
+
+        btn.disabled = true;
+        statusEl.textContent = "Saving…";
+
+        try {
+          await ref.set({
+            enable: enable,
+            ipAddress: ip,
+            updatedAt: firebase.database.ServerValue.TIMESTAMP
+          });
+          statusEl.textContent = "Saved ✅";
+        } catch (err) {
+          console.error(err);
+          statusEl.textContent = "Save failed ❌ " + (err?.message || err);
+        } finally {
+          btn.disabled = false;
+        }
+      };
+    }
+    ///////////////////////////////////////////////////////////
+
+    // ---- DOSE RUNS / GRAPH ----
+    function normalizePump(p) {
+      const s = String(p || "").toLowerCase().replace(/[\s_\-]/g, "");
+
+      // Physical pump keys are handled separately so we do not double-count
+      // the daily history record when it contains both p1..p4 and chemical aliases.
+      if (/^p[1-4]$/.test(s)) return s;
+
+      if (s.includes("kalk")) return "kalk";
+      if (s.includes("afr") || s.includes("allforreef")) return "afr";
+      if (s.includes("cacl2") || s.includes("calciumchloride")) return "cacl2";
+      if (s.includes("naoh") || s.includes("sodiumhydroxide") || s.includes("hydroxide")) return "naoh";
+      if (s.includes("magnesium") || s === "mg") return "mg";
+
+      // Plain calcium must be checked after CaCl2.
+      if (s === "ca" || s.includes("calcium")) return "ca";
+
+      // Plain alk must be checked after kalk, because "kalk" contains "alk".
+      if (s.includes("alk") || s.includes("alkalinity")) return "alk";
+
+      if (s.includes("aux") || s.includes("tbd")) return "tbd";
+      return s || "other";
+    }
+
+    const DOSE_COLORS = {
+      kalk:  "#ff6b4a",
+      afr:   "#a78bfa",
+      alk:   "#f59e0b",
+      ca:    "#60a5fa",
+      cacl2: "#ff8b6e",
+      naoh:  "#f97316",
+      mg:    "#4fe0a8",
+      tbd:   "#7fa6a0",
+      total: "#eaf6f1"
+    };
+
+    function doseColor(key) {
+      return DOSE_COLORS[key] || "#cbd5e1";
+    }
+
+    function doseLabel(key) {
+      if (key === "total") return "Total dosed";
+      return prettyPumpKey(key);
+    }
+
+    function activeDoseKeysForMode() {
+      const cfg = modeCfg();
+      const keys = (cfg && Array.isArray(cfg.pumps)) ? cfg.pumps.slice() : ["kalk","cacl2","naoh","mg"];
+      return keys.filter(k => k && k !== "unused");
+    }
+
+    function physicalPumpKeyToChemical(pumpKey) {
+      const n = Number(String(pumpKey || "").replace(/[^0-9]/g, ""));
+      const keys = activeDoseKeysForMode();
+      if (n >= 1 && n <= 4 && keys[n - 1]) return keys[n - 1];
+      return null;
+    }
+
+    function hasChemicalAliases(dosing) {
+      return Object.keys(dosing || {}).some(k => {
+        const nk = normalizePump(k);
+        return nk && !/^p[1-4]$/.test(nk);
+      });
+    }
+
+    function readDoseMl(dosing, key) {
+      if (!dosing) return 0;
+      const aliases = {
+        kalk:  ["kalk"],
+        afr:   ["afr"],
+        alk:   ["alk", "alkalinity"],
+        ca:    ["ca", "calcium"],
+        cacl2: ["cacl2", "calciumChloride", "calcium_chloride"],
+        naoh:  ["naoh", "sodiumHydroxide", "sodium_hydroxide"],
+        mg:    ["mg", "magnesium"],
+        tbd:   ["tbd", "aux"]
+      }[key] || [key];
+
+      for (const rawKey of Object.keys(dosing)) {
+        const normalized = normalizePump(rawKey);
+        if (normalized === key || aliases.map(a => normalizePump(a)).includes(normalized)) {
+          const n = Number(dosing[rawKey]);
+          if (Number.isFinite(n)) return Math.max(0, n);
+        }
+      }
+      return 0;
+    }
+
+    function dailyDoseRowsFromHistory(historyData, monthKey) {
+      const days = [];
+      const activeKeys = activeDoseKeysForMode();
+
+      Object.keys(historyData || {}).sort((a,b) => Number(a)-Number(b)).forEach(day => {
+        const rec = historyData[day] || {};
+        const dosing = rec.dosing || {};
+        const dayNum = Number(day);
+        if (!Number.isFinite(dayNum)) return;
+
+        const date = `${monthKey}-${String(dayNum).padStart(2, "0")}`;
+        const ts = new Date(`${date}T12:00:00`).getTime();
+        const row = { day: String(dayNum), date, ts, total: 0 };
+
+        const aliasesPresent = hasChemicalAliases(dosing);
+
+        activeKeys.forEach(key => row[key] = 0);
+
+        if (aliasesPresent) {
+          activeKeys.forEach(key => {
+            row[key] = readDoseMl(dosing, key);
+          });
+        } else {
+          // Backward-compatible fallback for old records that only stored p1..p4.
+          ["p1","p2","p3","p4"].forEach(pKey => {
+            const chemKey = physicalPumpKeyToChemical(pKey);
+            if (!chemKey) return;
+            const n = Number(dosing[pKey]);
+            if (Number.isFinite(n) && n >= 0) {
+              row[chemKey] = (row[chemKey] || 0) + n;
+            }
+          });
+        }
+
+        // Prefer a stored total only if it exists and is sane; otherwise calculate it.
+        const calculatedTotal = activeKeys.reduce((sum, key) => sum + Number(row[key] || 0), 0);
+        const storedTotal = Number(rec?.params?.totalDose ?? rec.totalDose ?? rec.dosingTotal);
+        row.total = (Number.isFinite(storedTotal) && storedTotal >= calculatedTotal && calculatedTotal <= 0.01)
+          ? storedTotal
+          : calculatedTotal;
+
+        if (row.total > 0.01 || activeKeys.some(k => Number(row[k] || 0) > 0.01)) {
+          days.push(row);
+        }
+      });
+
+      return days;
+    }
+
+    function buildDoseSummary(rows, keys) {
+      const grid = document.getElementById("doseSummaryGrid");
+      if (!grid) return;
+
+      const totals = {};
+      keys.forEach(k => totals[k] = rows.reduce((sum, r) => sum + Number(r[k] || 0), 0));
+      const grand = rows.reduce((sum, r) => sum + Number(r.total || 0), 0);
+      const daysWithDose = rows.filter(r => Number(r.total || 0) > 0.01).length;
+      const avg = daysWithDose ? grand / daysWithDose : 0;
+
+      const topChem = keys
+        .map(k => ({ key:k, ml:totals[k] || 0 }))
+        .sort((a,b) => b.ml - a.ml)[0];
+
+      const cards = [
+        { label:"Month total", value:`${grand.toFixed(0)} mL`, sub:`${daysWithDose} days with dosing` },
+        { label:"Daily average", value:`${avg.toFixed(0)} mL`, sub:"actual dosed per day" },
+        { label:"Largest chemical", value: topChem ? doseLabel(topChem.key) : "—", sub: topChem ? `${topChem.ml.toFixed(0)} mL this month` : "No dosing yet" }
+      ];
+
+      grid.innerHTML = cards.map(c => `
+        <div class="dose-summary-card">
+          <div class="dose-summary-label">${c.label}</div>
+          <div class="dose-summary-value">${c.value}</div>
+          <div class="dose-summary-sub">${c.sub}</div>
+        </div>
+      `).join("");
+    }
+
+    function setActiveDoseTab() {
+      const map = {
+        doseTabAll: "all",
+        doseTabKalk: "kalk",
+        doseTabAfr: "afr",
+        doseTabAlk: "alk",
+        doseTabCacl2: (dosingMode === 4 || dosingMode === 5 ? "ca" : "cacl2"),
+        doseTabNaoh: "naoh",
+        doseTabMg: "mg",
+        doseTabAux: "tbd"
+      };
+
+      Object.keys(map).forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const isActive = map[id] === doseFilter || (id === "doseTabAll" && doseFilter === "all");
+        el.classList.toggle("active-dose-tab", isActive);
+      });
+    }
+
+    function renderDoseGraph(rows) {
+      const meta = document.getElementById("doseGraphMeta");
+      const tbody = document.getElementById("doseRunsBody");
+      const canvas = document.getElementById("doseChart");
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+
+      const activeKeys = activeDoseKeysForMode();
+      const chartKeys = (doseFilter === "all")
+        ? activeKeys
+        : activeKeys.filter(k => k === doseFilter);
+
+      const filteredRows = rows
+        .filter(r => Number.isFinite(Number(r.total)) && Number(r.total) >= 0)
+        .sort((a,b) => (a.ts||0) - (b.ts||0));
+
+      const visibleRows = doseFilter === "all"
+        ? filteredRows
+        : filteredRows.filter(r => Number(r[doseFilter] || 0) > 0.01);
+
+      setActiveDoseTab();
+      buildDoseSummary(visibleRows, chartKeys.length ? chartKeys : activeKeys);
+
+      const monthTotal = visibleRows.reduce((sum, r) => sum + Number(doseFilter === "all" ? r.total : (r[doseFilter] || 0)), 0);
+      if (meta) {
+        meta.innerHTML = `${visibleRows.length} days shown • ${monthTotal.toFixed(1)} mL total`
+          + `<div class="dose-legend-note">`
+          + (chartKeys.length ? chartKeys : activeKeys).map(k => `<span class="dose-chip"><span class="dose-swatch" style="background:${doseColor(k)}"></span>${doseLabel(k)}</span>`).join("")
+          + `<span class="dose-chip"><span class="dose-swatch" style="background:${doseColor("total")}"></span>Total line</span>`
+          + `</div>`;
+      }
+
+      if (tbody) {
+        tbody.innerHTML = "";
+        [...visibleRows].reverse().forEach(r => {
+          const pieces = activeKeys
+            .filter(k => Number(r[k] || 0) > 0.01)
+            .map(k => `<span style="color:${doseColor(k)}; font-weight:800;">${doseLabel(k)}:</span> ${Number(r[k]).toFixed(1)} mL`)
+            .join(" &nbsp; ");
+          tbody.innerHTML += `<tr>
+            <td>${r.date}</td>
+            <td>${Number(r.total || 0).toFixed(1)} mL</td>
+            <td>${pieces || "—"}</td>
+          </tr>`;
+        });
+      }
+
+      if (doseChart) doseChart.destroy();
+
+      const labels = visibleRows.map(r => r.day);
+      const datasets = chartKeys.map(key => ({
+        type: "bar",
+        label: doseLabel(key),
+        data: visibleRows.map(r => Number(r[key] || 0)),
+        backgroundColor: doseColor(key),
+        borderColor: doseColor(key),
+        borderWidth: 1,
+        borderRadius: 6,
+        stack: "dosed"
+      }));
+
+      if (doseFilter === "all") {
+        datasets.push({
+          type: "line",
+          label: "Total mL/day",
+          data: visibleRows.map(r => Number(r.total || 0)),
+          borderColor: doseColor("total"),
+          backgroundColor: "rgba(226,232,240,.15)",
+          borderWidth: 3,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          tension: 0.28,
+          yAxisID: "y"
+        });
+      }
+
+      doseChart = new Chart(ctx, {
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            legend: {
+              display: true,
+              position: "top",
+              labels: { color: "#eaf6f1", usePointStyle: true, boxWidth: 10 }
+            },
+            tooltip: {
+              callbacks: {
+                title: (items) => {
+                  const i = items && items[0] ? items[0].dataIndex : 0;
+                  return visibleRows[i] ? visibleRows[i].date : "";
+                },
+                label: (item) => `${item.dataset.label}: ${Number(item.raw || 0).toFixed(1)} mL`
+              }
+            }
+          },
+          scales: {
+            x: {
+              stacked: doseFilter === "all",
+              title: { display: true, text: "Day of month", color: "#7fa6a0" },
+              ticks: { color: "#7fa6a0", maxRotation: 0, autoSkip: false },
+              grid: { color: "rgba(148,163,184,.10)" }
+            },
+            y: {
+              stacked: doseFilter === "all",
+              beginAtZero: true,
+              title: { display: true, text: "Actual dosed mL/day", color: "#7fa6a0" },
+              ticks: { color: "#7fa6a0" },
+              grid: { color: "rgba(148,163,184,.16)" }
+            }
+          }
+        }
+      });
+    }
+
+        // sensor data
+    function subscribeSensors() {
+      if (!activeDeviceId) return;
+
+      const alkPill = document.getElementById("alkPill");
+      const caPill  = document.getElementById("caPill");
+      const mgPill  = document.getElementById("mgPill");
+      const phPill  = document.getElementById("phPill");
+      const pptPill = document.getElementById("pptPill");
+      const sgPill  = document.getElementById("sgPill");
+
+      // Reset loading state
+      if (alkPill) alkPill.textContent = "Alk …";
+      if (caPill)  caPill.textContent  = "Ca …";
+      if (mgPill)  mgPill.textContent  = "Mg …";
+      if (phPill)  phPill.textContent  = "pH …";
+      if (pptPill) pptPill.textContent = "PPT …";
+      if (sgPill)  sgPill.textContent  = "SG …";
+
+      function firstNumber(obj, keys) {
+        for (const k of keys) {
+          const v = obj && obj[k];
+          const n = Number(v);
+          if (Number.isFinite(n)) return n;
+        }
+        return null;
+      }
+
+      function renderSensorPills(raw) {
+        const s = raw || {};
+
+        // Firmware now mirrors Apex values to devices/<id>/state using lowercase keys:
+        // alk, ca, mg, ph, ppt, sg, tempF.  Keep old sensors/* aliases too so older
+        // database data or older firmware still displays.
+        const alk = firstNumber(s, ["alk", "Alk", "alkalinity"]);
+        const ca  = firstNumber(s, ["ca", "Ca", "calcium"]);
+        const mg  = firstNumber(s, ["mg", "Mg", "magnesium"]);
+        const ph  = firstNumber(s, ["ph", "pH"]);
+        const ppt = firstNumber(s, ["ppt", "salinityPpt", "salinity", "sal"]);
+        const sg  = firstNumber(s, ["sg", "SG", "specificGravity"]);
+
+        if (alkPill) alkPill.textContent = (alk !== null) ? `Alk ${alk.toFixed(2)}` : "Alk --";
+        if (caPill)  caPill.textContent  = (ca  !== null) ? `Ca ${ca.toFixed(0)}`   : "Ca --";
+        if (mgPill)  mgPill.textContent  = (mg  !== null) ? `Mg ${mg.toFixed(0)}`   : "Mg --";
+        if (phPill)  phPill.textContent  = (ph  !== null) ? `pH ${ph.toFixed(2)}`   : "pH --";
+        if (pptPill) pptPill.textContent = (ppt !== null) ? `PPT ${ppt.toFixed(1)}` : "PPT --";
+        if (sgPill)  sgPill.textContent  = (sg  !== null) ? `SG ${sg.toFixed(4)}`   : "SG --";
+      }
+
+      // Primary path: current ESP32 firmware writes Apex mirror values here.
+      watchRef(`devices/${activeDeviceId}/state`, (snap) => {
+        renderSensorPills(snap.val() || {});
+      });
+
+      // Backward-compatible fallback: older cloud UI/firmware used sensors/* and keys like pH/salinityPpt.
+      watchRef(`devices/${activeDeviceId}/sensors`, (snap) => {
+        const legacy = snap.val() || {};
+        // Only use legacy data when state has not populated yet. This avoids old sensors data
+        // overwriting fresh Apex values from /state.
+        const stillBlank = [alkPill, caPill, mgPill, phPill, pptPill, sgPill]
+          .some(el => el && (el.textContent.includes("…") || el.textContent.includes("--")));
+        if (stillBlank) renderSensorPills(legacy);
+      });
+    }
+
+    async function checkForUpdates(currentVersion) {
+      if (!activeDeviceId) return;
+
+      // IMPORTANT:
+      // Older firmware may not publish /state/fwVersion yet, so currentVersion can be "--".
+      // Do NOT return early here. Still fetch the device manifest so the dashboard can offer OTA
+      // and bootstrap old devices onto version-aware firmware.
+      const normalizedCurrentVersion = (currentVersion && currentVersion !== "--")
+        ? String(currentVersion)
+        : "";
+
+      const checkKey = activeDeviceId + ":" + normalizedCurrentVersion;
+      if (lastFwVersionChecked[activeDeviceId] === checkKey) return;
+
+      lastFwVersionChecked[activeDeviceId] = checkKey;
+
+      const badge = document.getElementById('updateBadge');
+      const badgeText = document.getElementById('updateBadgeText');
+      const sendOtaBtn = document.getElementById('sendOtaBtn');
+      const otaUrlText = document.getElementById('otaUrlText');
+      const safeManifestUrl = `https://aiesdoser.web.app/devices/${activeDeviceId}/${activeDeviceId}.json`;
+      const safeFirmwareUrl = `https://aiesdoser.web.app/devices/${activeDeviceId}/${activeDeviceId}.bin`;
+
+      // IMPORTANT: Never trust firmware.json's "url" field for OTA target.
+      // The activeDeviceId controls the device folder, so reefDoser2 cannot accidentally
+      // receive a reefDoser1 URL just because firmware.json contains an old/stale url.
+      if (otaUrlText) {
+        otaUrlText.innerText = safeManifestUrl;
+        otaUrlText.dataset.version = "";
+      }
+
+      try {
+        const response = await fetch(safeManifestUrl, { cache: "no-store" });
+
+        if (!response.ok) {
+          if (badge) badge.classList.remove('hidden');
+          if (sendOtaBtn) sendOtaBtn.classList.remove('hidden');
+          if (badgeText) badgeText.textContent = `${activeDeviceId}.json not found (${response.status})`;
+          return;
+        }
+
+        const latest = await response.json();
+
+        if (latest.version && latest.version !== normalizedCurrentVersion) {
+          if (badge) badge.classList.remove('hidden');
+          if (sendOtaBtn) sendOtaBtn.classList.remove('hidden');
+          if (badgeText) badgeText.textContent = `Update Available! (${latest.version})`;
+          if (otaUrlText) {
+            otaUrlText.innerText = safeManifestUrl;
+            otaUrlText.dataset.version = latest.version;
+          }
+        } else {
+          if (badge) badge.classList.remove('hidden');
+
+          // Versions match: show current firmware, but take down the OTA button.
+          if (sendOtaBtn) sendOtaBtn.classList.add('hidden');
+          if (badgeText) badgeText.textContent = normalizedCurrentVersion
+            ? `Current firmware: ${normalizedCurrentVersion}`
+            : `Update Available! (${latest.version || "unknown"})`;
+
+          if (otaUrlText) {
+            otaUrlText.innerText = normalizedCurrentVersion
+              ? `Up to date (${normalizedCurrentVersion})`
+              : safeManifestUrl;
+            otaUrlText.dataset.version = latest.version || "";
+          }
+        }
+      } catch (e) {
+        console.log("Update check failed:", e);
+        if (badge) badge.classList.remove('hidden');
+
+        // If we cannot verify the device manifest JSON, leave OTA available as a safe manual fallback.
+        if (sendOtaBtn) sendOtaBtn.classList.remove('hidden');
+        if (badgeText) badgeText.textContent = normalizedCurrentVersion
+          ? `Current firmware: ${normalizedCurrentVersion} • update check failed`
+          : `OTA Ready • update check failed`;
+      }
+    }
+
+    async function loadMonthlyReport() {
+      const year = document.getElementById('testsYear')?.value || String(new Date().getFullYear());
+      const monthRaw = document.getElementById('testsMonth')?.value || String(new Date().getMonth() + 1);
+      const month = String(monthRaw).padStart(2, "0");
+      const monthKey = `${year}-${month}`;
+      const statusEl = document.getElementById('syncStatus') || document.getElementById('testsMeta');
+      if (statusEl) statusEl.textContent = `Fetching ${monthKey} daily averages...`;
+
+      try {
+        const snap = await db.ref(`devices/${activeDeviceId}/history/${monthKey}`).once('value');
+        const rows = normalizeHistoryMonth(snap.val() || {}, monthKey);
+        updateParamsChart(rows);
+        if (statusEl) statusEl.textContent = `${MONTHS[Number(month)-1]} ${year} • ${rows.length} daily records`;
+        if (!rows.length) alert("No midnight daily history found for this month yet.");
+      } catch (err) {
+        console.error("Report Load Error:", err);
+        if (statusEl) statusEl.textContent = 'Error loading report.';
+      }
+    }
+
+    async function attachDailyDoseHistoryListener() {
+      if (!activeDeviceId) return;
+      if (doseRunsUnsub) { try { doseRunsUnsub(); } catch(e){} doseRunsUnsub = null; }
+
+      const y = Number(doseFilterYear);
+      const m = Number(doseFilterMonth);
+      const now = new Date();
+      const year = Number.isFinite(y) ? y : now.getFullYear();
+      const monthNum = (Number.isFinite(m) && m >= 1 && m <= 12) ? m : now.getMonth() + 1;
+      const monthKey = `${year}-${String(monthNum).padStart(2, "0")}`;
+
+      const meta = document.getElementById("doseGraphMeta");
+      if (meta) meta.textContent = `Loading ${MONTHS[monthNum-1]} ${year} dosing history…`;
+
+      try {
+        // Low Firebase cost: one read of the selected month only.
+        // The device writes one compact daily record around midnight.
+        const snap = await db.ref(`devices/${activeDeviceId}/history/${monthKey}`).once("value");
+        const rows = dailyDoseRowsFromHistory(snap.val() || {}, monthKey);
+        renderDoseGraph(rows);
+
+        const shown = doseFilter === "all"
+          ? rows.length
+          : rows.filter(r => Number(r[doseFilter] || 0) > 0.01).length;
+
+        if (meta && !rows.length) {
+          meta.textContent = `${MONTHS[monthNum-1]} ${year} • no midnight dosing history records yet.`;
+        } else if (meta) {
+          const total = rows.reduce((sum, r) => sum + Number(doseFilter === "all" ? r.total : (r[doseFilter] || 0)), 0);
+          meta.innerHTML = `${MONTHS[monthNum-1]} ${year} • ${shown} days shown • ${total.toFixed(1)} mL total`
+            + `<div class="dose-legend-note">`
+            + (doseFilter === "all" ? activeDoseKeysForMode() : [doseFilter]).map(k => `<span class="dose-chip"><span class="dose-swatch" style="background:${doseColor(k)}"></span>${doseLabel(k)}</span>`).join("")
+            + `<span class="dose-chip"><span class="dose-swatch" style="background:${doseColor("total")}"></span>Total line</span>`
+            + `</div>`;
+        }
+      } catch (err) {
+        console.error("Dosing history load failed:", err);
+        if (meta) meta.textContent = "Dosing history load failed: " + (err?.message || err);
+      }
+    }
+
+    // Backward-compatible function name used by older click handlers.
+    function attachDoseRunsListener() {
+      attachDailyDoseHistoryListener();
+    }
+
+    function setDoseFilter(f) {
+      doseFilter = f;
+      setActiveDoseTab();
+      attachDoseRunsListener();
+    }
+
+    const _openDoseGraphBtn = document.getElementById("openDoseGraphBtn");
+    if (_openDoseGraphBtn) _openDoseGraphBtn.onclick = () => {
+      document.getElementById("doseGraphOverlay").classList.remove("hidden");
+      initDoseMonthFilterUI();
+      attachDailyDoseHistoryListener();
+    };
+
+    document.getElementById("closeDoseGraphBtn").onclick = () => {
+      document.getElementById("doseGraphOverlay").classList.add("hidden");
+      if (doseRunsUnsub) { try { doseRunsUnsub(); } catch(e){} doseRunsUnsub = null; }
+    };
+
+    document.getElementById("doseTabAll").onclick  = () => setDoseFilter("all");
+    const _doseTabKalk = document.getElementById("doseTabKalk"); if (_doseTabKalk) _doseTabKalk.onclick = () => setDoseFilter("kalk");
+    const _doseTabAfr = document.getElementById("doseTabAfr"); if (_doseTabAfr) _doseTabAfr.onclick = () => setDoseFilter("afr");
+    const _doseTabAlk = document.getElementById("doseTabAlk"); if (_doseTabAlk) _doseTabAlk.onclick = () => setDoseFilter("alk");
+    const _doseTabCacl2 = document.getElementById("doseTabCacl2"); if (_doseTabCacl2) _doseTabCacl2.onclick = () => setDoseFilter(dosingMode === 4 || dosingMode === 5 ? "ca" : "cacl2");
+    const _doseTabNaoh = document.getElementById("doseTabNaoh"); if (_doseTabNaoh) _doseTabNaoh.onclick = () => setDoseFilter("naoh");
+    const _doseTabMg = document.getElementById("doseTabMg"); if (_doseTabMg) _doseTabMg.onclick = () => setDoseFilter("mg");
+    const _doseTabAux = document.getElementById("doseTabAux"); if (_doseTabAux) _doseTabAux.onclick = () => setDoseFilter("tbd");
+
+    // Push notifications removed (no-Blaze mode).
+async function triggerOTA(deviceId) {
+  const statusEl = document.getElementById('otaStatus');
+  const otaUrlText = document.getElementById('otaUrlText');
+  const devPill = document.getElementById('deviceIdPill');
+  const firstTimeBox = document.getElementById('firstTimeOtaCheck');
+
+  const setResolvedDevice = (resolvedId, source) => {
+    const cleaned = String(resolvedId || '').trim();
+    if (!cleaned || cleaned === '—') return null;
+    activeDeviceId = cleaned;
+    if (devPill) devPill.innerText = 'Device: ' + activeDeviceId;
+    if (statusEl && source) statusEl.textContent = `Using device ${activeDeviceId} (${source})`;
+    return activeDeviceId;
+  };
+
+  let id = setResolvedDevice(deviceId || activeDeviceId, 'current session');
+
+  if (!id && devPill) {
+    const txt = (devPill.innerText || '').trim();
+    const m = txt.match(/Device:\s*(.+)$/i);
+    if (m && m[1] && m[1] !== '—') id = setResolvedDevice(m[1], 'device pill');
+  }
+
+  if (!id) {
+    try {
+      const user = auth.currentUser;
+      if (user) {
+        const snap = await db.ref(`users/${user.uid}/devices`).once('value');
+        const devices = snap.val() || {};
+        const keys = Object.keys(devices).filter(Boolean);
+        if (keys.length) {
+          id = setResolvedDevice(keys[0], 'user device mapping');
+        }
+      }
+    } catch (e) {
+      console.error('Failed to resolve device for OTA from user mapping:', e);
+    }
+  }
+
+  if (!id) {
+    if (statusEl) statusEl.textContent = 'No active device selected. OTA cancelled.';
+    alert('No active device selected. OTA cancelled.');
+    return;
+  }
+
+  const firstTime = !!(firstTimeBox && firstTimeBox.checked);
+
+  // Keep the proven production behavior: the ESP32 receives a direct .bin URL.
+  // First-time/bootstrap uses firmware.bin. Normal OTA uses the device-specific bin.
+  const otaFile = firstTime ? 'firmware.bin' : `${id}.bin`;
+  const otaUrl = `${window.location.origin}/devices/${id}/${otaFile}`;
+
+  if (otaUrlText) {
+    otaUrlText.innerText = otaUrl;
+    otaUrlText.dataset.firstTime = firstTime ? 'true' : 'false';
+  }
+
+  const confirmMsg = firstTime
+    ? `FIRST-TIME OTA for ${id}?\n\nThis will send:\n${otaUrl}\n\nUse this only for a new/bootstrap device.`
+    : `Normal OTA update for ${id}?\n\nThis will send:\n${otaUrl}`;
+
+  if (!confirm(confirmMsg)) return;
+
+  // Hard safety check: the OTA command must contain this device's folder.
+  // This prevents accidental cross-flashing from a stale display value.
+  if (!otaUrl.includes(`/devices/${id}/`)) {
+    const msg = `OTA cancelled: URL must contain /devices/${id}/`;
+    console.error(msg, otaUrl);
+    if (statusEl) statusEl.textContent = msg;
+    alert(`${msg}\n\nReceived:\n${otaUrl}`);
+    return;
+  }
+
+  try {
+    setResolvedDevice(id, 'OTA target');
+    if (statusEl) statusEl.textContent = `Sending ${firstTime ? 'first-time ' : ''}OTA command to ${id}...`;
+    const otaRef = db.ref(`devices/${id}/commands/ota`);
+    // Clear any stale OTA node first so the ESP32 stream sees this as a fresh one-shot command.
+    await otaRef.remove();
+    await otaRef.set({
+      trigger: true,
+      firstTime: firstTime,
+      url: otaUrl,
+      deviceId: id,
+      file: otaFile,
+      ts: Date.now()
+    });
+    if (statusEl) statusEl.textContent = `${firstTime ? 'First-time ' : ''}OTA command written to devices/${id}/commands/ota`;
+    alert(`${firstTime ? 'First-time ' : ''}OTA command sent to ${id}`);
+  } catch (err) {
+    console.error('OTA write failed:', err);
+    if (statusEl) statusEl.textContent = `OTA write failed: ${err?.message || err}`;
+    alert('OTA write failed: ' + (err?.message || err));
+  }
+}
+  </script>
+  <!-- TEST ONLY: remove these two lines (or set AIDOSER_TEST_BUILD=false in test-config.js) for production -->
+  <script src="/test-config.js"></script>
+  <script src="/test-reset.js"></script>
+</body>
+</html>

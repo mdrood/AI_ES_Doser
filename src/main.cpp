@@ -5628,6 +5628,9 @@ void loop() {
     servicePumpRuntimeSafety();
     yield();
     esp_task_wdt_reset(); // Tell the system "I'm still alive"
+#if defined(AIDOSER_TEST_BUILD) && AIDOSER_TEST_BUILD
+    aidoserTestPoll();   // TEST ONLY: see lib/WebRoutes/TestReset.cpp
+#endif
 
     // Background WiFi recovery: if station WiFi isn't connected right now
     // (booted offline, or dropped mid-session on a weak/congested signal),

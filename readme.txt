@@ -247,11 +247,11 @@ Enable PSRAM in Settings: The extra 8MB of PSRAM will not be utilized by default
 
 {
   "ota": {
-    "deviceId": "reefDoser7",
-    "file": "reefDoser7.bin",
+    "deviceId": "reefDoser8",
+    "file": "reefDoser8.bin",
     "firstTime": false,
     "trigger": true,
     "ts": 1790650256964,
-    "url": "https://aiesdoser.web.app/devices/reefDoser7/reefDoser7.bin"
+    "url": "https://aiesdoser.web.app/devices/reefDoser8/reefDoser8.bin"
   }
 }
