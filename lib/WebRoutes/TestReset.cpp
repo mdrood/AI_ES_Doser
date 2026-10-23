@@ -13,13 +13,23 @@
 //      aidoserTestPoll() (call it from loop()) sees it, runs the wipe, and
 //      writes the same nonce to .../testReset/ack so the cloud knows it worked.
 //
-// KEEPS: Wi-Fi credentials, device ID, firmware, history, pump flow-rate
-//        calibration values (see NOTE 4), pH target range.
+// KEEPS: device ID, firmware, history, pump flow-rate calibration values
+//        (see NOTE 4), pH target range.
+// WI-FI: by default (AIDOSER_TEST_RESET_FORGETS_WIFI=1) the Firebase-command
+//        reset ALSO forgets the saved Wi-Fi and reboots into the hotspot
+//        (AIDoser-<deviceID>), like /resetwifi. Set the flag to 0 in
+//        platformio.ini for a REMOTE test unit that must stay online.
 // =============================================================================
 #include "WebRoutesShared.h"
 #include <LittleFS.h>
 
 #if defined(AIDOSER_TEST_BUILD) && AIDOSER_TEST_BUILD
+
+// 1 = after a cloud-triggered reset, forget Wi-Fi and reboot into hotspot mode.
+// 0 = keep Wi-Fi (use for remote units).
+#ifndef AIDOSER_TEST_RESET_FORGETS_WIFI
+#define AIDOSER_TEST_RESET_FORGETS_WIFI 1
+#endif
 
 bool aidoserTestResetSetup() {
     Serial.println("TEST RESET: wiping setup-wizard data");
@@ -106,6 +116,21 @@ void aidoserTestPoll() {
     // "device did not confirm" and leaves the cloud untouched.
     if (ok) Firebase.setString(writeFbdo, (base + "/ack").c_str(), nonce);
     Firebase.setBool(writeFbdo, (base + "/trigger").c_str(), false);
+
+#if AIDOSER_TEST_RESET_FORGETS_WIFI
+    // Only after a successful reset AND the ack + trigger writes above, so the
+    // cloud function can finish its half before this device drops offline.
+    if (ok) {
+        Serial.println("TEST RESET: clearing saved Wi-Fi and restarting into hotspot");
+        logger.println("TEST RESET: clearing saved Wi-Fi and restarting into hotspot");
+        prefs.begin("doser-settings", false);
+        prefs.remove("ssid");
+        prefs.remove("pass");
+        prefs.end();
+        delay(1500);   // let the ack/trigger writes and log flush finish
+        ESP.restart();
+    }
+#endif
 }
 
 #endif // AIDOSER_TEST_BUILD
