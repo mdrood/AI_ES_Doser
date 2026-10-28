@@ -77,6 +77,21 @@ bool aidoserTestResetSetup() {
 
     // 5) Baseline test + learned state ("no dosing before the baseline test").
     hasSavedManualTest = false;
+    // The manual test is also saved in flash (namespace "doser-truth", see
+    // saveManualTestLocally()). Clearing only the RAM flag worked while the
+    // unit stayed running, but any reboot -- including the restart into the
+    // hotspot after this reset -- reloads it via loadManualTestLocally(), sets
+    // hasSavedManualTest back to true, and shouldShowSetupWizard() then
+    // reports "setup done" as soon as the first chemical is added, which closes
+    // the wizard halfway through "What Are You Dosing?". Remove the saved copy.
+    prefs.begin("doser-truth", false);
+    prefs.remove("last_ts");
+    prefs.remove("last_alk");
+    prefs.remove("last_ca");
+    prefs.remove("last_mg");
+    prefs.remove("last_ph");
+    prefs.remove("mtest_epoch");
+    prefs.end();
     for (int p = 0; p < kNumParams; p++) ai.filters[p] = ParamKalmanState();
     alkDemandStore = AlkDemandStore();
     calciumDemandStore = CalciumDemandStore();

@@ -195,7 +195,7 @@
         "customer": "Burn-In Pending",
         "label": "AIES-00008",
         "deviceId": "reefDoser8",
-        "firmwareVersion": "T-0.0.2",
+        "firmwareVersion": "T-0.0.3",
         "chipId": "101FC1FE8CE0",
         "macAddress": "E0:8C:FE:C1:1F:10",
         "board": "vintlabs-devkit-v1",
