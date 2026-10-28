@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "updatedAt": "2026-09-10T21:38:44+00:00",
+    "updatedAt": "2026-10-27T21:24:58+00:00",
     "claims": [
         {
             "claimCode": "J92F-CNXF",
@@ -146,14 +146,15 @@
             "claimCode": "NMDN-PLLH",
             "batch": "BATCH-20260714",
             "sequence": 11,
-            "status": "UNUSED",
+            "status": "ASSIGNED",
             "createdAt": "2026-07-15T00:27:09+00:00",
-            "assignedAt": null,
-            "deviceId": null,
-            "label": null,
-            "macAddress": null,
-            "chipId": null,
-            "firebaseStatus": "NOT_ASSIGNED"
+            "assignedAt": "2026-10-27T20:24:22+00:00",
+            "deviceId": "reefDoser14",
+            "label": "AIES-0014",
+            "macAddress": "E0:8C:FE:C2:63:B0",
+            "chipId": "B063C2FE8CE0",
+            "firebaseStatus": "VERIFIED",
+            "firebaseUpdatedAt": "2026-10-27T21:24:58+00:00"
         },
         {
             "claimCode": "HHG8-78CZ",

@@ -194,6 +194,15 @@ static bool parseApexStatusJson(const String& payload, ApexLatest& out) {
   if (!inputs.isNull()) {
     float tempFound = NAN;
     float phFound   = NAN;
+    // Alk match ranking (added 2026-10-27): an exact "alkx3" name beats a
+    // type=="alk" match, which beats a loose name-contains-"alk" match.
+    // Previously ANY input with "alk" in its name or type simply overwrote
+    // out.alk, so a second Alk-ish input later in the list silently replaced
+    // the real Trident Alk. Equal ranks still keep the last one seen, so a
+    // system with a single candidate behaves exactly as before.
+    int alkRank = 0;
+    int alkCandidates = 0;
+    String alkCandidateLog;
 
     for (JsonObject it : inputs) {
       const char* didC  = it["did"]  | "";
@@ -224,7 +233,15 @@ static bool parseApexStatusJson(const String& payload, ApexLatest& out) {
         if (did == "base_cond" || name == "salt" || !isfinite(out.cond)) out.cond = v;
       }
       else if (type == "alk" || name.indexOf("alk") >= 0) {
-        out.alk = v;
+        const int rank = (name == "alkx3") ? 3 : (type == "alk") ? 2 : 1;
+        alkCandidates++;
+        if (alkCandidateLog.length() < 160) {
+          alkCandidateLog += did + "/" + type + "/" + name + "=" + String(v, 2) + " ";
+        }
+        if (rank >= alkRank) {
+          out.alk = v;
+          alkRank = rank;
+        }
       }
       else if (type == "ca" || name.indexOf("cax3") >= 0) {
         // Fixed 2026-10-09: `name` is lowercased a few lines above, but this
@@ -241,6 +258,16 @@ static bool parseApexStatusJson(const String& payload, ApexLatest& out) {
     }
     out.tempF = tempFound;
     out.ph    = phFound;
+
+    // One line per boot, and only when the feed really is ambiguous (more
+    // than one Alk-like input), so a remote unit's log shows what the Apex
+    // actually sent without adding any per-poll logging.
+    static bool alkAmbiguityLogged = false;
+    if (alkCandidates > 1 && !alkAmbiguityLogged) {
+      alkAmbiguityLogged = true;
+      logger.printf("APEX ALK CANDIDATES (%d): %s-> using %.2f\n",
+                    alkCandidates, alkCandidateLog.c_str(), out.alk);
+    }
   }
 
   // 3. Parse Light Intensity (Outputs - Name Agnostic)

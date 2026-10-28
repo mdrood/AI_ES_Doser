@@ -169,7 +169,7 @@
         "customer": "Eric",
         "label": "AIES-00012",
         "deviceId": "reefDoser12",
-        "firmwareVersion": "P-3.0.1",
+        "firmwareVersion": "P-3.0.5",
         "chipId": "409D33077000",
         "macAddress": "00:70:07:33:9D:40",
         "board": "vintlabs-devkit-v1",
@@ -279,5 +279,19 @@
         "firebaseUid": "35FKHJiv71ZYvIDXy9T6VEm2H0g2",
         "alkDemandBootstrapEnabled": false,
         "alkDemandBootstrapDkhDay": 0.0
+    },
+    "reefDoser14": {
+        "customer": "Jeff Rood",
+        "label": "AIES-0014",
+        "deviceId": "reefDoser14",
+        "firmwareVersion": "P-3.0.2",
+        "chipId": "B063C2FE8CE0",
+        "macAddress": "E0:8C:FE:C2:63:B0",
+        "board": "vintlabs-devkit-v1",
+        "otaJsonName": "reefDoser14.json",
+        "otaBinName": "reefDoser14.bin",
+        "firebasePublic": "C:/Users/mdroo/OneDrive/Firebase/aiesdoser/public",
+        "burnInStatus": "RUNNING",
+        "burnInStartedAt": "2026-10-27T17:46:23"
     }
 }
