@@ -16,6 +16,21 @@
 #define LOGGER_ROTATE_BYTES (4UL * 1024UL) // GET uploader must stay small
 #endif
 
+// ---------------------------------------------------------------------------
+// Stage trace (added for reset diagnosis).
+// Two slots live in RTC no-init memory, which survives watchdog resets,
+// panics and ESP.restart() (but not a full power loss):
+//   slot 0 = loopTask (main loop), slot 1 = the log-upload task.
+// Code calls traceStage(slot,"name") before a step that could block and
+// traceStage(slot,"idle") afterwards. A watcher task logs "STUCK" if a step
+// runs too long and keeps a "last alive" time. On the next boot,
+// traceTakePreviousBootSummary() returns one line naming the stage that was
+// running when the unit reset.
+// ---------------------------------------------------------------------------
+void traceStage(uint8_t slot, const char* name);
+void traceStartWatcher();
+String traceTakePreviousBootSummary();   // call once, early in setup()
+
 class Logger {
 public:
   Logger();
@@ -65,7 +80,8 @@ private:
   uint32_t _lastUploadAttemptMs;
   bool _enabled;
   bool _fsReady;
-  bool _uploadBusy;
+  volatile bool _uploadBusy;
+  volatile bool _uploadTaskActive;
 
   // Retry tracking stays in RAM; no long LittleFS sidecar filenames.
   String _failedPath;
@@ -90,6 +106,8 @@ private:
   String _findOldestBootFile();
   bool _uploadOneFile(const String& path);
   bool _uploadNextQueuedFile();
+  void _startUploadTask();
+  static void _uploadTaskEntry(void* arg);
   String _fileNameForPath(const String& path) const;
   String _urlEncode(const String& in) const;
   int _doGet(HTTPClient& http, WiFiClientSecure& client, const String& url);

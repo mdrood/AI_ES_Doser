@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "updatedAt": "2026-10-27T21:06:08+00:00",
+    "updatedAt": "2026-10-28T04:56:38+00:00",
     "claims": [
         {
             "claimCode": "J92F-CNXF",
@@ -151,10 +151,13 @@
             "assignedAt": "2026-10-27T20:24:22+00:00",
             "deviceId": "reefDoser14",
             "label": "AIES-0014",
-            "macAddress": "E0:8C:FE:C2:63:B0",
-            "chipId": "B063C2FE8CE0",
-            "firebaseStatus": "VERIFIED",
-            "firebaseUpdatedAt": "2026-10-27T21:06:08+00:00"
+            "macAddress": "E0:8C:FE:C2:63:8C",
+            "chipId": "8C63C2FE8CE0",
+            "firebaseStatus": "PENDING",
+            "firebaseUpdatedAt": "2026-10-27T21:24:58+00:00",
+            "reassignedAt": "2026-10-28T04:56:38+00:00",
+            "previousMacAddress": "E0:8C:FE:C2:63:B0",
+            "previousChipId": "B063C2FE8CE0"
         },
         {
             "claimCode": "HHG8-78CZ",

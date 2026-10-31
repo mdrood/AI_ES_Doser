@@ -352,9 +352,12 @@ volatile bool apexEmulatorResultPending = false;
 volatile bool apexEmulatorResultOk = false;
 volatile bool apexTlsReservation = false;
 volatile unsigned long apexTlsCooldownUntilMs = 0;
+// Set by the log-upload task (logger.cpp) while its TLS session is open, so
+// Firebase / Apex secure work on loopTask never overlaps it.
+volatile bool loggerTlsActive = false;
 
 bool apexTlsReservedOrCoolingDown() {
-    if (apexTlsReservation) return true;
+    if (apexTlsReservation || loggerTlsActive) return true;
     return (long)(millis() - apexTlsCooldownUntilMs) < 0;
 }
 
@@ -716,12 +719,6 @@ void serviceInterPumpDelay() {
             interPumpLastPump + 1,
             delaySeconds
         );
-        logger.printf(
-            "INTER-PUMP DELAY STARTED [%s]: P%d finished; next dose allowed in %lu seconds.\n",
-            interPumpLastSource.c_str(),
-            interPumpLastPump + 1,
-            delaySeconds
-        );
     }
 
     if (interPumpDelayActive &&
@@ -797,14 +794,45 @@ void armPumpRuntimeDeadlineForMl(int pumpIndex, float ml, const char* source) {
 // should go through this function so the persistent log records the first cause.
 bool publishAlertState(const String& level, const String& code, const String& message, bool active, const char* source, bool force);
 
+// Emergency stop is now saved in flash so a reset or power cycle cannot
+// silently resume dosing. Stops raised by OTA and by the Firebase-token
+// recovery reboot are transient by design and are NOT saved. A stop is
+// cleared from flash when the dashboard clears it (see loop()).
+bool estopPersisted = false;
+
+static void persistEmergencyStop(const String& reason) {
+    Preferences p;
+    if (p.begin("doser-estop", false)) {
+        p.putBool("on", true);
+        p.putString("why", reason.substring(0, 100));
+        p.end();
+        estopPersisted = true;
+    }
+}
+
+static void clearPersistedEmergencyStop() {
+    Preferences p;
+    if (p.begin("doser-estop", false)) {
+        p.putBool("on", false);
+        p.remove("why");
+        p.end();
+    }
+    estopPersisted = false;
+    Serial.println("EMERGENCY STOP CLEARED: saved stop removed from flash.");
+    logger.println("EMERGENCY STOP CLEARED: saved stop removed from flash.");
+}
+
 void triggerEmergencyStop(const String& reason, const char* source = "Safety") {
     const bool wasAlreadyActive = emergencyStop;
+    const bool transientStop = source && (strcmp(source, "OTA") == 0 ||
+                                          strcmp(source, "FirebaseWatchdog") == 0);
 
     doser.stopAllPumps();
     forcePumpPinsOffDirect();
     clearPumpRuntimeDeadline();
     emergencyStop = true;
     emergencyStopReason = reason;
+    if (!transientStop && !estopPersisted) persistEmergencyStop(reason);
 
     if (!wasAlreadyActive) {
         Serial.printf("EMERGENCY STOP TRIGGERED [%s]: %s\n", source ? source : "Safety", reason.c_str());
@@ -2412,6 +2440,29 @@ void runAiRecalculation(float useAlk, float useCa, float useMg, float usePh,
     lastAiRecalcMillis = nowMs;
 
     if (isNewMeasurement) {
+        // Recovery from a polluted learned level (added 2026-10-30, reefDoser12:
+        // weeks of bad Alk readings left the filter at ~1 dKH, and a mature
+        // filter would take days to follow a correct 10 dKH reading while the
+        // plan kept demanding maximum Alk). If a new in-range measurement is
+        // farther from the filter level than any real tank could move, restart
+        // that one filter at the measurement. Same size thresholds as the
+        // jump guard. Logged once per event.
+        {
+            const WaterParam rp[3] = {P_ALK, P_CA, P_MG};
+            const float rv[3] = {useAlk, useCa, useMg};
+            const float rth[3] = {3.0f, 100.0f, 300.0f};
+            const char* rn[3] = {"Alk", "Ca", "Mg"};
+            for (int k = 0; k < 3; k++) {
+                if (isfinite(rv[k]) && rv[k] > 0.0f && ai.filters[rp[k]].initialized &&
+                    fabsf(rv[k] - ai.filters[rp[k]].level) > rth[k]) {
+                    Serial.printf("FILTER RESEED %s: learned level %.2f vs new measurement %.2f -> restarting this filter\n",
+                                  rn[k], ai.filters[rp[k]].level, rv[k]);
+                    logger.printf("FILTER RESEED %s: learned level %.2f vs new measurement %.2f -> restarting this filter\n",
+                                  rn[k], ai.filters[rp[k]].level, rv[k]);
+                    ai.filters[rp[k]] = ParamKalmanState();
+                }
+            }
+        }
         if (isfinite(useAlk) && useAlk > 0.0f) ai.ingestMeasurement(P_ALK, useAlk, measurementSource);
         if (isfinite(useCa)  && useCa  > 0.0f) ai.ingestMeasurement(P_CA,  useCa,  measurementSource);
         if (isfinite(useMg)  && useMg  > 0.0f) ai.ingestMeasurement(P_MG,  useMg,  measurementSource);
@@ -2488,8 +2539,11 @@ void runAiRecalculation(float useAlk, float useCa, float useMg, float usePh,
             if (ai.hasWeekData((WaterParam)p) || ai.hasMonthData((WaterParam)p)) { anyData = true; break; }
         }
         if (anyData) {
+            static unsigned long lastTrendLogMs = 0;
+            const bool logTrend = (lastTrendLogMs == 0) || (millis() - lastTrendLogMs >= 10800000UL);
+            if (logTrend) lastTrendLogMs = millis();
             Serial.println("--- WEEK/MONTH TREND ---");
-            logger.println("--- WEEK/MONTH TREND ---");
+            if (logTrend) logger.println("--- WEEK/MONTH TREND ---");
             for (int p = 0; p < kNumParams; p++) {
                 if (p == P_PH) continue;
                 WaterParam wp = (WaterParam)p;
@@ -2501,11 +2555,11 @@ void runAiRecalculation(float useAlk, float useCa, float useMg, float usePh,
                 bool drifting = ai.isDrifting(wp);
                 Serial.printf("  %s: week=%s month=%s%s\n", paramNames[p], weekStr, monthStr,
                               drifting ? " [DRIFTING]" : "");
-                logger.printf("  %s: week=%s month=%s%s\n", paramNames[p], weekStr, monthStr,
+                if (logTrend) logger.printf("  %s: week=%s month=%s%s\n", paramNames[p], weekStr, monthStr,
                               drifting ? " [DRIFTING]" : "");
             }
             Serial.println("--- END WEEK/MONTH TREND ---");
-            logger.println("--- END WEEK/MONTH TREND ---");
+            if (logTrend) logger.println("--- END WEEK/MONTH TREND ---");
         }
     }
 
@@ -2951,6 +3005,7 @@ void rolloverDailyAccountingIfNeeded(const char* reason) {
                   dailyAccountingDate.c_str(), dailyAccountingDayNumber,
                   today.c_str(), todayNum,
                   dailyDoseTotals[0], dailyDoseTotals[1], dailyDoseTotals[2], dailyDoseTotals[3]);
+    if (!(reason && strcmp(reason, "loop-unconditional-check") == 0))
     logger.printf("DAILY ACCT CHECK [%s]: storedDate='%s' storedDayNum=%ld todayDate='%s' todayDayNum=%ld used=[%.2f,%.2f,%.2f,%.2f]\n",
                   reason ? reason : "check",
                   dailyAccountingDate.c_str(), dailyAccountingDayNumber,
@@ -4494,6 +4549,68 @@ void evaluateAlertState(const char* source, bool force) {
 
 // handlePostDosingSafeties() moved to lib/WebRoutes/WebRoutes.cpp
 
+// Added 2026-10-27 (reefDoser12): one bad Trident/Apex result (Alk 1.00,
+// Ca 346 against a tank that was ~9 dKH) was accepted, fed the Kalman filter,
+// produced a fake -7 dKH/day trend, and drove the allocator to its maximum
+// doses. The only existing gate was a 0-20 dKH range check. This holds back a
+// result that jumps implausibly from the last accepted one, so dosing keeps
+// using the last good chemistry (currentAlk/Ca/Mg are simply not updated).
+// A result that returns to near the last good value clears the hold at once;
+// a jump that persists for kJumpHoldMs is accepted as real (e.g. genuine water
+// change or recalibration) so the device can never get stuck on stale data.
+// Generic for every system; the state is RAM-only, so the first reading after
+// a reboot is always accepted. Logs only when a hold starts or ends.
+static const unsigned long kJumpHoldMs = 3UL * 3600UL * 1000UL;
+bool chemistryJumpShouldHold(float alk, float ca, float mg, const char* src) {
+    static bool havePrev = false;
+    static float prevAlk = 0.0f, prevCa = 0.0f, prevMg = 0.0f;
+    static bool holding = false;
+    static unsigned long holdStartMs = 0;
+
+    if (!havePrev) {
+        havePrev = true;
+        prevAlk = alk; prevCa = ca; prevMg = mg;
+        return false;
+    }
+
+    const bool jump = fabsf(alk - prevAlk) > 3.0f ||
+                      fabsf(ca  - prevCa)  > 100.0f ||
+                      fabsf(mg  - prevMg)  > 300.0f;
+
+    if (!jump) {
+        if (holding) {
+            holding = false;
+            Serial.printf("CHEMISTRY JUMP HOLD CLEARED [%s]: back near last good Alk=%.2f Ca=%.1f Mg=%.1f\n",
+                          src ? src : "?", alk, ca, mg);
+            logger.printf("CHEMISTRY JUMP HOLD CLEARED [%s]: back near last good Alk=%.2f Ca=%.1f Mg=%.1f\n",
+                          src ? src : "?", alk, ca, mg);
+        }
+        prevAlk = alk; prevCa = ca; prevMg = mg;
+        return false;
+    }
+
+    if (!holding) {
+        holding = true;
+        holdStartMs = millis();
+        Serial.printf("CHEMISTRY JUMP HELD [%s]: new Alk=%.2f Ca=%.1f Mg=%.1f vs last good Alk=%.2f Ca=%.1f Mg=%.1f -- keeping last good chemistry\n",
+                      src ? src : "?", alk, ca, mg, prevAlk, prevCa, prevMg);
+        logger.printf("CHEMISTRY JUMP HELD [%s]: new Alk=%.2f Ca=%.1f Mg=%.1f vs last good Alk=%.2f Ca=%.1f Mg=%.1f -- keeping last good chemistry\n",
+                      src ? src : "?", alk, ca, mg, prevAlk, prevCa, prevMg);
+        return true;
+    }
+
+    if ((long)(millis() - holdStartMs) >= (long)kJumpHoldMs) {
+        holding = false;
+        prevAlk = alk; prevCa = ca; prevMg = mg;
+        Serial.printf("CHEMISTRY JUMP ACCEPTED [%s]: persisted %lu min, now using Alk=%.2f Ca=%.1f Mg=%.1f\n",
+                      src ? src : "?", kJumpHoldMs / 60000UL, alk, ca, mg);
+        logger.printf("CHEMISTRY JUMP ACCEPTED [%s]: persisted %lu min, now using Alk=%.2f Ca=%.1f Mg=%.1f\n",
+                      src ? src : "?", kJumpHoldMs / 60000UL, alk, ca, mg);
+        return false;
+    }
+    return true;
+}
+
 // Accept one learner event for each genuinely new chemistry measurement.
 // Apex/Trident uses a timestamp when available or an Alk/Ca/Mg fingerprint
 // when it is not. Manual submissions use forceNew=true because each press of
@@ -4524,14 +4641,7 @@ bool acceptNewChemistryMeasurement(const char* source, const String& measurement
                       fabsf(currentAlk - lastAcceptedTridentAlk),
                       fabsf(currentCa  - lastAcceptedTridentCa),
                       fabsf(currentMg  - lastAcceptedTridentMg));
-        logger.printf("ACCEPT-CHECK [%s] path=%s current(Alk=%.4f,Ca=%.2f,Mg=%.2f) "
-                      "lastAccepted(Alk=%.4f,Ca=%.2f,Mg=%.2f) diff(Alk=%.4f,Ca=%.2f,Mg=%.2f)\n",
-                      source ? source : "?", pathTaken,
-                      currentAlk, currentCa, currentMg,
-                      lastAcceptedTridentAlk, lastAcceptedTridentCa, lastAcceptedTridentMg,
-                      fabsf(currentAlk - lastAcceptedTridentAlk),
-                      fabsf(currentCa  - lastAcceptedTridentCa),
-                      fabsf(currentMg  - lastAcceptedTridentMg));
+        // ACCEPT-CHECK is Serial-only now; the outcome is in the AI chemistry line.
     }
 
     if (forceNew) {
@@ -4673,6 +4783,9 @@ void apexEmulatorTask(void* parameter) {
         } else {
             // Reserve TLS before starting. loopTask sees this flag and pauses
             // Firebase stream/writes and Google Drive logger maintenance.
+            for (int w = 0; w < 60 && loggerTlsActive; w++) {
+                vTaskDelay(pdMS_TO_TICKS(500));   // let a running log upload finish first
+            }
             apexTlsReservation = true;
             vTaskDelay(pdMS_TO_TICKS(3000));
 
@@ -4778,6 +4891,11 @@ bool serviceApexEmulatorResult() {
         return false;
     }
 
+    // Implausible jump from the last good result: keep last good chemistry.
+    if (chemistryJumpShouldHold(alk, ca, mg, "ApexEmulator")) {
+        return false;
+    }
+
     currentAlk = alk;
     currentCa = ca;
     currentMg = mg;
@@ -4859,6 +4977,11 @@ void syncAllTruths() {
                           nextAlk, nextCa, nextMg, nextPh);
             logger.printf("Apex rejected: invalid chemistry Alk=%.2f Ca=%.1f Mg=%.1f pH=%.2f\n",
                           nextAlk, nextCa, nextMg, nextPh);
+            return;
+        }
+
+        // Implausible jump from the last good result: keep last good chemistry.
+        if (chemistryJumpShouldHold(nextAlk, nextCa, nextMg, "Apex")) {
             return;
         }
 
@@ -5342,6 +5465,30 @@ esp_reset_reason_t reason = esp_reset_reason();*/
         logger.logBootRecord("MAC Address: " + WiFi.macAddress());
         logger.logBootRecord("Chip ID: " + String(chipIdBuf));
         logger.logBootRecord("================================");
+
+        // Which step was the previous run in when it ended? (RTC memory
+        // survives watchdog resets and panics; not a full power loss.)
+        logger.logBootRecord(traceTakePreviousBootSummary());
+        traceStartWatcher();
+        logger.logBootRecord("BUILD: upload-task, stage-trace, estop-saved, jump-hold, alk-parse, filter-reseed");
+
+        // Restore a saved emergency stop so a reset / power cycle cannot
+        // silently resume dosing.
+        {
+            Preferences p;
+            if (p.begin("doser-estop", false)) {
+                bool on = p.getBool("on", false);
+                String why = p.getString("why", "");
+                p.end();
+                if (on) {
+                    emergencyStop = true;
+                    emergencyStopReason = "Restored after restart: " + why;
+                    estopPersisted = true;
+                    forcePumpPinsOffDirect();
+                    logger.logBootRecord("EMERGENCY STOP RESTORED from flash: " + why);
+                }
+            }
+        }
     }
 
     WebSerial.println();
@@ -5628,6 +5775,18 @@ void loop() {
     servicePumpRuntimeSafety();
     yield();
     esp_task_wdt_reset(); // Tell the system "I'm still alive"
+    traceStage(0, "loop-top");
+
+    // The dashboard clears the stop by assigning emergencyStop=false; notice
+    // that here and remove the saved copy. Skipped during OTA, which restores
+    // the previous value itself.
+    {
+        static bool prevEstopSeen = false;
+        if (prevEstopSeen && !emergencyStop && !otaInProgress && estopPersisted) {
+            clearPersistedEmergencyStop();
+        }
+        prevEstopSeen = emergencyStop;
+    }
 
     // Background WiFi recovery: if station WiFi isn't connected right now
     // (booted offline, or dropped mid-session on a weak/congested signal),
@@ -5748,6 +5907,7 @@ void loop() {
 
     // OTA must not depend only on the Firebase stream. Poll the exact command
     // node as a fallback in case the stream is disconnected or misses its snapshot.
+    traceStage(0, "ota-poll");
     serviceOtaCommandFallback();
     if (pendingOtaRequested) return;
 
@@ -5772,12 +5932,14 @@ void loop() {
     // Independent 10-minute AI dosing scheduler. This must run every loop pass;
     // Apex polling and hourly AI calculations only update the plan and must not
     // control whether a dosing slice is accumulated.
+    traceStage(0, "ai-sched");
     addCurrentAiPlanToBuckets("Scheduler", false);
 
     // logger.loop() may rotate, upload, or delete LittleFS queue files.
     // Never perform those maintenance operations while any pump is energized.
     // Normal logger.printf() appends are still allowed; maintenance resumes
     // automatically as soon as all pumps are OFF.
+    traceStage(0, "logger-loop");
     if (!anyDoserPumpRunning() && !apexTlsReservedOrCoolingDown()) {
         logger.loop();
     }
@@ -5802,6 +5964,7 @@ void loop() {
     // Remote logger heartbeat: this tiny Firebase node keeps updating even between
     // half-hour Google Drive log uploads, so a remote device can show the logger queue
     // building up before Drive logs go silent.
+    traceStage(0, "fb-loghealth");
     publishLoggerHealthToFirebase("loop", false);
 
     // Stop calibration timed runs exactly by elapsed time.
@@ -5840,6 +6003,7 @@ void loop() {
     // Consume a completed emulator result in loopTask. The HTTPS request itself
     // runs on core 0. During its TLS reservation/cooldown, all other secure
     // Firebase and Drive work remains paused to avoid overlapping SSL engines.
+    traceStage(0, "apex-emu-res");
     serviceApexEmulatorResult();
 
     static unsigned long lastTlsPauseLogMs = 0;
@@ -5861,6 +6025,7 @@ void loop() {
     // to trip the watchdog on a WiFi-but-no-internet network. This does
     // not change connectToFirebase() itself at all; it just waits for the
     // isolated internetCheckTask (above) to confirm a working path first.
+    traceStage(0, "fb-start");
     static unsigned long bootMs = millis();
     if (!firebaseStarted && WiFi.status() == WL_CONNECTED && internetReachable &&
         (millis() - bootMs > 30000UL)) {
@@ -5877,6 +6042,7 @@ void loop() {
     }
 
     // Publish firmware version as soon as Firebase is truly ready.
+    traceStage(0, "fb-fwver");
     publishFirmwareVersionIfReady(false);
 
     // Publish tank volume once per boot after Firebase is ready. Do not include
@@ -5890,6 +6056,7 @@ void loop() {
     }
 
     // Evaluate alerts once per minute. Firebase writes only happen on state changes/cooldown.
+    traceStage(0, "alerts");
     evaluateAlertState("loop", false);
 
     // Keep the dashboard responsive. Firebase SSL stream reads can block on ESP32,
@@ -5898,6 +6065,7 @@ void loop() {
     // dosing/logger/local UI alive while SSL cools down.
     // IMPORTANT: Logger and OTA are proven OK. Overnight resets were from
     // Firebase stream SSL recovery hanging long enough to trip the watchdog.
+    traceStage(0, "fb-stream");
     static unsigned long lastStreamRead = 0;
     static unsigned long lastStreamReconnectAttempt = 0;
     static unsigned long streamBackoffUntilMs = 0;
@@ -6013,6 +6181,7 @@ void loop() {
         return;
     }
 
+    traceStage(0, "dosing");
     unsigned long now = millis();
 
     // Diagnostics: each 10-minute dosing window gets one slot ID.
@@ -6056,8 +6225,7 @@ void loop() {
             } else {
                 Serial.printf("[SLOT %lu] PUMP %d no dump: bucket %.2f below threshold %.2f\n",
                               doseSlotId, i + 1, pumpBuckets[i], pumpThreshold);
-                logger.printf("[SLOT %lu] PUMP %d no dump: bucket %.2f below threshold %.2f\n",
-                                 doseSlotId, i + 1, pumpBuckets[i], pumpThreshold);
+                // flash log keeps only the combined "checking buckets" line above
             }
         }
     }
@@ -6246,6 +6414,7 @@ void loop() {
 
     // Keep Firebase water parameters fresh even when Apex is disabled or a prior
     // Firebase write failed. The mirror timestamp advances only after success.
+    traceStage(0, "fb-mirror");
     static unsigned long lastStateMirrorRetryMs = 0;
     if (now - lastStateMirrorRetryMs >= 60000UL) {
         lastStateMirrorRetryMs = now;
@@ -6254,6 +6423,7 @@ void loop() {
         }
     }
 
+    traceStage(0, "ai-hourly");
     static unsigned long lastAIUpdate = 0;
     if (now - lastAIUpdate >= 3600000UL) {
         lastAIUpdate = now;
@@ -6264,6 +6434,10 @@ void loop() {
         logger.println(lightState ? "true" : "false");
         Serial.printf("[AI] Calculating plan for %.1fL volume...\n", TANK_VOLUME_L);
         logger.printf("[AI] Calculating plan for %.1fL volume...\n", TANK_VOLUME_L);
+        logger.printf("[HEALTH] up=%lus heap=%u minHeap=%u maxAlloc=%u wifi=%d internet=%d estop=%d alk=%.2f ca=%.0f mg=%.0f ph=%.2f\n",
+                      millis() / 1000UL, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
+                      (unsigned)ESP.getMaxAllocHeap(), (int)WiFi.status(), (int)internetReachable,
+                      (int)emergencyStop, currentAlk, currentCa, currentMg, currentPh);
 
         // Use live Apex chemistry when available. The old code always used
         // lastLocalTest here; that stale pH/Ca created bogus NaOH/CaCl2 plans
@@ -6298,6 +6472,7 @@ void loop() {
                       daysSinceLastManualTest(), recommendedManualTestIntervalDays(), manualTestGoverningMaturity());
     }
 
+    traceStage(0, "apex-poll");
     static unsigned long lastApexPull = 0;
     // Added 2026-09-11: real diagnostic, not a fix -- after ruling out
     // four separate hypotheses for a confirmed real gap (a genuine
@@ -6327,10 +6502,6 @@ void loop() {
                       apexEnabled, useApexLogEmulatorForThisDevice(),
                       millis() - lastApexPull,
                       apexEnabled && !useApexLogEmulatorForThisDevice());
-        logger.printf("APEX POLL GATE CHECK: apexEnabled=%d emulatorForDevice=%d msSinceLastPull=%lu willPoll=%d\n",
-                      apexEnabled, useApexLogEmulatorForThisDevice(),
-                      millis() - lastApexPull,
-                      apexEnabled && !useApexLogEmulatorForThisDevice());
     }
     if (apexEnabled && !useApexLogEmulatorForThisDevice() &&
         (millis() - lastApexPull > 300000UL)) {
@@ -6338,6 +6509,7 @@ void loop() {
         syncAllTruths();
     }
 
+    traceStage(0, "safety-chk");
     if (currentTempF > 84.0f && !emergencyStop) {
         triggerEmergencyStop(
             "Local temperature exceeded 84.0 F (reading=" + String(currentTempF, 2) + " F)",
@@ -6352,6 +6524,7 @@ void loop() {
         );
     }
 
+    traceStage(0, "stats");
     // 1. UPDATE AVERAGES (Every 5 mins)
     static unsigned long lastAvgUpdate = 0;
     if (millis() - lastAvgUpdate > 300000UL) {
@@ -6379,10 +6552,10 @@ void loop() {
             logger.println("[STATS] skipped: no valid Alk/pH yet");
         } else {
             Serial.println("[STATS] no new chemistry measurement; learner history unchanged");
-            logger.println("[STATS] no new chemistry measurement; learner history unchanged");
         }
     }
 
+    traceStage(0, "midnight");
     // 2. MIDNIGHT PUSH
     struct tm timeinfo;
     if (getLocalTime(&timeinfo, 10)) {

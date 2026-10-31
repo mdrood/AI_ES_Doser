@@ -1,6 +1,8 @@
 #include "logger.h"
 #include <time.h>
 #include <stdarg.h>
+#include <esp_attr.h>
+#include <esp_system.h>
 
 Logger logger;
 
@@ -24,6 +26,109 @@ static const uint16_t LOGGER_HTTP_TIMEOUT_MS = 8000;
 // immediately since _uploadNextQueuedFile() now prefers these first.
 static const uint8_t LOGGER_MAX_BOOT_FILES = 3;
 
+
+// ===========================================================================
+// Stage trace (reset diagnosis)
+// ===========================================================================
+struct TraceSlot {
+  char name[20];
+  uint32_t startMs;
+};
+struct TraceRec {
+  uint32_t magicA;
+  TraceSlot slot[2];
+  uint32_t aliveMs;
+  uint32_t magicB;
+};
+static const uint32_t TRACE_MAGIC_A = 0x54524331UL;
+static const uint32_t TRACE_MAGIC_B = 0xABAD1234UL;
+static RTC_NOINIT_ATTR TraceRec g_trace;
+static volatile bool g_traceReady = false;
+
+static bool traceValid(const TraceRec& r) {
+  return r.magicA == TRACE_MAGIC_A && r.magicB == TRACE_MAGIC_B;
+}
+
+void traceStage(uint8_t slot, const char* name) {
+  if (slot > 1 || !g_traceReady) return;
+  g_trace.slot[slot].startMs = millis();
+  strlcpy(g_trace.slot[slot].name, name ? name : "?", sizeof(g_trace.slot[slot].name));
+}
+
+String traceTakePreviousBootSummary() {
+  String out = "";
+  if (traceValid(g_trace)) {
+    TraceRec prev = g_trace;   // copy before we reinitialise
+    const char* labels[2] = {"loop", "upload"};
+    out = "PREVIOUS RUN last stages:";
+    for (int i = 0; i < 2; i++) {
+      prev.slot[i].name[sizeof(prev.slot[i].name) - 1] = 0;
+      bool idle = (prev.slot[i].name[0] == 0) || strcmp(prev.slot[i].name, "idle") == 0;
+      out += " ";
+      out += labels[i];
+      out += "=";
+      if (idle) {
+        out += "idle";
+      } else {
+        uint32_t ranMs = (prev.aliveMs >= prev.slot[i].startMs) ? (prev.aliveMs - prev.slot[i].startMs) : 0;
+        out += String(prev.slot[i].name) + "(running>=" + String((unsigned long)(ranMs / 1000UL)) + "s)";
+      }
+    }
+    out += " lastAliveUptime=" + String((unsigned long)(prev.aliveMs / 1000UL)) + "s";
+  } else {
+    out = "PREVIOUS RUN last stages: unavailable (power loss or first boot)";
+  }
+  memset(&g_trace, 0, sizeof(g_trace));
+  g_trace.magicA = TRACE_MAGIC_A;
+  g_trace.magicB = TRACE_MAGIC_B;
+  g_trace.aliveMs = millis();
+  g_traceReady = true;
+  return out;
+}
+
+static void traceWatcherTask(void* arg) {
+  (void)arg;
+  uint32_t reportedStart[2] = {0, 0};
+  const uint32_t warnMs[2] = {12000UL, 45000UL};
+  const char* labels[2] = {"loop", "upload"};
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    uint32_t now = millis();
+    g_trace.aliveMs = now;
+    for (int i = 0; i < 2; i++) {
+      TraceSlot s = g_trace.slot[i];
+      s.name[sizeof(s.name) - 1] = 0;
+      if (s.name[0] == 0 || strcmp(s.name, "idle") == 0) continue;
+      uint32_t ran = now - s.startMs;
+      if (ran >= warnMs[i] && reportedStart[i] != s.startMs) {
+        reportedStart[i] = s.startMs;
+        Serial.printf("STUCK: %s task in stage '%s' for %lu s (uptime %lu s, heap %u, minHeap %u)\n",
+                      labels[i], s.name, (unsigned long)(ran / 1000UL),
+                      (unsigned long)(now / 1000UL), (unsigned)ESP.getFreeHeap(),
+                      (unsigned)ESP.getMinFreeHeap());
+        logger.printf("STUCK: %s task in stage '%s' for %lu s (uptime %lu s, heap %u, minHeap %u)\n",
+                      labels[i], s.name, (unsigned long)(ran / 1000UL),
+                      (unsigned long)(now / 1000UL), (unsigned)ESP.getFreeHeap(),
+                      (unsigned)ESP.getMinFreeHeap());
+      }
+    }
+  }
+}
+
+void traceStartWatcher() {
+  static bool started = false;
+  if (started) return;
+  started = true;
+  // Priority 2 on core 0: runs even if loopTask is stuck, and never waits on it.
+  xTaskCreatePinnedToCore(traceWatcherTask, "traceWatch", 3072, nullptr, 2, nullptr, 0);
+}
+
+// Shared with main.cpp: while true, main.cpp's secure-connection gate
+// (apexTlsReservedOrCoolingDown) reports busy so Firebase/Apex TLS work
+// never overlaps the upload task's TLS session.
+extern volatile bool loggerTlsActive;
+extern volatile unsigned long apexTlsCooldownUntilMs;
+
 static void loggerStatus(const String& message) {
   Serial.println(message);
   WebSerial.println(message);
@@ -36,6 +141,7 @@ Logger::Logger()
     _enabled(false),
     _fsReady(false),
     _uploadBusy(false),
+    _uploadTaskActive(false),
     _failedPath(""),
     _failedCount(0),
     _bootRecordPath("") {}
@@ -355,6 +461,7 @@ String Logger::_findOldestQueuedFile() {
 
 void Logger::_enforceQueueLimit() {
   if (!_fsReady) return;
+  if (_uploadTaskActive) return;   // never delete files while the upload task reads one
 
   while (true) {
     uint8_t queuedCount = 0;
@@ -427,6 +534,7 @@ String Logger::_findOldestBootFile() {
 }
 
 void Logger::_enforceBootFileLimit() {
+  if (_uploadTaskActive) return;
   if (!_fsReady) return;
 
   while (true) {
@@ -731,7 +839,7 @@ void Logger::loop() {
                   _uploadBusy ? 1 : 0);
   }
 
-  if (_uploadBusy) return;
+  if (_uploadBusy || _uploadTaskActive) return;
 
   if ((uint32_t)(now - _lastUploadAttemptMs) < _uploadEveryMs) {
     return;
@@ -760,7 +868,9 @@ void Logger::loop() {
   extern volatile bool internetReachable;
 
   if (WiFi.status() == WL_CONNECTED && internetReachable) {
-    _uploadNextQueuedFile();
+    // The upload runs on its own task so a slow or dead connection can never
+    // block (or watchdog-reset) the main loop that runs the pumps.
+    _startUploadTask();
   } else if (WiFi.status() != WL_CONNECTED) {
     loggerStatus("LOGGER: WiFi unavailable; queued files retained.");
   } else {
@@ -768,4 +878,43 @@ void Logger::loop() {
   }
 
   _enforceQueueLimit();
+}
+
+// ---------------------------------------------------------------------------
+// Upload on a separate task. loopTask returns immediately.
+// ---------------------------------------------------------------------------
+void Logger::_uploadTaskEntry(void* arg) {
+  Logger* self = static_cast<Logger*>(arg);
+
+  traceStage(1, "log-upload");
+  self->_uploadNextQueuedFile();
+  traceStage(1, "idle");
+
+  // BearSSL/mbedTLS cleanup can continue briefly after the client closes.
+  unsigned long until = millis() + 5000UL;
+  if ((long)(until - apexTlsCooldownUntilMs) > 0) apexTlsCooldownUntilMs = until;
+  loggerTlsActive = false;
+  self->_uploadTaskActive = false;
+  vTaskDelete(nullptr);
+}
+
+void Logger::_startUploadTask() {
+  if (_uploadTaskActive || _uploadBusy) return;
+
+  // A TLS session needs tens of KB of contiguous heap. Skip this slot rather
+  // than risk starving the rest of the firmware.
+  if (ESP.getMaxAllocHeap() < 45000) {
+    loggerStatus("LOGGER: heap too low for upload; skipped this slot (maxAlloc=" +
+                 String((unsigned)ESP.getMaxAllocHeap()) + ")");
+    return;
+  }
+
+  _uploadTaskActive = true;
+  loggerTlsActive = true;
+  BaseType_t ok = xTaskCreatePinnedToCore(_uploadTaskEntry, "logUpload", 12288, this, 1, nullptr, 0);
+  if (ok != pdPASS) {
+    loggerTlsActive = false;
+    _uploadTaskActive = false;
+    loggerStatus("LOGGER: could not start upload task; skipped this slot.");
+  }
 }

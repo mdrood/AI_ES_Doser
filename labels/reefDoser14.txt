@@ -3,8 +3,8 @@ AIDoser
 Device ID: reefDoser14
 Serial Label: AIES-0014
 Claim Code: NMDN-PLLH
-MAC Address: E0:8C:FE:C2:63:B0
-Chip ID: B063C2FE8CE0
+MAC Address: E0:8C:FE:C2:63:8C
+Chip ID: 8C63C2FE8CE0
 
 Setup:
 https://aiesdoser.web.app/setup
