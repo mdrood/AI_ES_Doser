@@ -282,5 +282,19 @@
         "firebaseUid": "35FKHJiv71ZYvIDXy9T6VEm2H0g2",
         "alkDemandBootstrapEnabled": false,
         "alkDemandBootstrapDkhDay": 0.0
+    },
+    "reefDoserT": {
+        "customer": "Test Ties",
+        "label": "AIES-T0001",
+        "deviceId": "reefDoserT",
+        "firmwareVersion": "T-1.0.0",
+        "chipId": "7C63C2FE8CE0",
+        "macAddress": "E0:8C:FE:C2:63:7C",
+        "board": "vintlabs-devkit-v1",
+        "otaJsonName": "reefDoserT.json",
+        "otaBinName": "reefDoserT.bin",
+        "firebasePublic": "C:/Users/mdroo/OneDrive/Firebase/aiesdoser/public",
+        "burnInStatus": "RUNNING",
+        "burnInStartedAt": "2026-10-31T08:35:39"
     }
 }

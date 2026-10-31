@@ -34,7 +34,10 @@
         "alkDemandBootstrapEnabled": true,
         "alkDemandBootstrapDkhDay": 0.73,
         "apexEmulatorTestEnabled": true,
-        "firebasePasswordPending": ""
+        "firebasePasswordPending": "",
+        "claimCode": "NMDN-PLLH",
+        "claimBatch": "BATCH-20260714",
+        "claimSequence": 11
     },
     "reefDoser2": {
         "customer": "Eric Rood",
@@ -192,7 +195,7 @@
         "customer": "Burn-In Pending",
         "label": "AIES-00008",
         "deviceId": "reefDoser8",
-        "firmwareVersion": "P-1.1.42",
+        "firmwareVersion": "T-0.0.3",
         "chipId": "101FC1FE8CE0",
         "macAddress": "E0:8C:FE:C1:1F:10",
         "board": "vintlabs-devkit-v1",
