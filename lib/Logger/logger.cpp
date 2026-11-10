@@ -16,7 +16,8 @@ Logger logger;
 static const uint32_t LOGGER_FORCED_UPLOAD_EVERY_MS = 30UL * 60UL * 1000UL;
 static const size_t LOGGER_MAX_SAFE_GET_BYTES = 4UL * 1024UL;
 static const uint8_t LOGGER_MAX_QUEUED_FILES = 5;
-static const uint8_t LOGGER_MAX_FAILED_RETRIES = 2;
+// Failures due to network/TLS exhaustion must never delete evidence.
+static const uint8_t LOGGER_MAX_FAILED_RETRIES = 2; // diagnostic threshold only
 static const uint16_t LOGGER_HTTP_TIMEOUT_MS = 8000;
 
 // Boot-record files ("bootrec_*.log") are a separate, small namespace from
@@ -86,6 +87,8 @@ String traceTakePreviousBootSummary() {
   return out;
 }
 
+extern bool otaInProgress;   // main.cpp
+
 static void traceWatcherTask(void* arg) {
   (void)arg;
   uint32_t reportedStart[2] = {0, 0};
@@ -99,7 +102,17 @@ static void traceWatcherTask(void* arg) {
       TraceSlot s = g_trace.slot[i];
       s.name[sizeof(s.name) - 1] = 0;
       if (s.name[0] == 0 || strcmp(s.name, "idle") == 0) continue;
-      uint32_t ran = now - s.startMs;
+      // The loop task can enter a new stage between the millis() sample above
+      // and this copy, making startMs a few ms NEWER than 'now'. Unsigned
+      // subtraction then wraps to ~4294967 s and a false "STUCK" report fires.
+      // Skip that case; the next tick sees the true value.
+      int32_t ranSigned = (int32_t)(now - s.startMs);
+      if (ranSigned < 0) continue;
+      uint32_t ran = (uint32_t)ranSigned;
+      // A long OTA download is normal and writes flash itself; do not add
+      // log/flash writes of our own while it runs. The RTC stage record is
+      // still updated, so a reset during OTA is still named at next boot.
+      if (otaInProgress) continue;
       if (ran >= warnMs[i] && reportedStart[i] != s.startMs) {
         reportedStart[i] = s.startMs;
         Serial.printf("STUCK: %s task in stage '%s' for %lu s (uptime %lu s, heap %u, minHeap %u)\n",
@@ -120,7 +133,10 @@ void traceStartWatcher() {
   if (started) return;
   started = true;
   // Priority 2 on core 0: runs even if loopTask is stuck, and never waits on it.
-  xTaskCreatePinnedToCore(traceWatcherTask, "traceWatch", 3072, nullptr, 2, nullptr, 0);
+  // 6 KB stack: the STUCK report path calls Serial/WebSerial/logger.printf
+  // (LittleFS file write), which overflowed the old 3 KB and caused a
+  // "Stack canary watchpoint triggered (traceWatch)" panic.
+  xTaskCreatePinnedToCore(traceWatcherTask, "traceWatch", 6144, nullptr, 2, nullptr, 0);
 }
 
 // Shared with main.cpp: while true, main.cpp's secure-connection gate
@@ -129,9 +145,20 @@ void traceStartWatcher() {
 extern volatile bool loggerTlsActive;
 extern volatile unsigned long apexTlsCooldownUntilMs;
 
+// P-3.0.28: WebSerial (the async web socket behind the browser console) is not
+// safe to write from two tasks at once. The log upload runs on its own task and
+// prints status lines while loop() prints too, and 3 of the 4 customer-unit
+// panics so far were 5-14 s into a log upload. Only the main (loop) task now
+// writes to WebSerial; any other task still writes to Serial and the log file,
+// so nothing is lost from the uploaded logs.
+static TaskHandle_t g_loggerMainTask = nullptr;   // set in Logger::begin() (runs in setup(), i.e. loopTask)
+static inline bool webSerialAllowedHere() {
+  return g_loggerMainTask == nullptr || xTaskGetCurrentTaskHandle() == g_loggerMainTask;
+}
+
 static void loggerStatus(const String& message) {
   Serial.println(message);
-  WebSerial.println(message);
+  if (webSerialAllowedHere()) WebSerial.println(message);
 }
 
 Logger::Logger()
@@ -159,6 +186,7 @@ bool Logger::begin(const String& deviceId,
                    const String& apiKey,
                    uint32_t uploadEveryMs,
                    size_t rotateBytes) {
+  g_loggerMainTask = xTaskGetCurrentTaskHandle();
   _deviceId = deviceId;
   _appsScriptUrl = appsScriptUrl;
   _apiKey = apiKey;
@@ -170,7 +198,12 @@ bool Logger::begin(const String& deviceId,
   // The current Apps Script receives the full log in a GET URL.
   // Force 4 KB files so URL encoding stays within a safe range.
   (void)rotateBytes;
-  _rotateBytes = LOGGER_MAX_SAFE_GET_BYTES;
+  // Rotate BELOW the upload limit. A chunk is rotated once it has reached this
+  // size, so it ends up this size plus whatever the last write added. Rotating
+  // at exactly the upload limit produced 4114-4162 byte chunks, which
+  // _uploadOneFile() then discarded as "unusable" (> LOGGER_MAX_SAFE_GET_BYTES):
+  // ordinary log chunks could never be uploaded, only small boot records.
+  _rotateBytes = LOGGER_MAX_SAFE_GET_BYTES - 1024;
 
   _enabled = true;
   _uploadBusy = false;
@@ -233,25 +266,64 @@ String Logger::_queuePath(uint32_t stamp) const {
   return "/logs/queued_" + String(stamp) + ".log";
 }
 
+// BEGIN seq-helper
+// File names carry a zero-padded sequence number so that plain text ordering
+// IS chronological ordering, and the number continues from the highest one
+// already on flash so the order also survives reboots. (The old names used
+// uptime seconds: "queued_18_..." sorted before "queued_9_...", and every
+// reboot restarted at zero, so the NEWEST file was deleted as "oldest".)
+// Old-style names ("queued_<digit>...") never match the new prefix and sort
+// before it, so any leftovers are treated as oldest and drain out first.
+static uint32_t nextFileSeq(const char* prefix, uint32_t& counter, bool& inited) {
+  if (!inited) {
+    inited = true;
+    uint32_t maxSeen = 0;
+    bool any = false;
+    size_t plen = strlen(prefix);
+
+    File root = LittleFS.open("/logs");
+    if (root && root.isDirectory()) {
+      File f = root.openNextFile();
+      while (f) {
+        String p = f.path();
+        f.close();
+        int at = p.indexOf(prefix);
+        if (at >= 0 && p.endsWith(".log")) {
+          uint32_t n = (uint32_t)strtoul(p.c_str() + at + plen, nullptr, 10);
+          if (!any || n > maxSeen) maxSeen = n;
+          any = true;
+        }
+        f = root.openNextFile();
+      }
+      root.close();
+    }
+    if (any) counter = maxSeen + 1;
+  }
+  return counter++;
+}
+// END seq-helper
+
 String Logger::_nextQueuePath() const {
   static uint32_t counter = 0;
+  static bool inited = false;
 
-  return "/logs/queued_" +
-         String((uint32_t)(millis() / 1000UL)) + "_" +
-         String((uint32_t)(millis() & 0xFFFFUL)) + "_" +
-         String(counter++) + ".log";
+  uint32_t seq = nextFileSeq("queued_s", counter, inited);
+  char buf[40];
+  snprintf(buf, sizeof(buf), "/logs/queued_s%08lu.log", (unsigned long)seq);
+  return String(buf);
 }
 
 String Logger::_nextBootRecordPath() const {
   static uint32_t counter = 0;
+  static bool inited = false;
 
   // Separate "bootrec_" prefix keeps this out of every "queued_" scan in
   // _findOldestQueuedFile()/_enforceQueueLimit() -- it is never counted,
   // never evicted, and never picked up by the ordinary upload path.
-  return "/logs/bootrec_" +
-         String((uint32_t)(millis() / 1000UL)) + "_" +
-         String((uint32_t)(millis() & 0xFFFFUL)) + "_" +
-         String(counter++) + ".log";
+  uint32_t seq = nextFileSeq("bootrec_s", counter, inited);
+  char buf[40];
+  snprintf(buf, sizeof(buf), "/logs/bootrec_s%08lu.log", (unsigned long)seq);
+  return String(buf);
 }
 
 String Logger::_timestampPrefix() const {
@@ -328,7 +400,7 @@ void Logger::log(const char* msg) {
 void Logger::logBootRecord(const String& line) {
   // Always echo locally, same as every other logger output path.
   Serial.println(line);
-  WebSerial.println(line);
+  if (webSerialAllowedHere()) WebSerial.println(line);
 
   if (!_enabled || !_fsReady) return;
 
@@ -359,12 +431,13 @@ void Logger::logBootRecord(const String& line) {
 }
 
 void Logger::_writeRaw(const String& text, bool addNewline) {
+  const bool webOk = webSerialAllowedHere();
   if (addNewline) {
     Serial.println(text);
-    WebSerial.println(text);
+    if (webOk) WebSerial.println(text);
   } else {
     Serial.print(text);
-    WebSerial.print(text);
+    if (webOk) WebSerial.print(text);
   }
 
   if (!_enabled || !_fsReady) return;
@@ -699,9 +772,7 @@ bool Logger::_uploadOneFile(const String& path) {
                  String(LOGGER_MAX_FAILED_RETRIES));
 
     if (failures >= LOGGER_MAX_FAILED_RETRIES) {
-      _clearFailure(path);
-      LittleFS.remove(path);
-      loggerStatus("LOGGER: dropped file after repeated memory failures " + path);
+      loggerStatus("LOGGER: memory failure; file retained for later retry " + path);
     }
 
     _uploadBusy = false;
@@ -763,11 +834,7 @@ bool Logger::_uploadOneFile(const String& path) {
     uint8_t failures = _registerFailure(path);
 
     if (failures >= LOGGER_MAX_FAILED_RETRIES) {
-      _clearFailure(path);
-      LittleFS.remove(path);
-
-      loggerStatus("LOGGER: abandoned stuck file after " +
-                   String(failures) + " failures: " + path);
+      loggerStatus("LOGGER: repeated network failure; queued file retained " + path);
     } else {
       loggerStatus("LOGGER: file retained for one later retry; failure " +
                    String(failures) + "/" +
@@ -903,8 +970,9 @@ void Logger::_startUploadTask() {
 
   // A TLS session needs tens of KB of contiguous heap. Skip this slot rather
   // than risk starving the rest of the firmware.
-  if (ESP.getMaxAllocHeap() < 45000) {
-    loggerStatus("LOGGER: heap too low for upload; skipped this slot (maxAlloc=" +
+  if (ESP.getMaxAllocHeap() < 75000 || ESP.getFreeHeap() < 110000) {
+    loggerStatus("LOGGER: insufficient TLS headroom; upload deferred (free=" +
+                 String((unsigned)ESP.getFreeHeap()) + ", maxAlloc=" +
                  String((unsigned)ESP.getMaxAllocHeap()) + ")");
     return;
   }

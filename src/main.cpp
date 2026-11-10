@@ -4,6 +4,8 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <WiFi.h>
+#include "lwip/dns.h"        // P-3.0.30: backup DNS servers + DNS server readback
+#include "lwip/ip_addr.h"
 #include <ESPmDNS.h>
 #include <WebServer.h>
 #include <Preferences.h>
@@ -20,6 +22,7 @@
 #include "ChemicalPresets.h"
 #include "StateMachine.h"
 #include "Provisioner.h"
+#include "WifiRecovery.h"
 #include "logger.h"
 #include <EEPROM.h>
 
@@ -398,6 +401,48 @@ bool serviceApexEmulatorResult();
 // itself safe in isolation; it prevents it from ever running until a
 // working path to the internet has already been confirmed.
 volatile bool internetReachable = false;
+volatile unsigned long internetOkMs = 0;   // P-3.0.29: last time BOTH googleapis and the Firebase host resolved
+
+// P-3.0.30: DNS self-heal state, shared between the isolated check task and loop().
+// Bench logs 2026-11-09/10 (reefDoserT, two nights in a row): after ~3 h the ESP32 could
+// no longer resolve ANY name for ~40 min (router DNS fine, rest of the house fine) and
+// only a reset cleared it. Escalation, all driven from the check task so loopTask never
+// blocks on it:
+//   stage 1 (3 min down)  : re-apply DNS servers (router's + 1.1.1.1 + 8.8.8.8 as backups)
+//                           and resolve a different name to flush stale resolver state
+//   stage 2 (6 min down)  : drop the WiFi association; wifiRecoveryTick() reconnects it
+//   stage 3 (30 min down) : request one clean planned restart (loop() performs it only
+//                           when no pump is running and no OTA is in progress)
+volatile unsigned long dnsDownSinceMs = 0;      // 0 = DNS fine
+volatile uint8_t dnsHealStage = 0;
+volatile bool dnsRestartRequested = false;
+static const unsigned long DNS_HEAL_STAGE1_MS = 180000UL;
+static const unsigned long DNS_HEAL_STAGE2_MS = 360000UL;
+static const unsigned long DNS_HEAL_STAGE3_MS = 1800000UL;
+
+static void logDnsServers(const char* tag) {
+    String line = String("DNS SERVERS [") + tag + "]:";
+    for (int k = 0; k < DNS_MAX_SERVERS; k++) {
+        const ip_addr_t* a = dns_getserver((u8_t)k);
+        line += " ";
+        line += String(k);
+        line += "=";
+        line += (a ? String(ipaddr_ntoa(a)) : String("none"));
+    }
+    Serial.println(line);
+    logger.println(line);
+}
+
+// Slot 0 stays whatever DHCP gave us (the router). Slots 1 and 2 are public backups.
+// lwIP ignores slots >= DNS_MAX_SERVERS, so this is safe on any build.
+static void applyBackupDnsServers(const char* tag) {
+    ip_addr_t d;
+    IP_ADDR4(&d, 1, 1, 1, 1);
+    dns_setserver(1, &d);
+    IP_ADDR4(&d, 8, 8, 8, 8);
+    dns_setserver(2, &d);
+    logDnsServers(tag);
+}
 
 void internetCheckTask(void* parameter) {
     (void)parameter;
@@ -409,7 +454,59 @@ void internetCheckTask(void* parameter) {
             // "the network path Firebase needs is actually up," not just
             // "WiFi is associated to the router."
             bool ok = WiFi.hostByName("www.googleapis.com", resolvedIp);
+            // P-3.0.29: Firebase uses a different hostname. Bench log 2026-11-09 showed
+            // googleapis resolving while aiesdoser-default-rtdb.firebaseio.com failed, so
+            // the old check said "up" while Firebase calls were stalling loopTask.
+            if (ok) ok = WiFi.hostByName("aiesdoser-default-rtdb.firebaseio.com", resolvedIp);
+            bool wasReachable = internetReachable;
             internetReachable = ok;
+            if (ok) {
+                internetOkMs = millis();
+                if (dnsDownSinceMs != 0) {
+                    unsigned long downS = (millis() - dnsDownSinceMs) / 1000UL;
+                    Serial.printf("FIREBASE RESUMED: DNS is back after %lu s (heal stage reached: %u).\n", downS, (unsigned)dnsHealStage);
+                    logger.printf("FIREBASE RESUMED: DNS is back after %lu s (heal stage reached: %u).\n", downS, (unsigned)dnsHealStage);
+                }
+                dnsDownSinceMs = 0;
+                dnsHealStage = 0;
+            } else {
+                unsigned long nowMs = millis();
+                if (dnsDownSinceMs == 0) {
+                    dnsDownSinceMs = nowMs ? nowMs : 1;
+                    if (wasReachable || internetOkMs != 0) {
+                        Serial.println("FIREBASE PAUSED: DNS lookups failing; Firebase calls are skipped until they work again. Local dosing is unaffected.");
+                        logger.println("FIREBASE PAUSED: DNS lookups failing; Firebase calls are skipped until they work again. Local dosing is unaffected.");
+                    }
+                }
+                unsigned long downMs = nowMs - dnsDownSinceMs;
+                Serial.printf("DNS DOWN for %lu s (heal stage %u)\n", downMs / 1000UL, (unsigned)dnsHealStage);
+                logger.printf("DNS DOWN for %lu s (heal stage %u)\n", downMs / 1000UL, (unsigned)dnsHealStage);
+
+                if (dnsHealStage < 1 && downMs >= DNS_HEAL_STAGE1_MS) {
+                    dnsHealStage = 1;
+                    Serial.println("DNS HEAL stage 1: re-applying DNS servers (router + 1.1.1.1 + 8.8.8.8) and resolving another name.");
+                    logger.println("DNS HEAL stage 1: re-applying DNS servers (router + 1.1.1.1 + 8.8.8.8) and resolving another name.");
+                    IPAddress mainDns = WiFi.dnsIP(0);
+                    if ((uint32_t)mainDns != 0) {
+                        ip_addr_t m;
+                        IP_ADDR4(&m, mainDns[0], mainDns[1], mainDns[2], mainDns[3]);
+                        dns_setserver(0, &m);
+                    }
+                    applyBackupDnsServers("heal-1");
+                    IPAddress other;
+                    WiFi.hostByName("example.com", other);   // result ignored: flushes a stale resolver state
+                } else if (dnsHealStage < 2 && downMs >= DNS_HEAL_STAGE2_MS) {
+                    dnsHealStage = 2;
+                    Serial.println("DNS HEAL stage 2: dropping the WiFi association so it reconnects with a fresh DHCP lease and resolver.");
+                    logger.println("DNS HEAL stage 2: dropping the WiFi association so it reconnects with a fresh DHCP lease and resolver.");
+                    WiFi.disconnect(false, false);   // wifiRecoveryTick() in loop() reconnects within ~30 s
+                } else if (dnsHealStage < 3 && downMs >= DNS_HEAL_STAGE3_MS) {
+                    dnsHealStage = 3;
+                    Serial.println("DNS HEAL stage 3: DNS still dead after 30 min; requesting one clean planned restart when no pump is running.");
+                    logger.println("DNS HEAL stage 3: DNS still dead after 30 min; requesting one clean planned restart when no pump is running.");
+                    dnsRestartRequested = true;
+                }
+            }
         } else {
             internetReachable = false;
         }
@@ -424,10 +521,9 @@ void internetCheckTask(void* parameter) {
         // would; a DNS lookup retried this often, each attempt taking
         // ~20s per the observed logs, can still contend with the web
         // server's own ability to accept/answer HTTP requests on a
-        // different task. 3 minutes is a large enough gap to stop that
-        // near-constant contention while offline, while still recovering
-        // reasonably quickly once internet actually returns.
-        vTaskDelay(pdMS_TO_TICKS(internetReachable ? 60000UL : 180000UL));
+        // different task. 1 minute while down is a compromise now that the
+        // heal stages above depend on seeing failures promptly.
+        vTaskDelay(pdMS_TO_TICKS(internetReachable ? 30000UL : 60000UL));
     }
 }
 
@@ -793,6 +889,7 @@ void armPumpRuntimeDeadlineForMl(int pumpIndex, float ml, const char* source) {
 // Centralized emergency-stop path. Every automatic or operator-triggered stop
 // should go through this function so the persistent log records the first cause.
 bool publishAlertState(const String& level, const String& code, const String& message, bool active, const char* source, bool force);
+static bool firebaseNetOk();   // P-3.0.30: defined further down, used by triggerEmergencyStop()
 
 // Emergency stop is now saved in flash so a reset or power cycle cannot
 // silently resume dosing. Stops raised by OTA and by the Firebase-token
@@ -838,7 +935,8 @@ void triggerEmergencyStop(const String& reason, const char* source = "Safety") {
         Serial.printf("EMERGENCY STOP TRIGGERED [%s]: %s\n", source ? source : "Safety", reason.c_str());
         logger.printf("EMERGENCY STOP TRIGGERED [%s]: %s\n", source ? source : "Safety", reason.c_str());
 
-        if (WiFi.status() == WL_CONNECTED) {
+        // P-3.0.30: skip the mirror when DNS is dead; the stop itself (pumps off, saved to flash) is already done above.
+        if (WiFi.status() == WL_CONNECTED && firebaseNetOk()) {
             Firebase.setBool(writeFbdo, ("/devices/" + deviceID + "/state/emergencyStop").c_str(), true);
             Firebase.setString(writeFbdo, ("/devices/" + deviceID + "/state/emergencyStopReason").c_str(), reason);
         }
@@ -1053,6 +1151,219 @@ void armPumpRuntimeDeadlineMs(int pumpIndex, unsigned long requestedRunMs, const
 void armPumpRuntimeDeadlineForMl(int pumpIndex, float ml, const char* source);
 void servicePumpRuntimeSafety();
 
+// P-3.0.29: one gate for every periodic Firebase call made on loopTask. A call is
+// allowed only when WiFi is up, the isolated check task resolved BOTH hosts within the
+// last 90 s, no pump is running (NetCallWdtGuard does not widen the watchdog then),
+// no Apex TLS window is open, and a 30 KB block is free for the TLS handshake.
+// When it says no, the call is simply skipped this pass and retried on a later one.
+// P-3.0.30: firebaseNetOk() is the part that does not care about pumps. It MUST be tested
+// before Firebase.ready(): with a stream callback set, ready() itself runs the library's
+// stream-resume and token-refresh work, and each of those blocks loopTask ~14 s on a dead
+// DNS (the P-3.0.29 gate sat after ready() and so never stopped the stalls).
+static bool firebaseNetOk() {
+    if (WiFi.status() != WL_CONNECTED) return false;
+    if (!internetReachable) return false;
+    if (millis() - internetOkMs > 90000UL) return false;
+    if (apexTlsReservedOrCoolingDown()) return false;
+    if (ESP.getMaxAllocHeap() < 30000) return false;
+    return true;
+}
+
+static bool firebaseCallsAllowed() {
+    if (!firebaseNetOk()) return false;
+    if (anyDoserPumpRunning()) return false;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// P-3.0.21: network-call watchdog guard.
+//
+// Confirmed cause of the overnight TASK_WDT resets on reefDoserT/reefDoser12:
+// a short internet/DNS outage makes ONE Firebase call on loopTask block for
+// more than the 30 s watchdog window (stage 'ota-poll' or 'fb-mirror' in the
+// boot record). Firebase config timeouts do not cover DNS, and the loop cannot
+// feed the watchdog from inside a single blocked call.
+//
+// While a Firebase call runs on loopTask AND no pump is energized, the task
+// watchdog is widened to 120 s, then restored to 30 s. No pump can start while
+// loopTask is blocked (pumps are only started from loop()/handlers it runs),
+// so the only cost is a dosing slice waiting during an outage. If a pump IS
+// running, the guard does nothing and the 30 s pump-safety timeout stays.
+// A call that outlasts 120 s still resets the chip, as before.
+// ---------------------------------------------------------------------------
+// ===========================================================================
+// P-3.0.26: status button + status NeoPixel (pins chosen below), same behaviour as
+// the Quanta controller.
+//
+// Button (to GND, internal pull-up; actions fire when the button is RELEASED):
+//   hold 5-20 s  -> open the WiFi setup hotspot "AIDoser-<id>" for STATUS_BUTTON_HOTSPOT_MIN
+//                   minutes, even while WiFi is working (saved WiFi is kept).
+//   hold 20 s+   -> forget the saved WiFi (only that) and restart into first-time setup.
+// LED while the button is held: dim white (<5 s), blue (5-20 s: release now = hotspot),
+//   red blinking (20 s+: release now = forget WiFi).
+// LED otherwise: red blink = emergency stop, purple blink = firmware update running,
+//   blue blink = setup hotspot open, amber blink = clock not set yet, green breathing = OK.
+//
+// Runs in its own tiny low-priority task so the LED and the hold timing stay
+// responsive even while loop() is busy in a slow network call. The task only sets
+// request flags; loop() carries them out, so WiFi/NVS are never touched from here.
+// Nothing here changes dosing.
+// ===========================================================================
+// Pins depend on the chip. On a classic ESP32 (WROOM/WROVER) GPIO16/17 are tied to the
+// PSRAM on WROVER modules, and driving them corrupts it (panic in Firebase start, found
+// on reefDoserT with P-3.0.27), so use GPIO33 (button) and GPIO32 (NeoPixel) there.
+// On the ESP32-S3-WROOM-1-N8R8 board IO16/IO17 are free. Either can be overridden with
+// -DSTATUS_BUTTON_PIN=n -DSTATUS_LED_PIN=n in platformio.ini.
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  #ifndef STATUS_BUTTON_PIN
+  #define STATUS_BUTTON_PIN 16
+  #endif
+  #ifndef STATUS_LED_PIN
+  #define STATUS_LED_PIN 17
+  #endif
+#else
+  #ifndef STATUS_BUTTON_PIN
+  #define STATUS_BUTTON_PIN 33
+  #endif
+  #ifndef STATUS_LED_PIN
+  #define STATUS_LED_PIN 32
+  #endif
+#endif
+#ifndef STATUS_BUTTON_HOTSPOT_MIN
+#define STATUS_BUTTON_HOTSPOT_MIN 10
+#endif
+#ifndef STATUS_BUTTON_FORGET_WIFI
+#define STATUS_BUTTON_FORGET_WIFI 1      // 0 = a 20 s hold does nothing (hotspot only)
+#endif
+
+static volatile bool g_btnHotspotRequest = false;
+static volatile bool g_btnForgetWifiRequest = false;
+
+static void statusPixel(uint8_t r, uint8_t g, uint8_t b) {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+    rgbLedWrite(STATUS_LED_PIN, r, g, b);
+#else
+    neopixelWrite(STATUS_LED_PIN, r, g, b);
+#endif
+}
+
+static void statusButtonLedTask(void*) {
+    pinMode(STATUS_BUTTON_PIN, INPUT_PULLUP);
+    bool stableDown = false;
+    uint8_t diffCount = 0;
+    uint32_t downAt = 0;
+    uint32_t lastLedMs = 0;
+    for (;;) {
+        const uint32_t t = millis();
+
+        // Debounce: the level must differ from the stable state for 3 reads (60 ms).
+        const bool rawDown = (digitalRead(STATUS_BUTTON_PIN) == LOW);
+        if (rawDown != stableDown) {
+            if (++diffCount >= 3) {
+                stableDown = rawDown;
+                diffCount = 0;
+                if (stableDown) {
+                    downAt = t;
+                } else {
+                    const uint32_t held = t - downAt;
+                    downAt = 0;
+                    if (held > 20000UL) {
+#if STATUS_BUTTON_FORGET_WIFI
+                        g_btnForgetWifiRequest = true;
+#else
+                        g_btnHotspotRequest = true;
+#endif
+                    } else if (held > 5000UL) {
+                        g_btnHotspotRequest = true;
+                    }
+                }
+            }
+        } else {
+            diffCount = 0;
+        }
+
+        if (t - lastLedMs >= 50) {
+            lastLedMs = t;
+            const bool blink = ((t / 400) % 2) != 0;
+            if (stableDown && downAt) {
+                const uint32_t held = t - downAt;
+                if (held > 20000UL) statusPixel(blink ? 60 : 0, 0, 0);
+                else if (held > 5000UL) statusPixel(0, 0, 60);
+                else statusPixel(20, 20, 20);
+            } else if (otaInProgress) {
+                statusPixel(blink ? 40 : 0, 0, blink ? 40 : 0);                 // purple: firmware update
+            } else if (emergencyStop) {
+                statusPixel(blink ? 50 : 0, 0, 0);                               // red blink: dosing stopped
+            } else if (wifiRecoveryHotspotActive()) {
+                statusPixel(0, 0, blink ? 40 : 0);                               // blue blink: setup hotspot open
+            } else if (time(nullptr) < 1700000000L) {
+                statusPixel(blink ? 40 : 0, blink ? 20 : 0, 0);                  // amber blink: clock not set yet
+            } else {
+                const uint8_t k = 4 + (uint8_t)(6 * (1 + sin(t / 1000.0)));      // green breathing: all good
+                statusPixel(0, k, k / 3);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+static TaskHandle_t g_loopTaskHandle = nullptr;
+static int g_netGuardDepth = 0;
+static const uint32_t NET_GUARD_WDT_WIDE_S = 120;
+static const uint32_t NET_GUARD_WDT_NORMAL_S = 30;
+
+class NetCallWdtGuard {
+public:
+    explicit NetCallWdtGuard(const char* what)
+        : _what(what ? what : "net"), _active(false), _startMs(millis()) {
+        if (g_loopTaskHandle == nullptr || xTaskGetCurrentTaskHandle() != g_loopTaskHandle) return;
+        if (anyDoserPumpRunning()) return;
+        if (g_netGuardDepth == 0) {
+            esp_task_wdt_reset();
+            if (esp_task_wdt_init(NET_GUARD_WDT_WIDE_S, true) != ESP_OK) {
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    Serial.println("NET WDT GUARD: could not widen watchdog; guard disabled for this call.");
+                    logger.println("NET WDT GUARD: could not widen watchdog; guard disabled for this call.");
+                }
+                return;
+            }
+            static bool announced = false;
+            if (!announced) {
+                announced = true;
+                Serial.println("NET WDT GUARD: active (30s -> 120s around Firebase calls when no pump runs).");
+                logger.println("NET WDT GUARD: active (30s -> 120s around Firebase calls when no pump runs).");
+            }
+        }
+        g_netGuardDepth++;
+        _active = true;
+    }
+
+    ~NetCallWdtGuard() {
+        if (!_active) return;
+        g_netGuardDepth--;
+        if (g_netGuardDepth == 0) {
+            esp_task_wdt_reset();
+            esp_task_wdt_init(NET_GUARD_WDT_NORMAL_S, true);
+        }
+        uint32_t ranMs = (uint32_t)(millis() - _startMs);
+        if (ranMs >= 15000UL) {
+            const char* verdict = (ranMs >= 30000UL) ? " (would have tripped the 30s watchdog)" : "";
+            Serial.printf("NET WDT GUARD: '%s' took %lu ms%s\n", _what, (unsigned long)ranMs, verdict);
+            logger.printf("NET WDT GUARD: '%s' took %lu ms%s\n", _what, (unsigned long)ranMs, verdict);
+        }
+    }
+
+    NetCallWdtGuard(const NetCallWdtGuard&) = delete;
+    NetCallWdtGuard& operator=(const NetCallWdtGuard&) = delete;
+
+private:
+    const char* _what;
+    bool _active;
+    uint32_t _startMs;
+};
+
 GoogleDriveLogQueueStats collectGoogleDriveLogQueueStats() {
     GoogleDriveLogQueueStats stats;
 
@@ -1143,7 +1454,7 @@ void logGoogleDriveDiagnostics(const char* source) {
 
 bool publishLoggerHealthToFirebase(const char* source, bool force) {
     if (apexTlsReservedOrCoolingDown()) return false;
-    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !Firebase.ready()) {
+    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !firebaseNetOk() || !Firebase.ready()) {
         return false;
     }
 
@@ -1152,7 +1463,10 @@ bool publishLoggerHealthToFirebase(const char* source, bool force) {
         (nowMs - lastLoggerHealthFirebaseMs) < LOGGER_HEALTH_FIREBASE_INTERVAL_MS) {
         return false;
     }
+    if (!internetReachable) return false;   // P-3.0.21: skip while the DNS check says the internet is down
+    if (!force && !firebaseCallsAllowed()) return false;   // P-3.0.29
     lastLoggerHealthFirebaseMs = nowMs;
+    NetCallWdtGuard netGuard("logger-health");
 
     GoogleDriveLogQueueStats q = collectGoogleDriveLogQueueStats();
 
@@ -1591,12 +1905,33 @@ float applyPumpSafetyCaps(int pumpIndex, float requestedMl, const char* source) 
 
     if (capped < 0.01f) {
         const char* why = pacedThisTime ? "paced" : "dailyCap";
-        Serial.printf("PUMP SAFETY [%s]: P%d blocked (%s). requested=%.2f maxDose=%.2f dailyUsed=%.2f maxDay=%.2f pacedRemaining=%.2f\n",
-                      source ? source : "dose", pumpIndex + 1, why, requestedMl, maxDose,
-                      dailyDoseTotals[pumpIndex], getPumpMaxDayMl(pumpIndex), pacedRemaining);
-        logger.printf("PUMP SAFETY [%s]: P%d blocked (%s). requested=%.2f maxDose=%.2f dailyUsed=%.2f maxDay=%.2f pacedRemaining=%.2f\n",
-                      source ? source : "dose", pumpIndex + 1, why, requestedMl, maxDose,
-                      dailyDoseTotals[pumpIndex], getPumpMaxDayMl(pumpIndex), pacedRemaining);
+        // P-3.0.24: the scheduler re-asks every pass, so a blocked pump printed this
+        // line several times a second and flooded the remote log. The dose is blocked
+        // exactly as before; only the print is rate-limited: first block of a reason is
+        // printed at once, repeats at most once per 10 minutes with a repeat count.
+        // (Runs under DailyAccountingLock, so the statics need no extra locking.)
+        static unsigned long lastBlockedLogMs[4] = {0, 0, 0, 0};
+        static bool lastBlockedWasPaced[4] = {false, false, false, false};
+        static bool blockedEverLogged[4] = {false, false, false, false};
+        static uint32_t blockedSuppressed[4] = {0, 0, 0, 0};
+        const unsigned long nowBlockedMs = millis();
+        const bool reasonChanged = blockedEverLogged[pumpIndex] && (lastBlockedWasPaced[pumpIndex] != pacedThisTime);
+        if (!blockedEverLogged[pumpIndex] || reasonChanged ||
+            (nowBlockedMs - lastBlockedLogMs[pumpIndex]) >= 600000UL) {
+            uint32_t repeats = blockedSuppressed[pumpIndex];
+            blockedSuppressed[pumpIndex] = 0;
+            blockedEverLogged[pumpIndex] = true;
+            lastBlockedLogMs[pumpIndex] = nowBlockedMs;
+            lastBlockedWasPaced[pumpIndex] = pacedThisTime;
+            Serial.printf("PUMP SAFETY [%s]: P%d blocked (%s). requested=%.2f maxDose=%.2f dailyUsed=%.2f maxDay=%.2f pacedRemaining=%.2f repeats=%lu\n",
+                          source ? source : "dose", pumpIndex + 1, why, requestedMl, maxDose,
+                          dailyDoseTotals[pumpIndex], getPumpMaxDayMl(pumpIndex), pacedRemaining, (unsigned long)repeats);
+            logger.printf("PUMP SAFETY [%s]: P%d blocked (%s). requested=%.2f maxDose=%.2f dailyUsed=%.2f maxDay=%.2f pacedRemaining=%.2f repeats=%lu\n",
+                          source ? source : "dose", pumpIndex + 1, why, requestedMl, maxDose,
+                          dailyDoseTotals[pumpIndex], getPumpMaxDayMl(pumpIndex), pacedRemaining, (unsigned long)repeats);
+        } else {
+            blockedSuppressed[pumpIndex]++;
+        }
         return 0.0f;
     }
 
@@ -2519,6 +2854,43 @@ void runAiRecalculation(float useAlk, float useCa, float useMg, float usePh,
     bool caLearnerReady = automaticCalciumLearningEnabled && (calciumDemandStore.count >= 7);
     DosingPlanV2 plan = ai.recalculate(
         lightsOnNow, usePh);
+
+    // P-3.0.24: ALK GUARD. If the measured Alk is at or above the customer's Alk
+    // target, no alk-raising chemical may be planned at all. The engine's demand is
+    // "gap to target" (zero above target) PLUS an estimate of daily consumption, and
+    // that second part is not zeroed above target, so the plan kept dosing NaOH and
+    // Kalkwasser while Alk was already high (reefDoser12, Alk 8.48 -> 9.35, 2026-11-05/06).
+    // A chemical counts as alk-raising when its declared Alk potency is > 0 (NaOH,
+    // Kalkwasser, the alk pump). Chemicals with no Alk effect (e.g. calcium chloride)
+    // are untouched. Re-evaluated on every recalculation from the latest reading, so
+    // it releases by itself as soon as a reading is back under target.
+    {
+        static bool alkGuardWasActive = false;
+        static unsigned long alkGuardLastLogMs = 0;
+        const bool alkGuardActive = (useAlk > 0.0f && targetAlk > 0.0f && useAlk >= targetAlk);
+        if (alkGuardActive) {
+            float removedMl = 0.0f;
+            for (int c = 0; c < declaredChemicalCount && c < kMaxDeclaredChemicals && c < plan.numChemicals; c++) {
+                if (declaredChemicals[c].potencyAlkPerMl > 0.0f && plan.mlPerDay[c] > 0.0f) {
+                    removedMl += plan.mlPerDay[c];
+                    plan.mlPerDay[c] = 0.0f;
+                }
+            }
+            unsigned long nowGuardMs = millis();
+            if (!alkGuardWasActive || (removedMl > 0.0f && (nowGuardMs - alkGuardLastLogMs) >= 1800000UL)) {
+                alkGuardLastLogMs = nowGuardMs;
+                Serial.printf("ALK GUARD: Alk %.2f >= target %.2f -- alk-raising chemicals held at 0 (removed %.1f ml/day from plan).\n",
+                              useAlk, targetAlk, removedMl);
+                logger.printf("ALK GUARD: Alk %.2f >= target %.2f -- alk-raising chemicals held at 0 (removed %.1f ml/day from plan).\n",
+                              useAlk, targetAlk, removedMl);
+            }
+        } else if (alkGuardWasActive) {
+            Serial.printf("ALK GUARD: released, Alk %.2f < target %.2f.\n", useAlk, targetAlk);
+            logger.printf("ALK GUARD: released, Alk %.2f < target %.2f.\n", useAlk, targetAlk);
+        }
+        alkGuardWasActive = alkGuardActive;
+    }
+
     syncLegacyPlanFromV2(plan);
     currentPlan.active = true;
 
@@ -3188,7 +3560,8 @@ bool planPublishChangeIsSignificant(float oldVal, float newVal) {
 // once nothing else depends on the six-name shape.
 void publishAiPlanIfNeeded(const char* source, bool force) {
     if (apexTlsReservedOrCoolingDown()) return;
-    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !Firebase.ready()) return;
+    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !firebaseNetOk() || !Firebase.ready()) return;
+    NetCallWdtGuard netGuard("ai-plan");
 
     // Same computation as handleGetStatus()'s dosingMlPerDayByPump --
     // deliberately identical logic, not re-derived, so local and cloud
@@ -3391,6 +3764,35 @@ void addCurrentAiPlanToBuckets(const char* source, bool force) {
         lastAiBucketAddMs += AI_BUCKET_INTERVAL_MS;
     }
 
+    // P-3.0.24: bucket ceiling. A bucket never needs to hold more than one day of
+    // its pump's plan: the daily safety limit stops the unit from dosing faster
+    // than the plan, so anything above one day is a backlog that can never be
+    // caught up and would only be dosed late (possibly after the tank no longer
+    // needs it), and it makes the dose scheduler retry a blocked request many
+    // times a second. Only clamps down, only when the plan for that pump is > 0,
+    // and never changes the per-dose or daily safety limits.
+    {
+        float bucketCapMl[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        for (int c = 0; c < declaredChemicalCount && c < kMaxDeclaredChemicals; c++) {
+            int pumpIdx = declaredChemicals[c].pumpIndex;
+            if (pumpIdx < 0 || pumpIdx >= 4) continue;
+            if (planMlPerDayByIndex[c] > 0.0f) bucketCapMl[pumpIdx] += planMlPerDayByIndex[c];
+        }
+        static unsigned long lastBucketCapLogMs = 0;
+        for (int p = 0; p < 4; p++) {
+            if (bucketCapMl[p] > 0.0f && pumpBuckets[p] > bucketCapMl[p]) {
+                float before = pumpBuckets[p];
+                pumpBuckets[p] = bucketCapMl[p];
+                unsigned long nowLogMs = millis();
+                if (lastBucketCapLogMs == 0 || (nowLogMs - lastBucketCapLogMs) >= 3600000UL) {
+                    lastBucketCapLogMs = nowLogMs;
+                    Serial.printf("BUCKET CAP: P%d bucket %.2f -> %.2f ml (one day of plan).\n", p + 1, before, pumpBuckets[p]);
+                    logger.printf("BUCKET CAP: P%d bucket %.2f -> %.2f ml (one day of plan).\n", p + 1, before, pumpBuckets[p]);
+                }
+            }
+        }
+    }
+
     saveDosingState();
 
     Serial.printf("AI BUCKET SLICE [%s]: added=%lu plan(kalk=%.2f afr=%.2f alk=%.2f ca=%.2f naoh=%.2f mg=%.2f) buckets(P1=%.2f P2=%.2f P3=%.2f P4=%.2f)\n",
@@ -3489,6 +3891,44 @@ void prepareForOtaUpdate(const String& firmwareUrl) {
         logger.println(firmwareUrl);
     } else {
         doser.stopAllPumps();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Added 2026-10-31. Root cause of OTA failing on every device: the OTA
+// manifest/firmware download opens an HTTPS connection (TLS handshake) on
+// loopTask, whose default stack is 8 KB. A real serial capture on reefDoser13
+// showed "Stack canary watchpoint triggered (loopTask)" right after the
+// "OTA manifest URL:" line, then a reboot. The panic text goes to the USB
+// serial port only, which is why WebSerial just showed a silent reset.
+// The download now runs on its own task with a 20 KB stack; loopTask waits
+// for it (and keeps feeding the watchdog). Behaviour is otherwise identical.
+// ---------------------------------------------------------------------------
+static volatile bool otaTaskDone = false;
+static String otaTaskUrl;
+
+static void otaTaskEntry(void* arg) {
+    (void)arg;
+    traceStage(1, "ota-download");
+    ota.updateFirmware(otaTaskUrl, deviceID, BUILD_EXPECTED_MAC, BUILD_EXPECTED_CHIP);
+    traceStage(1, "idle");
+    otaTaskDone = true;     // reached only if the update did not reboot the unit
+    vTaskDelete(nullptr);
+}
+
+static void runOtaOnLargeStack(const String& url) {
+    otaTaskUrl = url;
+    otaTaskDone = false;
+    BaseType_t created = xTaskCreatePinnedToCore(otaTaskEntry, "otaTask", 20480, nullptr, 1, nullptr, 1);
+    if (created != pdPASS) {
+        Serial.println("OTA: could not start large-stack task; running on loopTask.");
+        logger.println("OTA: could not start large-stack task; running on loopTask.");
+        ota.updateFirmware(url, deviceID, BUILD_EXPECTED_MAC, BUILD_EXPECTED_CHIP);
+        return;
+    }
+    while (!otaTaskDone) {
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -3598,6 +4038,7 @@ bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
     logger.print("Starting OTA Update from: ");
     logger.println(firmwareUrl);
 
+    traceStage(0, "ota-prep");
     emergencyStopBeforeOta = emergencyStop;
     prepareForOtaUpdate(firmwareUrl);
 
@@ -3618,6 +4059,7 @@ bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
     // crash under low memory. One small, free reduction in allocation
     // pressure in exactly the place it matters most.
     static String otaCommandPath = "/devices/" + deviceID + "/commands/ota";
+    traceStage(0, "ota-delete-cmd");
     if (Firebase.deleteNode(writeFbdo, otaCommandPath.c_str())) {
         Serial.println("OTA command cleared from Firebase.");
         logger.println("OTA command cleared from Firebase.");
@@ -3672,6 +4114,7 @@ bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
     // alongside the OTA download and flash write.
     Serial.println("OTA TRANSACTION: stopping Firebase stream before download.");
     logger.println("OTA TRANSACTION: stopping Firebase stream before download.");
+    traceStage(0, "ota-endstream");
     Firebase.endStream(streamFbdo);
 
     // Reassert the physical safety state immediately before entering OTA.
@@ -3680,12 +4123,13 @@ bool handleOtaFirmwareUrl(const String& firmwareUrl, const char* source) {
     delay(100);
     yield();
 
+    traceStage(0, "ota-wait-dl");
     Serial.println("OTA TRANSACTION: exclusive OTA download/write starting now.");
     logger.println("OTA TRANSACTION: exclusive OTA download/write starting now.");
 
     // A successful OTA reboots inside updateFirmware() and never returns here.
     // If this call returns, validation/download/write failed or was rejected.
-    ota.updateFirmware(firmwareUrl, deviceID, BUILD_EXPECTED_MAC, BUILD_EXPECTED_CHIP);
+    runOtaOnLargeStack(firmwareUrl);
 
     otaInProgress = false;
     otaStartedMs = 0;
@@ -3724,11 +4168,14 @@ void serviceOtaCommandFallback() {
 
     if (pendingOtaRequested || otaInProgress) return;
     if (apexTlsReservedOrCoolingDown()) return;
-    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !Firebase.ready()) return;
+    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !firebaseNetOk() || !Firebase.ready()) return;
 
     unsigned long nowMs = millis();
     if (lastOtaPollMs != 0 && nowMs - lastOtaPollMs < OTA_FALLBACK_POLL_MS) return;
+    if (!firebaseCallsAllowed()) return;   // P-3.0.29
+    if (!internetReachable) return;   // P-3.0.21: skip while the DNS check says the internet is down
     lastOtaPollMs = nowMs;
+    NetCallWdtGuard netGuard("ota-poll");
 
     String otaPath = "/devices/" + deviceID + "/commands/ota";
     if (!Firebase.getJSON(writeFbdo, otaPath.c_str())) {
@@ -4240,10 +4687,11 @@ void loadLocalSettings() {
 
 bool publishTankVolumeToFirebase(const char* source) {
     if (apexTlsReservedOrCoolingDown()) return false;
-    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !Firebase.ready()) {
+    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !firebaseNetOk() || !Firebase.ready()) {
         return false;
     }
 
+    NetCallWdtGuard netGuard("tank-volume");
     float tankGallons = TANK_VOLUME_L / 3.78541f;
     tankGallons = roundf(tankGallons);
     String basePath = "/devices/" + deviceID;
@@ -4271,7 +4719,7 @@ bool mirrorStatusToFirebase() {
 
     // Apex can update the local dashboard before Firebase has finished its delayed startup.
     // Do not silently attempt writes until Firebase is actually ready.
-    if (!firebaseStarted || !Firebase.ready()) {
+    if (!firebaseStarted || !firebaseNetOk() || !Firebase.ready()) {
         static unsigned long lastNotReadyLog = 0;
         if (millis() - lastNotReadyLog > 30000UL) {
             lastNotReadyLog = millis();
@@ -4280,6 +4728,9 @@ bool mirrorStatusToFirebase() {
         }
         return false;
     }
+
+    if (!internetReachable) return false;   // P-3.0.21: skip while the DNS check says the internet is down
+    NetCallWdtGuard netGuard("fb-mirror");
 
     FirebaseJson stateJson;
     stateJson.set("online", true);
@@ -4413,7 +4864,7 @@ unsigned long alertRepeatMsForLevel(const String& level) {
 }
 
 bool publishAlertState(const String& level, const String& code, const String& message, bool active, const char* source, bool force) {
-    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !Firebase.ready()) return false;
+    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !firebaseNetOk() || !Firebase.ready()) return false;
 
     unsigned long nowMs = millis();
     bool changed = force ||
@@ -4425,6 +4876,8 @@ bool publishAlertState(const String& level, const String& code, const String& me
                        (nowMs - lastAlertWriteMs >= alertRepeatMsForLevel(level));
 
     if (!changed && !cooldownDue) return false;
+    if (!force && !firebaseCallsAllowed()) return false;   // P-3.0.29
+    NetCallWdtGuard netGuard("alert-state");
 
     FirebaseJson json;
     json.set("active", active);
@@ -5040,7 +5493,7 @@ void syncAllTruths() {
 
 
 void publishFirmwareVersionIfReady(bool force) {
-    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !Firebase.ready()) {
+    if (WiFi.status() != WL_CONNECTED || !firebaseStarted || !firebaseNetOk() || !Firebase.ready()) {
         return;
     }
 
@@ -5052,7 +5505,9 @@ void publishFirmwareVersionIfReady(bool force) {
         (nowMs - lastFwVersionPublishAttemptMs) < 5000UL) {
         return;
     }
+    if (!firebaseCallsAllowed()) return;   // P-3.0.29 (replaces the bench check)
     lastFwVersionPublishAttemptMs = nowMs;
+    NetCallWdtGuard netGuard("fw-version");
 
     String fwPath = "/devices/" + deviceID + "/state/fwVersion";
     String onlinePath = "/devices/" + deviceID + "/state/online";
@@ -5073,6 +5528,13 @@ void publishFirmwareVersionIfReady(bool force) {
 }
 
 void connectToFirebase() {
+    // Bench mitigation: skip SSL startup when DNS check or TLS memory is unhealthy.
+    if (WiFi.status() != WL_CONNECTED || !internetReachable ||
+        apexTlsReservedOrCoolingDown() || ESP.getMaxAllocHeap() < 30000) {
+        firebaseStarted = false;
+        return;
+    }
+    NetCallWdtGuard startupGuard("firebase-start");
     config.api_key = FIREBASE_API_KEY;
     config.database_url = FIREBASE_DB_URL;
     config.token_status_callback = tokenStatusCallback;
@@ -5376,6 +5838,7 @@ void logWifiConnectionEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
             Serial.printf("WIFI EVENT: GOT IP %s (rssi=%d)\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
             logger.printf("WIFI EVENT: GOT IP %s (rssi=%d)\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+            applyBackupDnsServers("got-ip");   // P-3.0.30
             break;
         default:
             break;
@@ -5470,7 +5933,7 @@ esp_reset_reason_t reason = esp_reset_reason();*/
         // survives watchdog resets and panics; not a full power loss.)
         logger.logBootRecord(traceTakePreviousBootSummary());
         traceStartWatcher();
-        logger.logBootRecord("BUILD: upload-task, stage-trace, estop-saved, jump-hold, alk-parse, filter-reseed");
+        logger.logBootRecord("BUILD: upload-task, stage-trace, estop-saved, jump-hold, alk-parse, filter-reseed, ota-bigstack, ota-v2, wifi-recover, net-wdt-guard, bucket-cap, block-log-limit, alk-guard, status-button-led, apex-deadline, logger-webserial-main-only, fb-call-gate, fb-host-dns-check, fb-ready-gate, dns-backup, dns-selfheal");
 
         // Restore a saved emergency stop so a reset / power cycle cannot
         // silently resume dosing.
@@ -5530,6 +5993,9 @@ if (root && root.isDirectory()) {
     // services the watchdog around long Firebase operations.
     esp_task_wdt_init(30, true);
     esp_task_wdt_add(NULL);
+    g_loopTaskHandle = xTaskGetCurrentTaskHandle();   // P-3.0.21: NetCallWdtGuard only acts on loopTask
+    // P-3.0.26: status button + NeoPixel (pins: STATUS_BUTTON_PIN / STATUS_LED_PIN). Own task; see the block above.
+    xTaskCreate(statusButtonLedTask, "statusBtnLed", 3072, nullptr, 1, nullptr);
 
     EEPROM.begin(512);
 
@@ -5696,6 +6162,7 @@ if (root && root.isDirectory()) {
     }
     // Local dashboard HTTP routes are registered in lib/WebRoutes/WebRoutes.cpp
     registerWebRoutes();
+    wifiRecoveryBegin();   // setup-hotspot routes; the hotspot itself only opens after 2 min without WiFi
 
     // Start local services BEFORE Firebase so the dashboard remains reachable even if Firebase is slow.
     server.begin();
@@ -5795,17 +6262,38 @@ void loop() {
     // here regardless of SystemState. This is what actually lets a device
     // that booted into offline/local dosing (see setup()'s WiFi block)
     // come back online on its own instead of needing a manual reboot.
-    {
-        static unsigned long lastWifiRetryMs = 0;
-        const unsigned long WIFI_RETRY_INTERVAL_MS = 30000UL; // every 30s
-        unsigned long wifiNowMs = millis();
-        if (WiFi.status() != WL_CONNECTED &&
-            (lastWifiRetryMs == 0 || wifiNowMs - lastWifiRetryMs >= WIFI_RETRY_INTERVAL_MS)) {
-            lastWifiRetryMs = wifiNowMs;
-            Serial.println("WIFI RECOVERY: not connected, attempting background reconnect...");
-            logger.println("WIFI RECOVERY: not connected, attempting background reconnect...");
-            WiFi.reconnect();
-        }
+    // Replaced by WifiRecovery.cpp: same 30 s background reconnect, plus the
+    // setup hotspot after 2 minutes without WiFi (saved credentials are never
+    // erased, dosing is never paused). See WifiRecovery.h.
+    wifiRecoveryTick();
+
+    // P-3.0.26: carry out what the status-button task requested (it only sets flags).
+    if (g_btnHotspotRequest) {
+        g_btnHotspotRequest = false;
+        Serial.printf("STATUS BUTTON: held 5 s+ -> opening setup hotspot for %d min.\n", (int)STATUS_BUTTON_HOTSPOT_MIN);
+        logger.printf("STATUS BUTTON: held 5 s+ -> opening setup hotspot for %d min.\n", (int)STATUS_BUTTON_HOTSPOT_MIN);
+        wifiRecoveryRequestHotspot(STATUS_BUTTON_HOTSPOT_MIN);
+    }
+    if (g_btnForgetWifiRequest) {
+        g_btnForgetWifiRequest = false;
+        Serial.println("STATUS BUTTON: held 20 s+ -> forgetting saved WiFi and restarting into setup. Dosing settings are kept.");
+        logger.println("STATUS BUTTON: held 20 s+ -> forgetting saved WiFi and restarting into setup. Dosing settings are kept.");
+        doser.stopAllPumps();
+        Preferences wifiForgetPrefs;
+        wifiForgetPrefs.begin("doser-settings", false);
+        wifiForgetPrefs.remove("ssid");
+        wifiForgetPrefs.remove("pass");
+        wifiForgetPrefs.end();
+        delay(300);
+        ESP.restart();
+    }
+
+    // P-3.0.30: DNS heal stage 3. Only ever acts after 30 min of continuous DNS failure, and
+    // only while no pump is running and no OTA is in progress.
+    if (dnsRestartRequested && millis() > 600000UL && !anyDoserPumpRunning() && !otaInProgress) {
+        dnsRestartRequested = false;
+        Serial.println("BENCH NETWORK: DNS still unavailable; retaining local operation without forced restart.");
+        logger.println("BENCH NETWORK: DNS still unavailable; retaining local operation without forced restart.");
     }
 
     // Fixed 2026-09-30: daily dosing-safety accounting (dailyDoseTotals[],
@@ -5849,10 +6337,12 @@ void loop() {
     // loop()" pattern already used for OTA below (a network call from
     // inside a Firebase callback risks the same nested-SSL stall that
     // pattern exists to avoid).
-    if (firebaseRefreshPending) {
+    if (firebaseRefreshPending && firebaseNetOk() &&
+        !anyDoserPumpRunning() && ESP.getMaxAllocHeap() >= 60000) {
         firebaseRefreshPending = false;
         Serial.println("FIREBASE STALE RECOVERY: token broken 5+ min, attempting Firebase.refreshToken()...");
         logger.println("FIREBASE STALE RECOVERY: token broken 5+ min, attempting Firebase.refreshToken()...");
+        NetCallWdtGuard refreshGuard("firebase-token-refresh");
         Firebase.refreshToken(&config);
         firebaseRefreshAttemptedAtMs = millis(); // read by tokenStatusCallback() on recovery -- see its declaration
     }
@@ -5866,12 +6356,13 @@ void loop() {
     // takes before its own reboot -- then restarts to force a clean re-auth
     // instead of waiting indefinitely on the SDK's own internal retry.
     if (firebaseStaleRebootPending) {
-        Serial.println("FIREBASE STALE WATCHDOG: still broken after refreshToken(); rebooting to force a clean re-auth.");
-        logger.println("FIREBASE STALE WATCHDOG: still broken after refreshToken(); rebooting to force a clean re-auth.");
-        triggerEmergencyStop("Firebase token stale too long; rebooting to recover", "FirebaseWatchdog");
-        delay(500); // let the emergency-stop log lines and pump-off state land before reset
-        ESP.restart();
+        // Network-only authentication failure is not grounds for a forced device reset.
+        // Preserve dosing safety and let the Firebase library retry when DNS returns.
+        firebaseStaleRebootPending = false;
+        Serial.println("BENCH NETWORK: Firebase token stale; no forced reboot. Awaiting recovery.");
+        logger.println("BENCH NETWORK: Firebase token stale; no forced reboot. Awaiting recovery.");
     }
+
 
     // Execute OTA outside the Firebase stream callback. This prevents nested
     // Firebase/SSL work from stalling between command receipt and manifest download.
@@ -6027,17 +6518,23 @@ void loop() {
     // isolated internetCheckTask (above) to confirm a working path first.
     traceStage(0, "fb-start");
     static unsigned long bootMs = millis();
-    if (!firebaseStarted && WiFi.status() == WL_CONNECTED && internetReachable &&
-        (millis() - bootMs > 30000UL)) {
+    static unsigned long lastFirebaseStartAttemptMs = 0;
+    if (!firebaseStarted && firebaseNetOk() && !anyDoserPumpRunning() &&
+        ESP.getMaxAllocHeap() >= 60000 &&
+        (millis() - bootMs > 30000UL) &&
+        (lastFirebaseStartAttemptMs == 0 || millis() - lastFirebaseStartAttemptMs >= 300000UL)) {
+        lastFirebaseStartAttemptMs = millis();
         firebaseStarted = true;
         Serial.println("Starting Firebase after dashboard grace period...");
         logger.println("Starting Firebase after dashboard grace period...");
         connectToFirebase();
+        if (firebaseStarted) {
         publishLoggerHealthToFirebase("firebase-start", true);
         publishAlkDemandStatusToFirebase("firebase-start", true);
         publishCalciumDemandStatusToFirebase("firebase-start", true);
         if (apexEnabled) {
             syncAllTruths();
+        }
         }
     }
 
@@ -6047,7 +6544,7 @@ void loop() {
 
     // Publish tank volume once per boot after Firebase is ready. Do not include
     // this in the recurring state mirror; volume only changes when the user saves it.
-    if (!tankVolumePublishedThisBoot && firebaseStarted && WiFi.status() == WL_CONNECTED && Firebase.ready()) {
+    if (!tankVolumePublishedThisBoot && firebaseStarted && WiFi.status() == WL_CONNECTED && firebaseCallsAllowed() && Firebase.ready()) {
         unsigned long nowMs = millis();
         if (lastTankVolumePublishAttemptMs == 0 || (nowMs - lastTankVolumePublishAttemptMs) > 30000UL) {
             lastTankVolumePublishAttemptMs = nowMs;
@@ -6078,7 +6575,7 @@ void loop() {
 
     unsigned long streamNow = millis();
 
-    if (!apexTlsReservedOrCoolingDown() && firebaseStarted && WiFi.status() == WL_CONNECTED && Firebase.ready()) {
+    if (!apexTlsReservedOrCoolingDown() && firebaseStarted && WiFi.status() == WL_CONNECTED && firebaseCallsAllowed() && Firebase.ready()) {
         // If the stream was intentionally stopped after SSL failures, do not
         // hammer reconnect. Wait for the backoff, then try exactly once.
         if (streamNeedsReconnect) {
@@ -6418,7 +6915,7 @@ void loop() {
     static unsigned long lastStateMirrorRetryMs = 0;
     if (now - lastStateMirrorRetryMs >= 60000UL) {
         lastStateMirrorRetryMs = now;
-        if (lastFirebaseMirrorMs == 0 || now - lastFirebaseMirrorMs >= FIREBASE_MIRROR_INTERVAL_MS) {
+        if ((lastFirebaseMirrorMs == 0 || now - lastFirebaseMirrorMs >= FIREBASE_MIRROR_INTERVAL_MS) && firebaseCallsAllowed()) {
             mirrorStatusToFirebase();
         }
     }
@@ -6562,7 +7059,7 @@ void loop() {
         // Use a 10-minute window so a busy SSL/Apex cycle does not miss the midnight report.
         if (timeinfo.tm_hour == 0 && timeinfo.tm_min < 10) {
             if (!reportPushedToday) {
-                if (firebaseStarted && Firebase.ready()) {
+                if (firebaseStarted && firebaseNetOk() && Firebase.ready()) {
                     pushDailyReport();
                     reportPushedToday = true;
                 } else {

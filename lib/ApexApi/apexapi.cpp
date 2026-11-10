@@ -310,9 +310,73 @@ static uint8_t  apexConsecutiveFailures = 0;
 static unsigned long apexNextPollAllowedMs = 0;
 static unsigned long apexLastProblemLogMs = 0;
 
+// ---------------------------------------------------------------------------
+// P-3.0.28: overall time limit for one Apex fetch.
+//
+// Found on reefDoserT (mock Apex that answers slowly): HTTPClient's 4 s timeout
+// restarts every time a few bytes arrive, so an Apex that trickles its answer
+// keeps http.getString() waiting for as long as it likes. A 51 s answer froze
+// loop() past the 30 s task watchdog and rebooted the controller (stage
+// 'apex-poll' / syncAllTruths). The body is now read here with a hard overall
+// deadline measured from the start of the fetch; on expiry the poll counts as
+// a failed transport (existing back-off, no second endpoint attempt).
+//
+// The reader is a template over tiny Src/Clock adapters so the exact same text
+// is host-tested against a real slow server (see test notes); on the device the
+// adapters wrap HTTPClient and millis()/delay().
+// ---------------------------------------------------------------------------
+static const uint32_t APEX_TOTAL_DEADLINE_MS = 12000;   // whole fetch: connect + headers + body
+static const size_t   APEX_MAX_BODY_BYTES    = 48 * 1024;
+
+enum ApexBodyResult { APEX_BODY_OK = 0, APEX_BODY_TIMEOUT = 1, APEX_BODY_TOO_BIG = 2 };
+
+//BEGIN_BOUNDED_READER
+template <typename Src, typename Clock, typename Out>
+static ApexBodyResult apexReadBodyBounded(Src& src, Clock& clk, long contentLen,
+                                          uint32_t startedMs, uint32_t deadlineMs,
+                                          uint32_t stallMs, Out& out) {
+  uint8_t buf[256];
+  uint32_t lastByteMs = clk.now();
+  for (;;) {
+    if (contentLen >= 0 && (long)out.length() >= contentLen) return APEX_BODY_OK;
+    const size_t avail = src.available();
+    if (avail > 0) {
+      const size_t want = avail < sizeof(buf) ? avail : sizeof(buf);
+      const size_t n = src.readInto(buf, want);
+      if (n > 0) {
+        out.concat((const char*)buf, (unsigned int)n);
+        lastByteMs = clk.now();
+        if (out.length() > APEX_MAX_BODY_BYTES) return APEX_BODY_TOO_BIG;
+        continue;
+      }
+    } else if (!src.connected()) {
+      return APEX_BODY_OK;               // server closed: the whole body has arrived
+    }
+    const uint32_t now = clk.now();
+    if ((uint32_t)(now - startedMs) >= deadlineMs) return APEX_BODY_TIMEOUT;
+    if ((uint32_t)(now - lastByteMs) >= stallMs) return APEX_BODY_TIMEOUT;
+    clk.pause(2);
+  }
+}
+//END_BOUNDED_READER
+
+struct ApexHttpSrc {
+  HTTPClient& http;
+  WiFiClient* s;
+  explicit ApexHttpSrc(HTTPClient& h) : http(h), s(h.getStreamPtr()) {}
+  size_t available() { return s ? (size_t)s->available() : 0; }
+  size_t readInto(uint8_t* b, size_t n) { return s ? s->readBytes(b, n) : 0; }
+  bool connected() { return s && http.connected(); }
+};
+struct ApexClock {
+  uint32_t now() { return millis(); }
+  void pause(uint32_t ms) { delay(ms); }
+};
+
 static bool httpGetBody(const String& url, String& bodyOut, bool* transportFailed = nullptr) {
   bodyOut = "";
   if (transportFailed) *transportFailed = false;
+  const uint32_t startedMs = millis();
   WiFiClient client;
   HTTPClient http;
 
@@ -324,6 +388,8 @@ static bool httpGetBody(const String& url, String& bodyOut, bool* transportFaile
 
   http.setConnectTimeout(APEX_CONNECT_TIMEOUT_MS);
   http.setTimeout(APEX_READ_TIMEOUT_MS);
+  static const char* wantHeaders[] = {"Transfer-Encoding"};   // HTTPClient::collectHeaders takes const char*[]
+  http.collectHeaders(wantHeaders, 1);
 
   esp_task_wdt_reset();
   int httpCode = http.GET();
@@ -341,8 +407,33 @@ static bool httpGetBody(const String& url, String& bodyOut, bool* transportFaile
     return false;
   }
 
-  bodyOut = http.getString();
+  String te = http.header("Transfer-Encoding");
+  te.toLowerCase();
+  if (te.indexOf("chunked") >= 0) {
+    // Chunked answers keep the previous behaviour (HTTPClient decodes them).
+    bodyOut = http.getString();
+    http.end();
+    return bodyOut.length() > 0;
+  }
+
+  ApexHttpSrc src(http);
+  ApexClock clk;
+  const ApexBodyResult r = apexReadBodyBounded(src, clk, (long)http.getSize(), startedMs,
+                                               APEX_TOTAL_DEADLINE_MS, APEX_READ_TIMEOUT_MS, bodyOut);
   http.end();
+
+  if (r == APEX_BODY_TIMEOUT) {
+    Serial.printf("Apex answer abandoned after %lu ms (limit %lu ms): %s\n",
+                  (unsigned long)(millis() - startedMs), (unsigned long)APEX_TOTAL_DEADLINE_MS, url.c_str());
+    bodyOut = "";
+    if (transportFailed) *transportFailed = true;
+    return false;
+  }
+  if (r == APEX_BODY_TOO_BIG) {
+    Serial.printf("Apex answer larger than %u bytes; ignored: %s\n", (unsigned)APEX_MAX_BODY_BYTES, url.c_str());
+    bodyOut = "";
+    return false;
+  }
   return bodyOut.length() > 0;
 }
 

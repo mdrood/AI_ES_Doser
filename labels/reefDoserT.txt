@@ -1,0 +1,10 @@
+AIDoser
+
+Device ID: reefDoserT
+Serial Label: AIES-T001
+Claim Code: HHG8-78CZ
+MAC Address: E0:8C:FE:C2:63:7C
+Chip ID: 7C63C2FE8CE0
+
+Setup:
+https://aiesdoser.web.app/setup

@@ -345,8 +345,12 @@ void OtaManager::updateFirmware(String url,
         }
 
         // Keep the Arduino loop task and watchdog healthy during the blocking OTA.
+        // This code now runs on its own task (see runOtaOnLargeStack in main.cpp).
+        // yield() only hands the CPU to equal-priority tasks; vTaskDelay(1) also
+        // lets the idle task and Wi-Fi housekeeping run every chunk, which the
+        // task watchdog needs to see.
         esp_task_wdt_reset();
-        yield();
+        vTaskDelay(1);
     }
 
     http.end();

@@ -1,0 +1,10 @@
+AIDoser
+
+Device ID: reefDoser13
+Serial Label: AIES-00013
+Claim Code: DYB2-XVDF
+MAC Address: E0:8C:FE:C2:63:7C
+Chip ID: 7C63C2FE8CE0
+
+Setup:
+https://aiesdoser.web.app/setup

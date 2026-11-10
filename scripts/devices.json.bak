@@ -283,5 +283,43 @@
         "firebaseUid": "s4EVLqvmeagVwNPnoFaILpNxhyI2",
         "alkDemandBootstrapEnabled": false,
         "alkDemandBootstrapDkhDay": 0.0
+    },
+    "reefDoserT": {
+        "customer": "Test Ties",
+        "label": "AIES-T001",
+        "deviceId": "reefDoserT",
+        "firmwareVersion": "P-3.0.8",
+        "chipId": "7C63C2FE8CE0",
+        "macAddress": "E0:8C:FE:C2:63:7C",
+        "board": "vintlabs-devkit-v1",
+        "otaJsonName": "reefDoserT.json",
+        "otaBinName": "reefDoserT.bin",
+        "firebasePublic": "C:/Users/mdroo/OneDrive/Firebase/aiesdoser/public",
+        "burnInStatus": "PASS",
+        "burnInStartedAt": "2026-10-31T08:27:56",
+        "burnInCompletedAt": "2026-10-31T08:40:46",
+        "claimCode": "HHG8-78CZ",
+        "claimBatch": "BATCH-20260714",
+        "claimSequence": 12,
+        "firebaseEmail": "reefDoserT@device.aidoser.tech",
+        "firebasePassword": "FHYF2uGV6i$-8v@$#3OZ5*ui",
+        "firebaseUid": "AWW0AZTXF7dZVOnI8QTZHUK9QST2",
+        "alkDemandBootstrapEnabled": false,
+        "alkDemandBootstrapDkhDay": 0.0
+    },
+    "reefDoser13": {
+        "customer": "Test Ties",
+        "label": "AIES-00013",
+        "deviceId": "reefDoser13",
+        "firmwareVersion": "T-3.0.0",
+        "chipId": "7C63C2FE8CE0",
+        "macAddress": "E0:8C:FE:C2:63:7C",
+        "board": "vintlabs-devkit-v1",
+        "otaJsonName": "reefDoser13.json",
+        "otaBinName": "reefDoser13.bin",
+        "firebasePublic": "C:/Users/mdroo/OneDrive/Firebase/aiesdoser/public",
+        "burnInStatus": "PASS",
+        "burnInStartedAt": "2026-10-31T08:48:57",
+        "burnInCompletedAt": "2026-10-31T08:54:00"
     }
 }

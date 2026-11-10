@@ -1,6 +1,6 @@
 {
     "schemaVersion": 1,
-    "updatedAt": "2026-10-28T04:56:38+00:00",
+    "updatedAt": "2026-10-31T13:54:00+00:00",
     "claims": [
         {
             "claimCode": "J92F-CNXF",
@@ -153,8 +153,8 @@
             "label": "AIES-0014",
             "macAddress": "E0:8C:FE:C2:63:8C",
             "chipId": "8C63C2FE8CE0",
-            "firebaseStatus": "PENDING",
-            "firebaseUpdatedAt": "2026-10-27T21:24:58+00:00",
+            "firebaseStatus": "VERIFIED",
+            "firebaseUpdatedAt": "2026-10-28T05:02:55+00:00",
             "reassignedAt": "2026-10-28T04:56:38+00:00",
             "previousMacAddress": "E0:8C:FE:C2:63:B0",
             "previousChipId": "B063C2FE8CE0"
@@ -163,27 +163,28 @@
             "claimCode": "HHG8-78CZ",
             "batch": "BATCH-20260714",
             "sequence": 12,
-            "status": "UNUSED",
+            "status": "ASSIGNED",
             "createdAt": "2026-07-15T00:27:09+00:00",
-            "assignedAt": null,
-            "deviceId": null,
-            "label": null,
-            "macAddress": null,
-            "chipId": null,
-            "firebaseStatus": "NOT_ASSIGNED"
+            "assignedAt": "2026-10-31T13:40:46+00:00",
+            "deviceId": "reefDoserT",
+            "label": "AIES-T001",
+            "macAddress": "E0:8C:FE:C2:63:7C",
+            "chipId": "7C63C2FE8CE0",
+            "firebaseStatus": "VERIFIED",
+            "firebaseUpdatedAt": "2026-10-31T13:40:48+00:00"
         },
         {
             "claimCode": "DYB2-XVDF",
             "batch": "BATCH-20260714",
             "sequence": 13,
-            "status": "UNUSED",
+            "status": "ASSIGNED",
             "createdAt": "2026-07-15T00:27:09+00:00",
-            "assignedAt": null,
-            "deviceId": null,
-            "label": null,
-            "macAddress": null,
-            "chipId": null,
-            "firebaseStatus": "NOT_ASSIGNED"
+            "assignedAt": "2026-10-31T13:54:00+00:00",
+            "deviceId": "reefDoser13",
+            "label": "AIES-00013",
+            "macAddress": "E0:8C:FE:C2:63:7C",
+            "chipId": "7C63C2FE8CE0",
+            "firebaseStatus": "PENDING"
         },
         {
             "claimCode": "XABK-U96G",
